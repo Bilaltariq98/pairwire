@@ -52,8 +52,9 @@ pub async fn run_host(args: HostArgs) -> Result<()> {
         ..Default::default()
     };
 
-    let (capture_thread, _frame_rx) =
-        CaptureThread::start_fake(capture_config.clone()).context("failed to start capture")?;
+    // Use real screen capture when the `capture` feature is enabled,
+    // falling back to the fake source otherwise.
+    let (capture_thread, _frame_rx) = start_capture(capture_config.clone())?;
     #[cfg(feature = "encode")]
     let frame_rx = _frame_rx;
 
@@ -287,6 +288,31 @@ async fn perform_guest_handshake(
         .context("handshake failed")?;
 
     Ok(session)
+}
+
+/// Start screen capture — real (scap) when `capture` feature is enabled, fake otherwise.
+fn start_capture(
+    config: CaptureConfig,
+) -> Result<(
+    CaptureThread,
+    std::sync::mpsc::Receiver<pairwire_capture::RawFrame>,
+)> {
+    #[cfg(feature = "capture")]
+    {
+        match CaptureThread::start(config) {
+            Ok(pair) => return Ok(pair),
+            Err(e) => {
+                // Permission or hardware failure — fall through to fake source with a clear message.
+                tracing::warn!(
+                    error = %e,
+                    "real screen capture unavailable — using fake source. \
+                     On macOS: grant Screen Recording permission in System Settings → Privacy."
+                );
+            }
+        }
+    }
+    // Fake source: always available, used when capture feature is off or permission denied.
+    CaptureThread::start_fake(config).context("failed to start fake capture")
 }
 
 fn host_capabilities() -> Vec<Capability> {

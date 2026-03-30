@@ -27,6 +27,10 @@ rand = "0.9"
 gui = ["dep:egui", "dep:eframe"]
 # Enable H.264 encode/decode. Requires system FFmpeg libraries.
 encode = ["pairwire-capture/ffmpeg"]
+# Enable real screen capture via scap. Requires OS screen recording permission.
+capture = ["pairwire-capture/capture"]
+# Enable real microphone capture and speaker playback via cpal.
+audio = ["pairwire-audio/capture"]
 # Alias so `--features pairwire/ffmpeg` works as expected.
 ffmpeg = ["encode"]
 
