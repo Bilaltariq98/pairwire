@@ -10,7 +10,7 @@
 //! injected. Events received without permission are silently dropped.
 //!
 //! Platform injection:
-//! - macOS: CGEvent posting via `core-graphics` (requires Accessibility permission)
+//! - macOS: `CGEvent` posting via `core-graphics` (requires Accessibility permission)
 //! - Other platforms: logged as unimplemented (Phase 3)
 
 pub mod clipboard;

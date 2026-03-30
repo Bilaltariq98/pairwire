@@ -3,13 +3,10 @@
 //! Provides factory functions for every message type and a generic round-trip assertion.
 
 use crate::control::{
-    AudioCodec, Capability, ControlHandoff, ControlMessage, Handshake, Heartbeat, Permissions,
-    VideoCodec,
+    AudioCodec, Capability, ControlHandoff, Handshake, Heartbeat, Permissions, VideoCodec,
 };
 use crate::cursor::CursorUpdate;
-use crate::input::{
-    ClipboardFormat, ClipboardSync, InputMessage, KeyEvent, MouseClick, MouseScroll,
-};
+use crate::input::{ClipboardFormat, ClipboardSync, KeyEvent, MouseClick, MouseScroll};
 use crate::media::ScreenFrameHeader;
 use postcard::{from_bytes, to_allocvec};
 use serde::{Serialize, de::DeserializeOwned};
@@ -110,6 +107,8 @@ pub fn make_screen_frame_header() -> ScreenFrameHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::ControlMessage;
+    use crate::input::InputMessage;
 
     #[test]
     fn all_types_round_trip() {

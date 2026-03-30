@@ -4,7 +4,7 @@
 //! Resamples to 48kHz mono if needed, then encodes 20ms Opus frames.
 //! Sends `OpusPacket` via tokio mpsc (OS thread → async task).
 //!
-//! Voice activity detection: frames below SILENCE_THRESHOLD RMS are skipped.
+//! Voice activity detection: frames below `SILENCE_THRESHOLD` RMS are skipped.
 
 use std::{
     sync::{
@@ -36,6 +36,10 @@ impl AudioEncodeThread {
     ///
     /// `frame_rx`: raw PCM frames from the capture thread.
     /// Returns a handle and a tokio receiver for encoded `OpusPacket`s.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OS thread cannot be spawned.
     pub fn start(
         config: AudioConfig,
         frame_rx: mpsc::Receiver<AudioFrame>,
@@ -71,6 +75,7 @@ impl AudioEncodeThread {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)] // args are consumed by the dedicated OS thread
 fn encode_loop(
     config: AudioConfig,
     frame_rx: mpsc::Receiver<AudioFrame>,
@@ -90,6 +95,7 @@ fn encode_loop(
 
     // Set bitrate
     let mut encoder = encoder;
+    #[allow(clippy::cast_possible_wrap)] // bitrate is always a small positive value
     encoder
         .set_bitrate(opus::Bitrate::Bits(config.bitrate as i32))
         .map_err(|e| Error::Audio(format!("opus set_bitrate: {e}")))?;
@@ -105,17 +111,14 @@ fn encode_loop(
     let mut sample_buf: Vec<f32> =
         Vec::with_capacity(OPUS_FRAME_SAMPLES * config.channels as usize);
     let mut timestamp_us: u64 = 0;
-    let frame_us = (OPUS_FRAME_SAMPLES as u64 * 1_000_000) / OPUS_SAMPLE_RATE as u64;
+    let frame_us = (OPUS_FRAME_SAMPLES as u64 * 1_000_000) / u64::from(OPUS_SAMPLE_RATE);
 
     loop {
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
 
-        let frame = match frame_rx.recv() {
-            Ok(f) => f,
-            Err(_) => break,
-        };
+        let Ok(frame) = frame_rx.recv() else { break };
 
         // Resample to mono 48kHz if needed (simple downsample — good enough for voice).
         let samples = normalize_frame(&frame, config.channels);
@@ -184,7 +187,9 @@ fn rms(samples: &[f32]) -> f32 {
         return 0.0;
     }
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
-    (sum_sq / samples.len() as f32).sqrt()
+    #[allow(clippy::cast_precision_loss)] // sample count fits in f32 for audio frame sizes
+    let len = samples.len() as f32;
+    (sum_sq / len).sqrt()
 }
 
 #[cfg(test)]

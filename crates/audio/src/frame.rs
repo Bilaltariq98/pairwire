@@ -15,13 +15,16 @@ pub struct AudioFrame {
 
 impl AudioFrame {
     /// Number of samples per channel.
+    #[must_use]
     pub fn samples_per_channel(&self) -> usize {
         self.samples.len() / self.channels as usize
     }
 
     /// Duration of this frame in milliseconds.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // sample count fits in f64 for audio frame sizes
     pub fn duration_ms(&self) -> f64 {
-        (self.samples_per_channel() as f64 / self.sample_rate as f64) * 1000.0
+        (self.samples_per_channel() as f64 / f64::from(self.sample_rate)) * 1000.0
     }
 }
 

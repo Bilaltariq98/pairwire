@@ -36,6 +36,10 @@ impl AudioPlaybackThread {
     /// Start the playback thread.
     ///
     /// `frame_rx`: decoded PCM frames from the decode thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OS thread cannot be spawned.
     pub fn start(config: AudioConfig, frame_rx: mpsc::Receiver<AudioFrame>) -> Result<Self> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = Arc::clone(&stop_flag);
@@ -65,6 +69,7 @@ impl AudioPlaybackThread {
 }
 
 #[cfg(feature = "capture")]
+#[allow(clippy::needless_pass_by_value)] // args are consumed by the dedicated OS thread
 fn playback_loop(
     config: AudioConfig,
     frame_rx: mpsc::Receiver<AudioFrame>,
@@ -83,6 +88,7 @@ fn playback_loop(
 
     info!(device = %device.name().unwrap_or_default(), "audio playback device selected");
 
+    #[allow(clippy::cast_possible_truncation)] // channels is always 1 or 2
     let stream_config = StreamConfig {
         channels: config.channels as u16,
         sample_rate: cpal::SampleRate(config.sample_rate),
@@ -136,7 +142,7 @@ fn playback_loop(
                 }
                 buf.extend_from_slice(&frame.samples);
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {} // keep looping
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -146,6 +152,8 @@ fn playback_loop(
 }
 
 #[cfg(not(feature = "capture"))]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
+// Args are consumed by the dedicated OS thread; Result<()> matches the real impl signature.
 fn playback_loop(
     _config: AudioConfig,
     frame_rx: mpsc::Receiver<AudioFrame>,
@@ -157,8 +165,7 @@ fn playback_loop(
             break;
         }
         match frame_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(_) => {} // discard
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {} // discard or keep looping
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }

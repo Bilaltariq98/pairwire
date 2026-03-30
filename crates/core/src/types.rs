@@ -11,6 +11,7 @@ pub struct PeerId(pub [u8; 32]);
 
 impl PeerId {
     /// Short display form: first 8 hex chars.
+    #[must_use]
     pub fn short(&self) -> String {
         hex::encode(&self.0[..4])
     }

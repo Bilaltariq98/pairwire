@@ -52,13 +52,14 @@ impl ClipboardSenderHandle {
 /// Polls every 500ms. Only sends when content has changed since last send.
 /// Payloads > 1MB are skipped with a warning.
 pub struct ClipboardSender {
-    /// Channel to push clipboard messages onto (shared with InputSender or direct stream).
+    /// Channel to push clipboard messages onto (shared with `InputSender` or direct stream).
     event_tx: mpsc::Sender<InputMessage>,
     /// Whether to automatically send on every detected change.
     auto_sync: bool,
 }
 
 impl ClipboardSender {
+    #[must_use]
     pub fn new(event_tx: mpsc::Sender<InputMessage>, auto_sync: bool) -> Self {
         Self {
             event_tx,
@@ -173,6 +174,7 @@ pub struct ClipboardReceiver {
 }
 
 impl ClipboardReceiver {
+    #[must_use]
     pub fn new(event_rx: mpsc::Receiver<ClipboardSync>) -> Self {
         Self { event_rx }
     }

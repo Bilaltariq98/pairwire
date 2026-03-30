@@ -1,4 +1,4 @@
-//! H.264 decode thread using FFmpeg.
+//! H.264 decode thread using `FFmpeg`.
 //!
 //! Channel design:
 //! - input:  `std::sync::mpsc::Receiver<EncodedPacket>` (OS thread → OS thread)

@@ -1,11 +1,11 @@
 //! moq-lite screen track: publish and subscribe to H.264 screen frames.
 //!
-//! The host publishes a BroadcastProducer with a single "screen" track (priority 3).
+//! The host publishes a `BroadcastProducer` with a single "screen" track (priority 3).
 //! Each keyframe starts a new moq-lite Group. Delta frames are appended to the current group.
 //! The guest subscribes and feeds received frames to the decode channel.
 //!
 //! Transport: `web_transport_iroh::Session::raw(conn)` wraps the iroh Connection as a
-//! WebTransport session. moq-lite's Client/Server perform the MoQ SETUP handshake on top.
+//! WebTransport session. moq-lite's Client/Server perform the `MoQ` SETUP handshake on top.
 //!
 //! This replaces the raw QUIC stream screen transport from Phase 1 (screen.rs).
 
@@ -52,6 +52,7 @@ pub struct MoqScreenPublisher {
 }
 
 impl MoqScreenPublisher {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self { conn }
     }
@@ -169,6 +170,7 @@ pub struct MoqScreenSubscriber {
 }
 
 impl MoqScreenSubscriber {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self { conn }
     }

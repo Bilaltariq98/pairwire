@@ -25,6 +25,7 @@ pub struct CursorSender {
 }
 
 impl CursorSender {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self { conn }
     }
@@ -33,6 +34,7 @@ impl CursorSender {
     ///
     /// Reads `CursorUpdate` from `update_rx` and sends each as a datagram.
     /// The channel should be bounded to 1 — only the latest position matters.
+    #[must_use]
     pub fn spawn(self, mut update_rx: mpsc::Receiver<CursorUpdate>) -> CursorSenderHandle {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_task = Arc::clone(&stop);
@@ -41,9 +43,8 @@ impl CursorSender {
         let handle = tokio::spawn(async move {
             info!("cursor sender started");
             while !stop_task.load(Ordering::Relaxed) {
-                let update = match update_rx.recv().await {
-                    Some(u) => u,
-                    None => break,
+                let Some(update) = update_rx.recv().await else {
+                    break;
                 };
                 if let Err(e) = conn.send_cursor_datagram(&update) {
                     warn!(error = %e, "cursor datagram send failed");
@@ -78,6 +79,7 @@ pub struct CursorReceiver {
 }
 
 impl CursorReceiver {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self { conn }
     }
@@ -85,6 +87,7 @@ impl CursorReceiver {
     /// Spawn the receiver task.
     ///
     /// Returns a `watch::Receiver` that always holds the latest cursor state.
+    #[must_use]
     pub fn spawn(self) -> (CursorReceiverHandle, watch::Receiver<Option<CursorUpdate>>) {
         let (tx, rx) = watch::channel(None);
         let stop = Arc::new(AtomicBool::new(false));
@@ -127,7 +130,6 @@ impl CursorReceiverHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use pairwire_protocol::CursorUpdate;
 
     #[test]

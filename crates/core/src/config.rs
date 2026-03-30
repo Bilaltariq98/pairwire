@@ -57,9 +57,9 @@ impl Default for CaptureConfig {
 /// Video encoder preference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VideoEncoder {
-    /// macOS hardware encoder (ScreenCaptureKit / VideoToolbox).
+    /// macOS hardware encoder (`ScreenCaptureKit` / `VideoToolbox`).
     H264VideoToolbox,
-    /// Software fallback, available everywhere FFmpeg is built.
+    /// Software fallback, available everywhere `FFmpeg` is built.
     H264Software,
 }
 

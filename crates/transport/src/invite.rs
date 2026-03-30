@@ -22,6 +22,7 @@ pub struct InviteLink {
 
 impl InviteLink {
     /// Create an invite link from an endpoint address and session ID.
+    #[must_use]
     pub fn new(endpoint_addr: EndpointAddr, session_id: SessionId) -> Self {
         Self {
             endpoint_addr,
@@ -30,6 +31,7 @@ impl InviteLink {
     }
 
     /// The host's endpoint ID (public key).
+    #[must_use]
     pub fn endpoint_id(&self) -> &EndpointId {
         &self.endpoint_addr.id
     }
@@ -43,7 +45,7 @@ impl fmt::Display for InviteLink {
         // Append relay URL if present
         let relay_urls: Vec<_> = self.endpoint_addr.relay_urls().collect();
         if let Some(relay) = relay_urls.first() {
-            write!(f, "?relay={}", relay)?;
+            write!(f, "?relay={relay}")?;
             write!(f, "&token={}", hex::encode(self.session_id.0))?;
         } else {
             write!(f, "?token={}", hex::encode(self.session_id.0))?;

@@ -114,13 +114,18 @@ impl CaptureThread {
     ///
     /// Generates synthetic BGRA frames at the configured FPS.
     /// Available without the `capture` feature — use in tests and CI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OS thread cannot be spawned.
+    #[allow(clippy::needless_pass_by_value)] // config is moved into the thread closure
     pub fn start_fake(config: CaptureConfig) -> Result<(Self, mpsc::Receiver<RawFrame>)> {
         use pairwire_core::test_utils::FakeFrameSource;
 
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = Arc::clone(&stop_flag);
-        let frame_interval = std::time::Duration::from_micros(1_000_000 / config.fps as u64);
+        let frame_interval = std::time::Duration::from_micros(1_000_000 / u64::from(config.fps));
 
         let handle = thread::Builder::new()
             .name("pairwire-fake-capture".into())
@@ -178,6 +183,7 @@ impl Drop for CaptureThread {
 ///
 /// Spawns a blocking tokio task that forwards frames. Use this when you need
 /// to receive frames in an async context without an encode thread in between.
+#[must_use]
 pub fn into_async_receiver(
     sync_rx: mpsc::Receiver<RawFrame>,
     capacity: usize,

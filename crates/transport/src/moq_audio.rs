@@ -1,6 +1,6 @@
 //! moq-lite audio track: publish and subscribe to Opus audio packets.
 //!
-//! The host publishes a BroadcastProducer with a single "audio" track (priority 0).
+//! The host publishes a `BroadcastProducer` with a single "audio" track (priority 0).
 //! Each Opus packet is its own Group (audio frames are independent — no keyframe concept).
 //! The guest subscribes and feeds received packets to the decode channel.
 //!
@@ -50,6 +50,7 @@ pub struct MoqAudioPublisher {
 }
 
 impl MoqAudioPublisher {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self { conn }
     }
@@ -138,6 +139,7 @@ pub struct MoqAudioSubscriber {
 }
 
 impl MoqAudioSubscriber {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self { conn }
     }

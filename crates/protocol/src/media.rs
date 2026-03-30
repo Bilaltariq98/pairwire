@@ -29,6 +29,7 @@ pub struct FrameFlags {
 }
 
 impl ScreenFrameHeader {
+    #[must_use]
     pub fn new_keyframe(timestamp_us: u64) -> Self {
         Self {
             timestamp_us,
@@ -39,6 +40,7 @@ impl ScreenFrameHeader {
         }
     }
 
+    #[must_use]
     pub fn new_delta(timestamp_us: u64) -> Self {
         Self {
             timestamp_us,

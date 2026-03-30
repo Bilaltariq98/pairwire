@@ -262,6 +262,7 @@ async fn perform_host_handshake(
         .await
         .context("failed to open control stream")?;
 
+    #[allow(clippy::cast_possible_truncation)] // display dimensions are always < 65535
     let local = local_handshake(
         host_capabilities(),
         config.width as u16,

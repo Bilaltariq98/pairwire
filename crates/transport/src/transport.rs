@@ -16,6 +16,10 @@ pub struct Transport {
 
 impl Transport {
     /// Bind a new iroh endpoint using n0 defaults (relay + DNS address lookup).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the endpoint cannot be bound (e.g., port conflict).
     #[instrument(name = "transport_bind")]
     pub async fn bind() -> Result<Self> {
         let endpoint = Endpoint::builder(presets::N0)
@@ -36,6 +40,10 @@ impl Transport {
     ///
     /// Waits until the endpoint is online (has a home relay), then encodes
     /// the full `EndpointAddr` into the invite link.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible, but returns `Result` for forward compatibility.
     pub async fn invite_link(&self, session_id: SessionId) -> Result<InviteLink> {
         // Wait for relay assignment (usually < 1s on a healthy network)
         self.endpoint.online().await;
@@ -51,6 +59,10 @@ impl Transport {
     }
 
     /// Connect to a remote peer using an invite link.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the QUIC connection cannot be established.
     #[instrument(name = "transport_connect", skip(self, invite), fields(peer = %invite.endpoint_id()))]
     pub async fn connect(&self, invite: &InviteLink) -> Result<PairwireConnection> {
         let conn = self
@@ -70,6 +82,10 @@ impl Transport {
     /// Accept the next incoming connection.
     ///
     /// Returns `None` if the endpoint is closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the QUIC handshake fails on an incoming connection.
     #[instrument(name = "transport_accept", skip(self))]
     pub async fn accept(&self) -> Result<Option<PairwireConnection>> {
         let Some(incoming) = self.endpoint.accept().await else {
@@ -89,6 +105,7 @@ impl Transport {
     }
 
     /// The local endpoint ID (public key).
+    #[must_use]
     pub fn id(&self) -> iroh::EndpointId {
         self.endpoint.id()
     }

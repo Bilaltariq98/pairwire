@@ -1,4 +1,4 @@
-//! H.264 encode thread using FFmpeg.
+//! H.264 encode thread using `FFmpeg`.
 //!
 //! Channel design (per CONVENTIONS.md):
 //! - input:  `std::sync::mpsc::Receiver<RawFrame>`  (OS thread → OS thread)

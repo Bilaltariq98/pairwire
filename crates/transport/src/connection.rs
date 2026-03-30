@@ -32,11 +32,13 @@ impl PairwireConnection {
     }
 
     /// The remote peer's endpoint ID.
+    #[must_use]
     pub fn remote_id(&self) -> iroh::EndpointId {
         self.conn.remote_id()
     }
 
     /// Access the underlying iroh `Connection` for use with web-transport-iroh.
+    #[must_use]
     pub fn raw_conn(&self) -> &Connection {
         &self.conn
     }
@@ -44,6 +46,10 @@ impl PairwireConnection {
     /// Open a bidirectional control stream (priority 1).
     ///
     /// Used for session management: handshake, capability negotiation, heartbeats.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the QUIC stream cannot be opened.
     #[instrument(skip(self))]
     pub async fn open_control_stream(&self) -> Result<(SendStream, RecvStream)> {
         let (send, recv) = self
@@ -55,6 +61,10 @@ impl PairwireConnection {
     }
 
     /// Accept an incoming bidirectional stream (used by the receiver side of control).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails unexpectedly (not a clean close).
     pub async fn accept_bi(&self) -> Result<Option<(SendStream, RecvStream)>> {
         match self.conn.accept_bi().await {
             Ok(pair) => Ok(Some(pair)),
@@ -72,6 +82,10 @@ impl PairwireConnection {
     /// Open a unidirectional input stream (priority 1).
     ///
     /// Used for keyboard/mouse events — reliable, ordered, must not drop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the QUIC stream cannot be opened.
     #[instrument(skip(self))]
     pub async fn open_input_stream(&self) -> Result<SendStream> {
         let send = self
@@ -83,6 +97,10 @@ impl PairwireConnection {
     }
 
     /// Accept an incoming unidirectional stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails unexpectedly (not a clean close).
     pub async fn accept_uni(&self) -> Result<Option<RecvStream>> {
         match self.conn.accept_uni().await {
             Ok(recv) => Ok(Some(recv)),
@@ -100,6 +118,10 @@ impl PairwireConnection {
     /// Send a `CursorUpdate` as an unreliable QUIC datagram.
     ///
     /// Datagrams are best-effort and may be dropped. Suitable for 60Hz cursor updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails or the datagram cannot be sent.
     pub fn send_cursor_datagram(&self, update: &CursorUpdate) -> Result<()> {
         let bytes = to_allocvec(update)
             .map_err(|e| Error::Serialization(format!("cursor serialize: {e}")))?;
@@ -115,6 +137,10 @@ impl PairwireConnection {
     }
 
     /// Receive the next QUIC datagram and deserialize it as a `CursorUpdate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the datagram cannot be read or deserialization fails.
     pub async fn recv_cursor_datagram(&self) -> Result<CursorUpdate> {
         let bytes = self
             .conn
@@ -128,6 +154,10 @@ impl PairwireConnection {
     ///
     /// Each keyframe group gets its own stream. The receiver abandons old streams
     /// when a new one arrives (drop-old-groups policy).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the QUIC stream cannot be opened.
     pub async fn open_screen_stream(&self) -> Result<SendStream> {
         let send = self
             .conn
@@ -138,6 +168,10 @@ impl PairwireConnection {
     }
 
     /// Accept an incoming screen stream (unidirectional, from the host).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails unexpectedly (not a clean close).
     pub async fn accept_screen_stream(&self) -> Result<Option<RecvStream>> {
         self.accept_uni().await
     }
@@ -156,6 +190,11 @@ impl PairwireConnection {
 /// Write a length-prefixed postcard message to a `SendStream`.
 ///
 /// Wire format: `[u32 little-endian length][postcard bytes]`
+///
+/// # Errors
+///
+/// Returns an error if serialization fails, the message exceeds `MAX_MESSAGE_LEN`,
+/// or the stream write fails.
 #[instrument(skip(stream, msg))]
 pub async fn send_message<T: Serialize>(stream: &mut SendStream, msg: &T) -> Result<()> {
     let payload =
@@ -170,6 +209,7 @@ pub async fn send_message<T: Serialize>(stream: &mut SendStream, msg: &T) -> Res
     }
 
     let mut buf = BytesMut::with_capacity(4 + payload.len());
+    #[allow(clippy::cast_possible_truncation)] // length already checked against MAX_MESSAGE_LEN
     buf.put_u32_le(payload.len() as u32);
     buf.put_slice(&payload);
 
@@ -184,6 +224,11 @@ pub async fn send_message<T: Serialize>(stream: &mut SendStream, msg: &T) -> Res
 /// Read a length-prefixed postcard message from a `RecvStream`.
 ///
 /// Wire format: `[u32 little-endian length][postcard bytes]`
+///
+/// # Errors
+///
+/// Returns an error if the stream read fails, the message exceeds `MAX_MESSAGE_LEN`,
+/// or deserialization fails.
 #[instrument(skip(stream))]
 pub async fn recv_message<T: DeserializeOwned>(stream: &mut RecvStream) -> Result<T> {
     // Read 4-byte length prefix

@@ -17,6 +17,7 @@ pub struct FakeFrameSource {
 }
 
 impl FakeFrameSource {
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -25,6 +26,7 @@ impl FakeFrameSource {
         }
     }
 
+    #[must_use]
     pub fn from_config(cfg: &CaptureConfig) -> Self {
         Self::new(cfg.width, cfg.height)
     }
@@ -33,6 +35,7 @@ impl FakeFrameSource {
     ///
     /// Each frame has a unique solid color derived from the frame counter,
     /// so consecutive frames are always different (useful for encoder tests).
+    #[allow(clippy::cast_possible_truncation)] // modular arithmetic guarantees values fit in u8
     pub fn next_frame(&mut self) -> (Bytes, u64) {
         let n = self.frame_count;
         self.frame_count += 1;
@@ -56,12 +59,14 @@ impl FakeFrameSource {
     }
 
     /// Generate a static frame (all pixels identical) — useful for skip-static tests.
+    #[must_use]
     pub fn static_frame(&self) -> (Bytes, u64) {
         let pixel_count = (self.width * self.height) as usize;
         let data = vec![0x80u8; pixel_count * 4];
         (Bytes::from(data), 0)
     }
 
+    #[must_use]
     pub fn frame_count(&self) -> u64 {
         self.frame_count
     }
@@ -79,6 +84,7 @@ pub struct FakeAudioSource {
 }
 
 impl FakeAudioSource {
+    #[must_use]
     pub fn silence(cfg: &AudioConfig) -> Self {
         Self {
             sample_rate: cfg.sample_rate,
@@ -88,6 +94,7 @@ impl FakeAudioSource {
         }
     }
 
+    #[must_use]
     pub fn sine(cfg: &AudioConfig, frequency_hz: f32) -> Self {
         Self {
             sample_rate: cfg.sample_rate,
@@ -98,11 +105,20 @@ impl FakeAudioSource {
     }
 
     /// Generate `duration_ms` milliseconds of audio samples.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    // sample_count is always non-negative and fits in usize; audio index precision loss is acceptable
     pub fn next_samples(&mut self, duration_ms: u32) -> Vec<f32> {
-        let sample_count = (self.sample_rate as f64 * duration_ms as f64 / 1000.0).round() as usize;
+        let sample_count =
+            (f64::from(self.sample_rate) * f64::from(duration_ms) / 1000.0).round() as usize;
         let total = sample_count * self.channels as usize;
         let mut out = Vec::with_capacity(total);
 
+        #[allow(clippy::cast_precision_loss)]
+        // audio index precision loss is acceptable for sine generation
         for i in 0..sample_count {
             let sample = if self.frequency_hz > 0.0 {
                 let t = (self.sample_index + i as u64) as f32 / self.sample_rate as f32;
@@ -130,6 +146,7 @@ pub struct LoopbackChannel<T> {
 }
 
 impl<T> LoopbackChannel<T> {
+    #[must_use]
     pub fn channel(
         capacity: usize,
     ) -> (std::sync::mpsc::SyncSender<T>, std::sync::mpsc::Receiver<T>) {

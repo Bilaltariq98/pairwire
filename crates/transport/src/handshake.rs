@@ -34,6 +34,7 @@ pub struct NegotiatedSession {
 }
 
 impl NegotiatedSession {
+    #[must_use]
     pub fn has_capability(&self, cap: &Capability) -> bool {
         self.capabilities.contains(cap)
     }
@@ -43,6 +44,7 @@ impl NegotiatedSession {
 ///
 /// `display_width`/`display_height`/`display_scale` are 0 on the guest side
 /// (guest doesn't share a display).
+#[must_use]
 pub fn local_handshake(
     capabilities: Vec<Capability>,
     display_width: u16,
@@ -63,6 +65,11 @@ pub fn local_handshake(
 /// Host side: open control stream, send handshake first, receive guest's handshake.
 ///
 /// Returns the open streams (for subsequent control messages) and the negotiated session.
+///
+/// # Errors
+///
+/// Returns an error if the stream I/O fails, the remote sends an unexpected message,
+/// or the protocol versions are incompatible.
 #[instrument(skip(send, recv, local))]
 pub async fn host_handshake(
     mut send: SendStream,
@@ -90,6 +97,11 @@ pub async fn host_handshake(
 /// Guest side: accept control stream, receive host's handshake first, then respond.
 ///
 /// Returns the open streams and the negotiated session.
+///
+/// # Errors
+///
+/// Returns an error if the stream I/O fails, the remote sends an unexpected message,
+/// or the protocol versions are incompatible.
 #[instrument(skip(send, recv, local))]
 pub async fn guest_handshake(
     mut send: SendStream,
@@ -117,6 +129,7 @@ pub async fn guest_handshake(
 /// Intersect two handshakes into a `NegotiatedSession`.
 ///
 /// Returns `Err(VersionMismatch)` if protocol versions are incompatible.
+#[allow(clippy::needless_pass_by_value)] // callers pass owned Handshake values
 fn negotiate(local: Handshake, remote: Handshake) -> Result<NegotiatedSession> {
     if remote.version != PROTOCOL_VERSION {
         warn!(

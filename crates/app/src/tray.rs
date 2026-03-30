@@ -32,11 +32,11 @@
 
 #[cfg(feature = "tray")]
 mod inner {
+    use tracing::{debug, warn};
     use tray_icon::{
         TrayIconBuilder,
         menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     };
-    use tracing::{debug, warn};
 
     /// Actions emitted by the tray menu.
     #[derive(Debug, Clone)]
@@ -75,12 +75,7 @@ mod inner {
             let quit_id = quit_item.id().clone();
 
             let menu = Menu::new();
-            menu.append_items(&[
-                &copy_item,
-                &disconnect_item,
-                &separator,
-                &quit_item,
-            ])?;
+            menu.append_items(&[&copy_item, &disconnect_item, &separator, &quit_item])?;
 
             // 16×16 RGBA checkerboard as a minimal placeholder icon.
             // In a real build this would be replaced with a proper PNG asset.

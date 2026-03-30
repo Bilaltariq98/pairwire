@@ -41,7 +41,7 @@ pub enum QualityTier {
 }
 
 impl QualityTier {
-    fn apply(&self, base: &CaptureConfig) -> CaptureConfig {
+    fn apply(self, base: &CaptureConfig) -> CaptureConfig {
         match self {
             QualityTier::Full => base.clone(),
             QualityTier::Reduced => CaptureConfig {
@@ -70,7 +70,7 @@ pub struct ConnectionHealth {
 
 impl ConnectionHealth {
     fn tier(&self) -> QualityTier {
-        let loss_pct = self.loss_per_mille as f32 / 10.0;
+        let loss_pct = f32::from(self.loss_per_mille) / 10.0;
         if loss_pct > 15.0 {
             QualityTier::Degraded
         } else if loss_pct > 5.0 || self.rtt_ms > 200 {
@@ -101,6 +101,7 @@ pub struct QualityMonitor {
 }
 
 impl QualityMonitor {
+    #[must_use]
     pub fn new(conn: Arc<Connection>, base_config: CaptureConfig) -> Self {
         Self { conn, base_config }
     }
@@ -175,18 +176,23 @@ fn sample_health(conn: &Connection) -> ConnectionHealth {
 
     // RTT: read from the first active path via PathWatcher.
     let path_list = conn.paths().get();
+    #[allow(clippy::cast_possible_truncation)] // RTT in ms fits in u32 (max ~49 days)
     let rtt_ms = path_list
         .iter()
-        .filter_map(|p: &iroh::endpoint::PathInfo| p.rtt())
-        .next()
-        .map(|d| d.as_millis() as u32)
-        .unwrap_or(0);
+        .find_map(|p: &iroh::endpoint::PathInfo| p.rtt())
+        .map_or(0, |d| d.as_millis() as u32);
 
     // Loss proxy: RESET_STREAM frames sent relative to total stream frames.
     // Not a true loss rate, but a useful signal for congestion.
     let stats = conn.stats();
     let resets = stats.frame_tx.reset_stream;
     let streams = stats.frame_tx.stream.saturating_add(resets);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    // loss_per_mille is clamped to 1000.0 before cast; always non-negative
     let loss_per_mille = if streams > 0 {
         ((resets as f64 / streams as f64) * 1000.0).min(1000.0) as u16
     } else {

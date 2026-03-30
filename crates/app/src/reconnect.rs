@@ -144,10 +144,7 @@ mod tests {
             base_delay: Duration::from_millis(1), // fast for tests
         };
         let (tx, rx) = watch::channel(ConnectionState::Connected);
-        let result = with_reconnect(policy, tx, || async {
-            anyhow::bail!("always fails")
-        })
-        .await;
+        let result = with_reconnect(policy, tx, || async { anyhow::bail!("always fails") }).await;
         assert!(result.is_err());
         assert_eq!(*rx.borrow(), ConnectionState::Lost);
     }

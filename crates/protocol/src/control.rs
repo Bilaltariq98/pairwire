@@ -58,7 +58,7 @@ pub enum Permissions {
 /// Grants or revokes remote control to a specific peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlHandoff {
-    /// Short session-local peer ID (index, not full PeerId).
+    /// Short session-local peer ID (index, not full `PeerId`).
     pub to_peer: u16,
     pub permissions: Permissions,
     /// If false, this is a revocation.
@@ -87,7 +87,7 @@ pub enum ControlMessage {
 /// Serialized size must stay under 50 bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Heartbeat {
-    /// Monotonic timestamp in milliseconds (wraps at u32::MAX ~= 49 days).
+    /// Monotonic timestamp in milliseconds (wraps at `u32::MAX` ~= 49 days).
     pub timestamp_ms: u32,
     /// Round-trip time in microseconds (from previous heartbeat echo).
     pub rtt_us: u32,

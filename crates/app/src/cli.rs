@@ -43,7 +43,7 @@ pub struct JoinArgs {
 pub fn parse_args() -> anyhow::Result<Command> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    match args.first().map(|s| s.as_str()) {
+    match args.first().map(std::string::String::as_str) {
         Some("host") => {
             let mut a = HostArgs::default();
             let mut i = 1;

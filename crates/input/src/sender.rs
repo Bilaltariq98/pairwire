@@ -1,4 +1,4 @@
-//! Guest-side input sender: reads InputMessage from a channel, writes to QUIC stream.
+//! Guest-side input sender: reads `InputMessage` from a channel, writes to QUIC stream.
 
 use iroh::endpoint::SendStream;
 use pairwire_core::{Error, Result};
@@ -33,6 +33,7 @@ pub struct InputSender {
 }
 
 impl InputSender {
+    #[must_use]
     pub fn new(stream: SendStream) -> Self {
         Self { stream }
     }

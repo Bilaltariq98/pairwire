@@ -44,17 +44,16 @@ fn main() -> Result<()> {
 }
 
 fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
-    // Without the tray feature, run the session directly on the async runtime.
     #[cfg(not(feature = "tray"))]
     {
-        rt.block_on(session::run_host(args, None))?;
-        return Ok(());
+        // Without the tray feature, run the session directly on the async runtime.
+        rt.block_on(session::run_host(args, None))
     }
 
-    // With the tray feature: spawn the session as a background task so the
-    // main thread can drive the tray event loop (macOS requirement).
     #[cfg(feature = "tray")]
     {
+        // With the tray feature: spawn the session as a background task so the
+        // main thread can drive the tray event loop (macOS requirement).
         use tray::TrayAction;
 
         let (invite_tx, invite_rx) = tokio::sync::oneshot::channel::<String>();
@@ -72,8 +71,7 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
             if let Some(action) = tray_handle.poll() {
                 match action {
                     TrayAction::CopyInvite(url) => {
-                        match arboard::Clipboard::new()
-                            .and_then(|mut cb| cb.set_text(url.clone()))
+                        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone()))
                         {
                             Ok(()) => info!(url, "invite link copied to clipboard"),
                             Err(e) => tracing::warn!(error = %e, "clipboard write failed"),
@@ -110,6 +108,7 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
     }
 }
 
+#[allow(clippy::unnecessary_wraps)] // Result is needed when `gui` feature propagates viewer errors
 fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
     let (frame_tx, frame_rx) =
         tokio::sync::watch::channel::<Option<pairwire_capture::DecodedFrame>>(None);

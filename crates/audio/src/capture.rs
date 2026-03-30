@@ -122,6 +122,11 @@ impl AudioCaptureThread {
     /// Start a fake audio source that generates a 440Hz sine wave.
     ///
     /// Always available — no `capture` feature required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OS thread cannot be spawned.
+    #[allow(clippy::needless_pass_by_value)] // config is moved into the thread closure
     pub fn start_fake(config: AudioConfig) -> Result<(Self, mpsc::Receiver<AudioFrame>)> {
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -133,9 +138,11 @@ impl AudioCaptureThread {
                 info!("fake audio capture thread started");
                 let mut phase: f32 = 0.0;
                 let freq = 440.0_f32;
+                #[allow(clippy::cast_precision_loss)]
+                // sample_rate is ≤192000; fits in f32 mantissa
                 let sample_rate = config.sample_rate as f32;
                 let frame_duration = Duration::from_micros(
-                    OPUS_FRAME_SAMPLES as u64 * 1_000_000 / config.sample_rate as u64,
+                    OPUS_FRAME_SAMPLES as u64 * 1_000_000 / u64::from(config.sample_rate),
                 );
                 let mut timestamp_us: u64 = 0;
 
@@ -156,7 +163,11 @@ impl AudioCaptureThread {
                         channels: config.channels,
                         timestamp_us,
                     };
-                    timestamp_us += frame_duration.as_micros() as u64;
+                    #[allow(clippy::cast_possible_truncation)]
+                    // Duration::as_micros() returns u128; audio timestamps fit in u64 (>500k years)
+                    {
+                        timestamp_us += frame_duration.as_micros() as u64;
+                    }
 
                     if tx.send(frame).is_err() {
                         break;

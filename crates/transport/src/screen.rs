@@ -33,6 +33,7 @@ pub struct ScreenSender {
 }
 
 impl ScreenSender {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self {
             conn,
@@ -44,6 +45,7 @@ impl ScreenSender {
     ///
     /// Reads `EncodedPacket` from `packet_rx` and writes them to QUIC streams.
     /// Returns a handle that stops the task when dropped.
+    #[must_use]
     pub fn spawn(
         self,
         mut packet_rx: mpsc::Receiver<pairwire_capture::EncodedPacket>,
@@ -63,9 +65,8 @@ impl ScreenSender {
                     break;
                 }
 
-                let pkt = match packet_rx.recv().await {
-                    Some(p) => p,
-                    None => break,
+                let Some(pkt) = packet_rx.recv().await else {
+                    break;
                 };
 
                 // Keepalives carry no video data — skip without opening a stream.
@@ -92,9 +93,8 @@ impl ScreenSender {
                     }
                 }
 
-                let stream = match current_stream.as_mut() {
-                    Some(s) => s,
-                    None => continue,
+                let Some(stream) = current_stream.as_mut() else {
+                    continue;
                 };
 
                 let header = if pkt.is_keyframe {
@@ -111,6 +111,7 @@ impl ScreenSender {
                 }
 
                 // Write raw NAL data length-prefixed
+                #[allow(clippy::cast_possible_truncation)] // NAL packets are always < 4GB
                 let len = pkt.data.len() as u32;
                 let mut len_buf = [0u8; 4];
                 len_buf.copy_from_slice(&len.to_le_bytes());
@@ -157,6 +158,7 @@ pub struct ScreenReceiver {
 }
 
 impl ScreenReceiver {
+    #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
         Self {
             conn,
@@ -167,6 +169,7 @@ impl ScreenReceiver {
     /// Spawn the receiver task.
     ///
     /// Sends `EncodedPacket` to `packet_tx` for the decode thread.
+    #[must_use]
     pub fn spawn(
         self,
         packet_tx: std::sync::mpsc::SyncSender<pairwire_capture::EncodedPacket>,

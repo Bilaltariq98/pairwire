@@ -1,4 +1,4 @@
-//! Host-side input receiver: reads InputMessage from QUIC stream, injects into OS.
+//! Host-side input receiver: reads `InputMessage` from QUIC stream, injects into OS.
 
 use std::sync::{
     Arc,
@@ -16,7 +16,7 @@ use crate::InputPermission;
 
 /// Atomic encoding of `InputPermission` for lock-free reads.
 ///
-/// 0 = Denied, 1 = FullControl, 2 = KeyboardOnly
+/// 0 = Denied, 1 = `FullControl`, 2 = `KeyboardOnly`
 #[derive(Default)]
 struct AtomicPermission(AtomicU8);
 
@@ -67,6 +67,7 @@ pub struct InputReceiver {
 }
 
 impl InputReceiver {
+    #[must_use]
     pub fn new(stream: RecvStream) -> Self {
         Self { stream }
     }

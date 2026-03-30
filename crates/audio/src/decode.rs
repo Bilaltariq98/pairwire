@@ -32,6 +32,10 @@ impl AudioDecodeThread {
     ///
     /// `pkt_rx`: encoded Opus packets from the network.
     /// Returns a handle and a sync receiver for decoded `AudioFrame`s.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OS thread cannot be spawned.
     pub fn start(
         config: AudioConfig,
         pkt_rx: async_mpsc::Receiver<OpusPacket>,
@@ -67,6 +71,7 @@ impl AudioDecodeThread {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)] // args are consumed by the dedicated OS thread
 fn decode_loop(
     config: AudioConfig,
     mut pkt_rx: async_mpsc::Receiver<OpusPacket>,
@@ -96,9 +101,8 @@ fn decode_loop(
             break;
         }
 
-        let pkt = match pkt_rx.blocking_recv() {
-            Some(p) => p,
-            None => break,
+        let Some(pkt) = pkt_rx.blocking_recv() else {
+            break;
         };
 
         let mut pcm = vec![0.0f32; frame_samples];

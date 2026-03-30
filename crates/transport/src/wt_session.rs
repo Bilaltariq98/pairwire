@@ -66,7 +66,7 @@ impl wt::SendStream for WtSendStream {
 
     fn set_priority(&mut self, order: u8) {
         // iroh uses i32 priority; map u8 → i32 (lower wt priority = higher iroh priority)
-        let _ = self.0.set_priority(-(order as i32));
+        let _ = self.0.set_priority(-i32::from(order));
     }
 
     fn finish(&mut self) -> Result<(), WtError> {
@@ -103,8 +103,8 @@ impl wt::RecvStream for WtRecvStream {
         let mut buf = [0u8; 1024];
         loop {
             match self.0.read(&mut buf).await {
-                Ok(None) | Ok(Some(0)) => return Ok(()),
-                Ok(Some(_)) => continue,
+                Ok(None | Some(0)) => return Ok(()),
+                Ok(Some(_)) => {} // keep draining
                 Err(e) => return Err(WtError::from(e)),
             }
         }
@@ -121,6 +121,7 @@ impl wt::RecvStream for WtRecvStream {
 pub struct IrohWtSession(Connection);
 
 impl IrohWtSession {
+    #[must_use]
     pub fn new(conn: Connection) -> Self {
         Self(conn)
     }

@@ -15,6 +15,7 @@ pub struct RawFrame {
 
 impl RawFrame {
     /// Expected byte length for a BGRA frame of given dimensions.
+    #[must_use]
     pub fn expected_len(width: u32, height: u32) -> usize {
         (width as usize) * (height as usize) * 4
     }

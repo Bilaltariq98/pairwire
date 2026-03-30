@@ -2,7 +2,7 @@
 //!
 //! Feature flags:
 //! - `capture`: real screen capture via scap (requires display hardware)
-//! - `ffmpeg`: H.264 encode/decode via FFmpeg (requires system FFmpeg libs)
+//! - `ffmpeg`: H.264 encode/decode via `FFmpeg` (requires system `FFmpeg` libs)
 //!
 //! Without feature flags, only `CaptureThread::start_fake()` is available.
 
