@@ -16,7 +16,10 @@ pub mod test_utils;
 /// Current protocol version. Increment when making breaking wire format changes.
 pub const PROTOCOL_VERSION: u16 = 1;
 
-pub use control::{Capability, ControlHandoff, ControlMessage, Handshake, Heartbeat, Permissions};
+pub use control::{
+    AudioCodec, Capability, ControlHandoff, ControlMessage, Handshake, Heartbeat, Permissions,
+    VideoCodec,
+};
 pub use cursor::CursorUpdate;
 pub use input::{ClipboardFormat, ClipboardSync, KeyEvent, MouseClick, MouseScroll};
 pub use media::ScreenFrameHeader;

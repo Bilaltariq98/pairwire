@@ -1,10 +1,10 @@
 //! Session orchestration — wires all subsystems together for host and join modes.
 //!
-//! `run_host`: bind transport, start capture, accept connection, stream frames
-//! `run_join`: connect to host, receive frames, decode, forward to viewer
+//! `run_host`: bind transport, start capture, accept connection, handshake, stream frames
+//! `run_join`: connect to host, handshake, receive frames, decode, forward to viewer
 //!
-//! Encode/decode require the `ffmpeg` feature on `pairwire-capture`.
-//! Without it, the pipeline stubs out gracefully with a warning.
+//! Encode/decode require the `encode` feature. Without it, the pipeline stubs out
+//! gracefully with a warning after the handshake completes.
 
 use std::sync::Arc;
 
@@ -14,16 +14,19 @@ use pairwire_core::{
     SessionId,
     config::{CaptureConfig, VideoEncoder},
 };
-use pairwire_protocol::CursorUpdate;
+use pairwire_protocol::{Capability, CursorUpdate};
 #[cfg(feature = "encode")]
 use pairwire_transport::{CursorReceiver, ScreenSender};
-use pairwire_transport::{CursorSender, ScreenReceiver, Transport};
+use pairwire_transport::{
+    CursorSender, NegotiatedSession, ScreenReceiver, Transport, guest_handshake, host_handshake,
+    local_handshake,
+};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::cli::{HostArgs, JoinArgs};
 
-/// Run as host: capture screen, accept one connection, stream frames.
+/// Run as host: capture screen, accept one connection, handshake, stream frames.
 pub async fn run_host(args: HostArgs) -> Result<()> {
     let transport = Transport::bind()
         .await
@@ -51,47 +54,52 @@ pub async fn run_host(args: HostArgs) -> Result<()> {
     #[cfg(feature = "encode")]
     let frame_rx = _frame_rx;
 
-    // Encode + send only when FFmpeg is available
+    let conn = Arc::new(
+        transport
+            .accept()
+            .await
+            .context("accept failed")?
+            .ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?,
+    );
+    info!(peer = %conn.remote_id(), "guest connected");
+
+    // Perform handshake before starting media.
+    let session = perform_host_handshake(&conn, &capture_config).await?;
+    info!(
+        capabilities = ?session.capabilities,
+        video_codec = ?session.video_codec,
+        "handshake complete"
+    );
+
+    // Encode + send only when FFmpeg is available and codec was negotiated.
     #[cfg(feature = "encode")]
     {
         use pairwire_capture::EncodeThread;
-        let (encode_thread, packet_rx) =
-            EncodeThread::start(capture_config, frame_rx).context("failed to start encoder")?;
 
-        let conn = Arc::new(
-            transport
-                .accept()
-                .await
-                .context("accept failed")?
-                .ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?,
-        );
-        info!(peer = %conn.remote_id(), "guest connected");
+        if session.video_codec.is_none() {
+            warn!("no common video codec — not sending frames");
+        } else {
+            let (encode_thread, packet_rx) =
+                EncodeThread::start(capture_config, frame_rx).context("failed to start encoder")?;
 
-        let cursor_recv = CursorReceiver::new(Arc::clone(&conn));
-        let (cursor_handle, _) = cursor_recv.spawn();
+            let cursor_recv = CursorReceiver::new(Arc::clone(&conn));
+            let (cursor_handle, _) = cursor_recv.spawn();
 
-        let screen_sender = ScreenSender::new(Arc::clone(&conn));
-        let sender_handle = screen_sender.spawn(packet_rx);
+            let screen_sender = ScreenSender::new(Arc::clone(&conn));
+            let sender_handle = screen_sender.spawn(packet_rx);
 
-        conn.closed().await;
-        info!("guest disconnected");
+            conn.closed().await;
+            info!("guest disconnected");
 
-        sender_handle.stop().await;
-        cursor_handle.stop().await;
-        encode_thread.stop();
+            sender_handle.stop().await;
+            cursor_handle.stop().await;
+            encode_thread.stop();
+        }
     }
 
     #[cfg(not(feature = "encode"))]
     {
-        warn!("encode feature not enabled — accepting connection but not sending frames");
-        let conn = Arc::new(
-            transport
-                .accept()
-                .await
-                .context("accept failed")?
-                .ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?,
-        );
-        info!(peer = %conn.remote_id(), "guest connected (no-encode mode)");
+        warn!("encode feature not enabled — handshake done but not sending frames");
         conn.closed().await;
         info!("guest disconnected");
     }
@@ -101,7 +109,7 @@ pub async fn run_host(args: HostArgs) -> Result<()> {
     Ok(())
 }
 
-/// Run as guest: connect to host, receive and decode frames, forward to viewer.
+/// Run as guest: connect to host, handshake, receive and decode frames, forward to viewer.
 pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
@@ -109,6 +117,7 @@ pub async fn run_join(
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
     let _ = &frame_tx;
+
     let invite: pairwire_transport::InviteLink =
         args.invite_url.parse().context("invalid invite link")?;
 
@@ -124,6 +133,14 @@ pub async fn run_join(
     );
     info!(peer = %conn.remote_id(), "connected to host");
 
+    // Perform handshake before starting media.
+    let session = perform_guest_handshake(&conn).await?;
+    info!(
+        capabilities = ?session.capabilities,
+        video_codec = ?session.video_codec,
+        "handshake complete"
+    );
+
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
     #[cfg(feature = "encode")]
     let pkt_rx = _pkt_rx;
@@ -136,29 +153,36 @@ pub async fn run_join(
     let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(64);
     let cursor_send = CursorSender::new(Arc::clone(&conn));
     let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
-    // cursor_update_tx will be wired to mouse input in Phase 2; hold it here for now.
+    // cursor_update_tx will be wired to mouse input in P2.3; hold it here for now.
     let _cursor_update_tx = cursor_update_tx;
 
     #[cfg(feature = "encode")]
     {
         use pairwire_capture::DecodeThread;
-        let (decode_thread, mut decoded_rx) =
-            DecodeThread::start(pkt_rx).context("failed to start decoder")?;
 
-        tokio::spawn(async move {
-            while let Some(frame) = decoded_rx.recv().await {
-                let _ = frame_tx.send(Some(frame));
-            }
-        });
+        if session.video_codec.is_none() {
+            warn!("no common video codec — not decoding frames");
+            conn.closed().await;
+            info!("host disconnected");
+        } else {
+            let (decode_thread, mut decoded_rx) =
+                DecodeThread::start(pkt_rx).context("failed to start decoder")?;
 
-        conn.closed().await;
-        info!("host disconnected");
-        decode_thread.stop();
+            tokio::spawn(async move {
+                while let Some(frame) = decoded_rx.recv().await {
+                    let _ = frame_tx.send(Some(frame));
+                }
+            });
+
+            conn.closed().await;
+            info!("host disconnected");
+            decode_thread.stop();
+        }
     }
 
     #[cfg(not(feature = "encode"))]
     {
-        warn!("encode feature not enabled — connected but not decoding frames");
+        warn!("encode feature not enabled — handshake done but not decoding frames");
         conn.closed().await;
         info!("host disconnected");
     }
@@ -167,4 +191,64 @@ pub async fn run_join(
     cursor_send_handle.stop().await;
     transport.close().await;
     Ok(())
+}
+
+/// Open the control stream and perform the host-side handshake.
+async fn perform_host_handshake(
+    conn: &pairwire_transport::PairwireConnection,
+    config: &CaptureConfig,
+) -> Result<NegotiatedSession> {
+    let (send, recv) = conn
+        .open_control_stream()
+        .await
+        .context("failed to open control stream")?;
+
+    let local = local_handshake(
+        host_capabilities(),
+        config.width as u16,
+        config.height as u16,
+        100, // scale factor — real value from display API in Phase 3
+    );
+
+    let (_send, _recv, session) = host_handshake(send, recv, local)
+        .await
+        .context("handshake failed")?;
+
+    // _send/_recv kept for future heartbeat/control messages (P2.5)
+    Ok(session)
+}
+
+/// Accept the control stream and perform the guest-side handshake.
+async fn perform_guest_handshake(
+    conn: &pairwire_transport::PairwireConnection,
+) -> Result<NegotiatedSession> {
+    let (send, recv) = conn
+        .accept_bi()
+        .await
+        .context("failed to accept control stream")?
+        .ok_or_else(|| anyhow::anyhow!("connection closed before control stream"))?;
+
+    let local = local_handshake(
+        guest_capabilities(),
+        0, // guest doesn't share a display
+        0,
+        0,
+    );
+
+    let (_send, _recv, session) = guest_handshake(send, recv, local)
+        .await
+        .context("handshake failed")?;
+
+    Ok(session)
+}
+
+fn host_capabilities() -> Vec<Capability> {
+    #[cfg(feature = "encode")]
+    return vec![Capability::Screen, Capability::Audio];
+    #[cfg(not(feature = "encode"))]
+    return vec![Capability::Screen];
+}
+
+fn guest_capabilities() -> Vec<Capability> {
+    vec![Capability::Screen, Capability::RemoteControl]
 }
