@@ -76,7 +76,7 @@ fn playback_loop(
     stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     use cpal::{
-        SampleFormat, StreamConfig,
+        StreamConfig,
         traits::{DeviceTrait, HostTrait, StreamTrait},
     };
     use std::sync::Mutex;
@@ -86,12 +86,12 @@ fn playback_loop(
         .default_output_device()
         .ok_or_else(|| Error::Audio("no output device found".into()))?;
 
-    info!(device = %device.name().unwrap_or_default(), "audio playback device selected");
+    info!(device = %device.description().unwrap_or_default(), "audio playback device selected");
 
     #[allow(clippy::cast_possible_truncation)] // channels is always 1 or 2
     let stream_config = StreamConfig {
         channels: config.channels as u16,
-        sample_rate: cpal::SampleRate(config.sample_rate),
+        sample_rate: config.sample_rate,
         buffer_size: cpal::BufferSize::Default,
     };
 

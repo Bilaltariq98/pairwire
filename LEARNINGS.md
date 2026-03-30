@@ -1,4 +1,18 @@
-# LEARNINGS.md — Quirks, Gotchas, and Discovered Knowledge
+# LEARNINGS.md
+
+## cpal 0.17: SampleRate is a type alias, not a tuple struct
+
+`cpal::SampleRate` was a newtype tuple struct in older versions but is now a plain type alias for `u32` in 0.17. Constructing it with `cpal::SampleRate(value)` fails with E0423. Use the raw `u32` directly in `StreamConfig`:
+
+```rust
+// Wrong (pre-0.17):
+sample_rate: cpal::SampleRate(config.sample_rate),
+
+// Correct (0.17+):
+sample_rate: config.sample_rate,
+```
+
+Also: `DeviceTrait::name()` is deprecated in 0.17 — use `device.description()` instead. — Quirks, Gotchas, and Discovered Knowledge
 
 > Update this file whenever you discover something unexpected, hit a dead end, or find behavior that contradicts documentation. Future agents (and humans) will thank you.
 

@@ -18,8 +18,6 @@ use tracing::info;
 #[cfg(feature = "capture")]
 use tracing::warn;
 
-#[cfg(feature = "capture")]
-use crate::OPUS_SAMPLE_RATE;
 use crate::{OPUS_FRAME_SAMPLES, frame::AudioFrame};
 
 const CAPTURE_CHANNEL_CAPACITY: usize = 8;
@@ -46,7 +44,7 @@ impl AudioCaptureThread {
             .default_input_device()
             .ok_or_else(|| Error::Audio("no input device found".into()))?;
 
-        info!(device = %device.name().unwrap_or_default(), "audio capture device selected");
+        info!(device = %device.description().unwrap_or_default(), "audio capture device selected");
 
         let supported = device
             .default_input_config()
@@ -54,7 +52,7 @@ impl AudioCaptureThread {
 
         let stream_config = StreamConfig {
             channels: config.channels as u16,
-            sample_rate: cpal::SampleRate(config.sample_rate),
+            sample_rate: config.sample_rate,
             buffer_size: cpal::BufferSize::Default,
         };
 
