@@ -24,7 +24,7 @@ capture = ["dep:scap"]
 ffmpeg = ["dep:ffmpeg-next"]
 
 [dependencies.ffmpeg-next]
-version = "7"
+version = "8"
 optional = true
 default-features = false
 features = ["codec", "format", "software-scaling"]
