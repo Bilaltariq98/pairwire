@@ -290,7 +290,7 @@
 > **Docs**: `docs/02-moq-lite-vs-moq-transport.md`, `docs/05-concrete-architecture.md`
 
 ### P2.1: moq-lite Integration — Screen Track
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.10
 - **Description**: Replace the raw QUIC stream screen transport with moq-lite tracks. Each keyframe group becomes a moq-lite group.
 - **Deliverables**:
@@ -305,7 +305,7 @@
 - **Docs**: `docs/02-moq-lite-vs-moq-transport.md`
 
 ### P2.2: Session Handshake & Capability Negotiation
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.2, P0.3
 - **Description**: Implement the control stream handshake. Peers exchange capabilities, display info, and supported codecs before starting media.
 - **Deliverables**:
@@ -321,7 +321,7 @@
   - `just all` passes
 
 ### P2.3: Keyboard & Mouse Input Forwarding
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P2.2
 - **Description**: Implement remote control in `crates/input`. Guest sends keyboard and mouse events; host injects them into the OS.
 - **Deliverables**:
@@ -338,7 +338,7 @@
 - **Docs**: `docs/05-concrete-architecture.md` (remote control protocol section)
 
 ### P2.4: Clipboard Sync
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P2.2
 - **Description**: Bidirectional clipboard synchronization between peers.
 - **Deliverables**:
@@ -352,7 +352,7 @@
   - `just all` passes
 
 ### P2.5: Quality Adaptation
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P2.1
 - **Description**: Monitor QUIC connection stats and adapt screen quality dynamically.
 - **Deliverables**:
@@ -370,7 +370,7 @@
 - **Docs**: `docs/05-concrete-architecture.md` (degradation handling)
 
 ### P2.6: Skip Static Frames Optimization
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.4
 - **Description**: Detect when the screen hasn't changed and skip encoding entirely.
 - **Deliverables**:

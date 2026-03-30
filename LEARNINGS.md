@@ -28,6 +28,29 @@ Each entry should include:
   ```
   Add both to `~/.zshrc` to make them permanent. `CPATH` does NOT work — bindgen invokes clang directly and ignores `CPATH`. The correct variable is `BINDGEN_EXTRA_CLANG_ARGS`.
 
+### 2026-03-30 — web-transport-iroh is pinned to iroh 0.96, not 0.97
+- **Area**: moq-lite, iroh, web-transport
+- **What**: `web-transport-iroh 0.2.2` requires `iroh ^0.96.1`. We use iroh 0.97. The `Connection` types are from different crate versions and are incompatible — `WtSession::raw(conn)` fails with a type mismatch.
+- **Resolution**: Implement `web_transport_trait::Session` directly on our `PairwireConnection` in `crates/transport/src/wt_session.rs`. The trait is small (~6 async methods) and iroh 0.97's stream types satisfy all of them. Drop `web-transport-iroh` from deps entirely; add `web-transport-trait = "0.3"` directly.
+- **Note**: If `web-transport-iroh` releases a 0.3.x targeting iroh 0.97+, we can switch back and delete `wt_session.rs`.
+
+### 2026-03-30 — moq-lite OriginProducer/BroadcastProducer API
+- **Area**: moq-lite 0.15
+- **What**: The API is not what the docs imply. Key correct patterns:
+  - `BroadcastProducer::create_track(Track { name, priority })` — not `insert_track`
+  - `origin.publish_broadcast(path, broadcast.consume())` — not `origin.publish(...)`
+  - `BroadcastConsumer::subscribe_track(&Track { .. })` — direct, no async wait
+  - `origin.consume().announced().await` — returns `Option<(path, Option<BroadcastConsumer>)>`
+  - `TrackProducer::append_group()` / `GroupProducer::write_frame(bytes)` / `GroupProducer::finish()`
+  - `TrackConsumer::next_group()` / `GroupConsumer::next_frame()` / `FrameConsumer::read_all()`
+  - `TrackProducer::latest()` is on `TrackConsumer`, not `TrackProducer`
+
+### 2026-03-30 — iroh 0.97 PathId is private; use PathWatcher for RTT
+- **Area**: iroh, quality adaptation
+- **What**: `conn.rtt(PathId)` requires constructing `PathId`, which is a private tuple struct in `noq-proto`. Cannot be used from outside the crate.
+- **Resolution**: Use `conn.paths().get()` which returns `PathInfoList`. Iterate with `list.iter()` (yields `&PathInfo`), then call `path_info.rtt()` which returns `Option<Duration>`. Requires `use n0_watcher::Watcher` for the `.get()` method.
+- **Loss proxy**: `ConnectionStats` has no `lost_packets` field at the connection level. Use `frame_tx.reset_stream / (frame_tx.stream + frame_tx.reset_stream)` as a congestion proxy.
+
 ### 2026-03-30 — FFmpeg context must be allocated with codec pointer
 - **Area**: ffmpeg-next, capture
 - **What**: `codec::context::Context::new()` calls `avcodec_alloc_context3(null)`, which leaves `codec_type = AVMEDIA_TYPE_UNKNOWN`. libx264 (and other encoders) reject this with "Generic error in an external library".
