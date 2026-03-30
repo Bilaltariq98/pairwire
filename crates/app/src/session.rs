@@ -30,7 +30,13 @@ use tracing::{info, warn};
 use crate::cli::{HostArgs, JoinArgs};
 
 /// Run as host: capture screen, accept one connection, handshake, stream frames.
-pub async fn run_host(args: HostArgs) -> Result<()> {
+///
+/// `invite_tx` receives the invite URL as soon as it is generated, before the
+/// blocking `accept()` call. Pass `None` if you don't need the URL out-of-band.
+pub async fn run_host(
+    args: HostArgs,
+    invite_tx: Option<tokio::sync::oneshot::Sender<String>>,
+) -> Result<()> {
     let transport = Transport::bind()
         .await
         .context("failed to bind iroh endpoint")?;
@@ -43,6 +49,11 @@ pub async fn run_host(args: HostArgs) -> Result<()> {
 
     println!("\n  Invite link:\n\n    {invite}\n");
     println!("  Waiting for guest to connect…\n");
+
+    if let Some(tx) = invite_tx {
+        // Ignore send error — receiver may have been dropped (e.g., no tray feature).
+        let _ = tx.send(invite.to_string());
+    }
 
     let capture_config = CaptureConfig {
         fps: args.fps,

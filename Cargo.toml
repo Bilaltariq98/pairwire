@@ -51,6 +51,12 @@ eframe = { version = "0.31", default-features = false, features = ["wgpu", "defa
 # Base32 encoding for endpoint IDs in invite links
 data-encoding = "2"
 
+# Clipboard access
+arboard = "3"
+
+# System tray / menu bar
+tray-icon = { version = "0.21", features = ["common-controls-v6"] }
+
 # Internal crates
 pairwire-core = { path = "crates/core" }
 pairwire-protocol = { path = "crates/protocol" }
