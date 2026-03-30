@@ -5,6 +5,7 @@ pub mod cursor;
 pub mod handshake;
 pub mod invite;
 pub mod moq_screen;
+pub mod quality;
 pub mod screen;
 pub mod transport;
 pub mod wt_session;
@@ -16,6 +17,7 @@ pub use invite::InviteLink;
 pub use moq_screen::{
     MoqScreenPublisher, MoqScreenPublisherHandle, MoqScreenSubscriber, MoqScreenSubscriberHandle,
 };
+pub use quality::{ConnectionHealth, QualityMonitor, QualityMonitorHandle, QualityTier};
 pub use screen::{ReceiverHandle, ScreenReceiver, ScreenSender, SenderHandle};
 pub use transport::Transport;
 

@@ -19,6 +19,7 @@ data-encoding.workspace = true
 pairwire-capture = { path = "../capture" }
 moq-lite = "0.15"
 web-transport-trait = "0.3"
+n0-watcher = "0.6"
 
 [dev-dependencies]
 rand = "0.9"
