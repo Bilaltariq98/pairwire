@@ -12,7 +12,8 @@ sample_rate: cpal::SampleRate(config.sample_rate),
 sample_rate: config.sample_rate,
 ```
 
-Also: `DeviceTrait::name()` is deprecated in 0.17 — use `device.description()` instead. — Quirks, Gotchas, and Discovered Knowledge
+Also: `DeviceTrait::name()` is deprecated in 0.17 — use `device.description()` instead.
+`description()` returns `Result<DeviceDescription, _>`, not `Result<String, _>`. `DeviceDescription` does not implement `Default`, so `.unwrap_or_default()` won't compile. Use `.map(|d| d.name).unwrap_or_default()` to get the name string. — Quirks, Gotchas, and Discovered Knowledge
 
 > Update this file whenever you discover something unexpected, hit a dead end, or find behavior that contradicts documentation. Future agents (and humans) will thank you.
 
