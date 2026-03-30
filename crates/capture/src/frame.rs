@@ -23,12 +23,18 @@ impl RawFrame {
 /// An H.264-encoded packet (one or more NAL units).
 #[derive(Debug, Clone)]
 pub struct EncodedPacket {
-    /// NAL unit data.
+    /// NAL unit data. Empty when `is_keepalive` is true.
     pub data: Bytes,
     /// Presentation timestamp in microseconds.
     pub timestamp_us: u64,
     /// Whether this packet starts a new keyframe group (IDR).
     pub is_keyframe: bool,
+    /// Keepalive signal: content is static, no new frame to decode.
+    ///
+    /// Sent after `CaptureConfig::keepalive_after_frames` consecutive static frames.
+    /// The receiver should not pass this to the decoder but should reset its
+    /// inactivity timer to avoid displaying a stale "connection lost" indicator.
+    pub is_keepalive: bool,
 }
 
 /// A decoded frame ready for GPU upload and display.

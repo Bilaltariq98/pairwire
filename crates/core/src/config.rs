@@ -34,6 +34,11 @@ pub struct CaptureConfig {
     pub preferred_encoder: VideoEncoder,
     /// Keyframe interval in seconds.
     pub keyframe_interval_secs: u32,
+    /// Send a keepalive packet after this many consecutive static (unchanged) frames.
+    ///
+    /// Keeps the receiver's inactivity timer alive without sending real video data.
+    /// Set to 0 to disable keepalives (not recommended).
+    pub keepalive_after_frames: u32,
 }
 
 impl Default for CaptureConfig {
@@ -44,6 +49,7 @@ impl Default for CaptureConfig {
             height: 1080,
             preferred_encoder: VideoEncoder::H264VideoToolbox,
             keyframe_interval_secs: 2,
+            keepalive_after_frames: 60, // 2 seconds at 30fps
         }
     }
 }

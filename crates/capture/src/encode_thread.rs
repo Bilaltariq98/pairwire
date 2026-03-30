@@ -106,8 +106,10 @@ mod inner {
         .map_err(|e| Error::Encode(format!("scaler init: {e}")))?;
 
         let keyframe_interval = config.keyframe_interval_secs * config.fps;
+        let keepalive_after = config.keepalive_after_frames;
         let mut frame_index: u64 = 0;
         let mut last_hash: Option<u64> = None;
+        let mut static_frame_count: u32 = 0;
 
         info!(
             width = config.width,
@@ -128,10 +130,27 @@ mod inner {
 
             let hash = hash_frame(&raw.data);
             if last_hash == Some(hash) {
-                debug!("static frame, skipping");
+                static_frame_count += 1;
+                // Send a keepalive after N consecutive static frames so the
+                // receiver knows the stream is alive even with no new content.
+                if keepalive_after > 0 && static_frame_count % keepalive_after == 0 {
+                    debug!(static_frame_count, "sending keepalive");
+                    let keepalive = EncodedPacket {
+                        data: Bytes::new(),
+                        timestamp_us: raw.timestamp_us,
+                        is_keyframe: false,
+                        is_keepalive: true,
+                    };
+                    if tx.blocking_send(keepalive).is_err() {
+                        return Ok(());
+                    }
+                } else {
+                    debug!("static frame, skipping");
+                }
                 continue;
             }
             last_hash = Some(hash);
+            static_frame_count = 0;
 
             let mut src = frame::Video::new(Pixel::BGRA, config.width, config.height);
             fill_bgra_frame(&mut src, &raw.data, config.width, config.height);
@@ -160,6 +179,7 @@ mod inner {
                             data: Bytes::copy_from_slice(pkt.data().unwrap_or(&[])),
                             timestamp_us: raw.timestamp_us,
                             is_keyframe: pkt.is_key(),
+                            is_keepalive: false,
                         };
                         // blocking_send is safe from OS threads (no runtime needed)
                         if tx.blocking_send(ep).is_err() {

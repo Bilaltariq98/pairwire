@@ -111,6 +111,14 @@ async fn publish_loop(
             pkt = packet_rx.recv() => {
                 let Some(pkt) = pkt else { break };
 
+                // Keepalives carry no video data — skip encoding but don't
+                // open a new group. The receiver's inactivity timer is reset
+                // by the fact that the QUIC connection remains active.
+                if pkt.is_keepalive {
+                    debug!("keepalive received, not opening new group");
+                    continue;
+                }
+
                 // Start a new group on each keyframe.
                 if pkt.is_keyframe || current_group.is_none() {
                     if let Some(mut g) = current_group.take() {
@@ -272,6 +280,7 @@ async fn drain_group(
                         data,
                         timestamp_us: 0,
                         is_keyframe: first,
+                        is_keepalive: false,
                     };
                     first = false;
                     if pkt_tx.try_send(pkt).is_err() {

@@ -68,6 +68,12 @@ impl ScreenSender {
                     None => break,
                 };
 
+                // Keepalives carry no video data — skip without opening a stream.
+                if pkt.is_keepalive {
+                    debug!("keepalive, no stream action");
+                    continue;
+                }
+
                 // Keyframe: close current stream, open a new one
                 if pkt.is_keyframe || current_stream.is_none() {
                     if let Some(mut s) = current_stream.take() {
@@ -249,6 +255,7 @@ async fn drain_stream(
             data: Bytes::from(data),
             timestamp_us: header.timestamp_us,
             is_keyframe: header.flags.keyframe,
+            is_keepalive: false,
         };
 
         // try_send: drop if decode thread is behind (prefer latest)
