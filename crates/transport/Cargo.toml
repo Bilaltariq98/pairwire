@@ -16,6 +16,7 @@ tracing.workspace = true
 hex = "0.4"
 iroh.workspace = true
 data-encoding.workspace = true
+pairwire-capture = { path = "../capture" }
 
 [dev-dependencies]
 rand = "0.9"

@@ -204,7 +204,7 @@
 - **Docs**: `docs/04-screen-capture-encode-pipeline.md`
 
 ### P1.6: Network Sender — Screen Frames Over QUIC
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.2, P1.4
 - **Description**: Send encoded screen frames over a reliable QUIC stream to the remote peer. Each keyframe starts a new stream (mimicking moq-lite's group model for easy migration later).
 - **Deliverables**:
@@ -219,7 +219,7 @@
 - **Docs**: `docs/03-quic-transport-primitives.md`, `docs/05-concrete-architecture.md`
 
 ### P1.7: Network Receiver — Screen Frames
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.6, P1.5
 - **Description**: Receive screen frames from remote peer and feed to decoder.
 - **Deliverables**:
@@ -231,7 +231,7 @@
   - `just all` passes
 
 ### P1.8: Cursor Sharing via Datagrams
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.2
 - **Description**: Send and receive cursor position updates via QUIC datagrams.
 - **Deliverables**:

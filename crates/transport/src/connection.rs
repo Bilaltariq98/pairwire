@@ -119,6 +119,24 @@ impl PairwireConnection {
         from_bytes(&bytes).map_err(|e| Error::Serialization(format!("cursor deserialize: {e}")))
     }
 
+    /// Open a unidirectional stream for screen frame data (priority 3 — lowest).
+    ///
+    /// Each keyframe group gets its own stream. The receiver abandons old streams
+    /// when a new one arrives (drop-old-groups policy).
+    pub async fn open_screen_stream(&self) -> Result<SendStream> {
+        let send = self
+            .conn
+            .open_uni()
+            .await
+            .map_err(|e| Error::Transport(format!("open_screen_stream failed: {e}")))?;
+        Ok(send)
+    }
+
+    /// Accept an incoming screen stream (unidirectional, from the host).
+    pub async fn accept_screen_stream(&self) -> Result<Option<RecvStream>> {
+        self.accept_uni().await
+    }
+
     /// Close the connection with a reason code.
     pub fn close(&self, code: u32, reason: &[u8]) {
         self.conn.close(code.into(), reason);

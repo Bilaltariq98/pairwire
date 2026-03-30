@@ -2749,6 +2749,7 @@ dependencies = [
  "data-encoding",
  "hex",
  "iroh",
+ "pairwire-capture",
  "pairwire-core",
  "pairwire-protocol",
  "postcard",

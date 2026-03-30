@@ -1,20 +1,15 @@
 //! iroh P2P connectivity layer for pairwire.
-//!
-//! Wraps iroh's `Endpoint` to provide:
-//! - Invite link generation and parsing
-//! - Typed QUIC stream helpers (control, input, screen)
-//! - Cursor datagram send/receive
-//! - Connection lifecycle management
-//!
-//! The iroh `Endpoint` is a singleton — create exactly one per process.
-//! All network I/O is async on the tokio runtime.
 
 pub mod connection;
+pub mod cursor;
 pub mod invite;
+pub mod screen;
 pub mod transport;
 
 pub use connection::PairwireConnection;
+pub use cursor::{CursorReceiver, CursorReceiverHandle, CursorSender, CursorSenderHandle};
 pub use invite::InviteLink;
+pub use screen::{ReceiverHandle, ScreenReceiver, ScreenSender, SenderHandle};
 pub use transport::Transport;
 
 /// ALPN protocol identifier for pairwire connections.

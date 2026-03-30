@@ -40,22 +40,21 @@
 - **Tests**: encode_decode_round_trip (full pipeline: fake capture → encode → decode)
 
 ### P1.6 — Network Sender (Screen Frames)
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/transport`
-- **Key deliverables**: `ScreenSender`, keyframe-per-stream model, priority 3
-- **Depends on**: P1.2, P1.4
+- **Key deliverables**: `ScreenSender::spawn()` — tokio task, new stream per keyframe, `SenderHandle`
+- **Protocol**: `ScreenFrameHeader` (postcard, length-prefixed) + raw NAL bytes (4-byte LE length prefix)
 
 ### P1.7 — Network Receiver (Screen Frames)
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/transport`
-- **Key deliverables**: `ScreenReceiver`, stream multiplexing, drop-old-groups
-- **Depends on**: P1.6, P1.5
+- **Key deliverables**: `ScreenReceiver::spawn()` — accepts streams, spawns per-stream drain tasks, drop-old-groups via `try_send`, `ReceiverHandle`
 
 ### P1.8 — Cursor Sharing via Datagrams
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/transport`
-- **Key deliverables**: `CursorSender` (60Hz), `CursorReceiver` (atomic latest position)
-- **Depends on**: P1.2
+- **Key deliverables**: `CursorSender::spawn()` (fires datagrams from mpsc channel), `CursorReceiver::spawn()` (exposes `watch::Receiver<Option<CursorUpdate>>`)
+- **Tests**: cursor_update_serializes_under_mtu
 
 ### P1.9 — Basic Viewer UI
 - **Status**: 🔲 Not started
