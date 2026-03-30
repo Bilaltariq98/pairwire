@@ -107,6 +107,9 @@ mod inner {
 
         let mut scaler: Option<scaling::Context> = None;
         let mut decoded = frame::Video::empty();
+        // Discard delta frames until the first keyframe arrives so the decoder
+        // always starts from a clean state.
+        let mut waiting_for_keyframe = true;
 
         info!("decode thread started");
 
@@ -120,13 +123,25 @@ mod inner {
                 Err(_) => break,
             };
 
+            // Wait for a keyframe before feeding anything to the decoder.
+            if waiting_for_keyframe {
+                if !pkt.is_keyframe {
+                    debug!("waiting for keyframe, dropping delta");
+                    continue;
+                }
+                waiting_for_keyframe = false;
+            }
+
             let mut ff_pkt = ffmpeg_next::Packet::copy(&pkt.data);
             ff_pkt.set_pts(Some(pkt.timestamp_us as i64));
             ff_pkt.set_dts(Some(pkt.timestamp_us as i64));
 
-            decoder
-                .send_packet(&ff_pkt)
-                .map_err(|e| Error::Decode(format!("send_packet: {e}")))?;
+            if let Err(e) = decoder.send_packet(&ff_pkt) {
+                // Corrupted or out-of-order packet — request a fresh keyframe.
+                warn!(error = %e, "send_packet failed, waiting for next keyframe");
+                waiting_for_keyframe = true;
+                continue;
+            }
 
             loop {
                 match decoder.receive_frame(&mut decoded) {
