@@ -22,7 +22,7 @@ use pairwire_protocol::{Capability, CursorUpdate};
 use pairwire_transport::{CursorReceiver, ScreenSender};
 use pairwire_transport::{
     CursorSender, MoqAudioPublisher, MoqAudioSubscriber, NegotiatedSession, ScreenReceiver,
-    Transport, guest_handshake, host_handshake, local_handshake,
+    Transport, guest_handshake, host_handshake, local_handshake, stream_router::UniStreamRouter,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -177,11 +177,15 @@ pub async fn run_join(
         "handshake complete"
     );
 
+    // Start the uni-stream router that demuxes screen vs moq-lite streams.
+    // Screen streams are tagged with 0x53; everything else goes to moq-lite.
+    let (screen_router, non_screen_router) = UniStreamRouter::start(conn.raw_conn().clone());
+
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
     #[cfg(feature = "encode")]
     let pkt_rx = _pkt_rx;
 
-    let screen_recv = ScreenReceiver::new(Arc::clone(&conn));
+    let screen_recv = ScreenReceiver::new(screen_router);
     let recv_handle = screen_recv.spawn(pkt_tx);
 
     // Keep cursor_update_tx alive for the duration of the session.
@@ -194,7 +198,8 @@ pub async fn run_join(
     let audio_handles = if session.has_capability(&pairwire_protocol::Capability::Audio) {
         let audio_config = AudioConfig::default();
         let (audio_pkt_tx, audio_pkt_rx) = tokio::sync::mpsc::channel(32);
-        let audio_sub = MoqAudioSubscriber::new(Arc::clone(&conn));
+        let audio_sub =
+            MoqAudioSubscriber::with_router(Arc::clone(&conn), non_screen_router.clone());
         let audio_sub_handle = audio_sub.spawn(audio_pkt_tx);
         let (audio_decode, audio_frame_rx) =
             AudioDecodeThread::start(audio_config.clone(), audio_pkt_rx)

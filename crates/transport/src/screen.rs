@@ -20,9 +20,11 @@ use pairwire_core::{Error, Result};
 use pairwire_protocol::ScreenFrameHeader;
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::connection::{PairwireConnection, send_message};
+use crate::stream_router::{SCREEN_STREAM_TAG, UniStreamRouter};
 
 /// Sends encoded H.264 packets over QUIC streams to a remote peer.
 ///
@@ -82,7 +84,13 @@ impl ScreenSender {
                     }
 
                     match conn.open_screen_stream().await {
-                        Ok(s) => {
+                        Ok(mut s) => {
+                            // Write the stream type tag so the receiver's router
+                            // can distinguish screen streams from moq-lite streams.
+                            if let Err(e) = s.write_all(&[SCREEN_STREAM_TAG]).await {
+                                warn!(error = %e, "failed to write screen stream tag");
+                                break;
+                            }
                             debug!("opened new screen stream for keyframe");
                             current_stream = Some(s);
                         }
@@ -150,18 +158,19 @@ impl SenderHandle {
 
 /// Receives screen frames from a remote peer over QUIC streams.
 ///
-/// Accepts incoming unidirectional streams. Each new stream is a new keyframe group.
-/// When a new stream arrives, the previous one is abandoned (drop-old-groups policy).
+/// Accepts incoming unidirectional streams via the `UniStreamRouter`.
+/// Each new stream is a new keyframe group. When a new stream arrives,
+/// the previous drain task is cancelled (drop-old-groups policy).
 pub struct ScreenReceiver {
-    conn: Arc<PairwireConnection>,
+    router: UniStreamRouter,
     stop: Arc<AtomicBool>,
 }
 
 impl ScreenReceiver {
     #[must_use]
-    pub fn new(conn: Arc<PairwireConnection>) -> Self {
+    pub fn new(router: UniStreamRouter) -> Self {
         Self {
-            conn,
+            router,
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -171,44 +180,56 @@ impl ScreenReceiver {
     /// Sends `EncodedPacket` to `packet_tx` for the decode thread.
     #[must_use]
     pub fn spawn(
-        self,
+        mut self,
         packet_tx: std::sync::mpsc::SyncSender<pairwire_capture::EncodedPacket>,
     ) -> ReceiverHandle {
         let stop = Arc::clone(&self.stop);
         let stop_task = Arc::clone(&stop);
-        let conn = Arc::clone(&self.conn);
 
         let handle = tokio::spawn(async move {
             let stop = stop_task;
             info!("screen receiver started");
+
+            // Cancellation token for the current drain task.
+            // Replaced each time a new keyframe stream arrives.
+            let mut drain_cancel = CancellationToken::new();
 
             loop {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
 
-                // Accept the next incoming stream (each = new keyframe group)
-                let stream = match conn.accept_screen_stream().await {
-                    Ok(Some(s)) => s,
-                    Ok(None) => break,
-                    Err(e) => {
-                        warn!(error = %e, "accept_screen_stream error");
-                        break;
-                    }
+                // Accept the next screen stream from the router (tag already consumed).
+                let Some(stream) = self.router.accept_screen().await else {
+                    break;
                 };
 
                 debug!("accepted new screen stream");
 
-                // Drain this stream in a separate task so we can accept the next one
+                // Cancel the previous drain task so packets from old
+                // keyframe groups don't interleave with the new one.
+                drain_cancel.cancel();
+                drain_cancel = CancellationToken::new();
+
                 let tx = packet_tx.clone();
-                let stop2 = Arc::clone(&stop);
+                let cancel = drain_cancel.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = drain_stream(stream, tx, stop2).await {
-                        debug!(error = %e, "screen stream ended");
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => {
+                            debug!("drain_stream cancelled (new keyframe group)");
+                        }
+                        result = drain_stream(stream, tx) => {
+                            if let Err(e) = result {
+                                debug!(error = %e, "screen stream ended");
+                            }
+                        }
                     }
                 });
             }
 
+            // Cancel any remaining drain task.
+            drain_cancel.cancel();
             info!("screen receiver stopped");
         });
 
@@ -219,16 +240,11 @@ impl ScreenReceiver {
 async fn drain_stream(
     mut stream: iroh::endpoint::RecvStream,
     tx: std::sync::mpsc::SyncSender<pairwire_capture::EncodedPacket>,
-    stop: Arc<AtomicBool>,
 ) -> Result<()> {
     use crate::connection::recv_message;
     use pairwire_capture::EncodedPacket;
 
     loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-
         // Read header
         let header: ScreenFrameHeader = match recv_message(&mut stream).await {
             Ok(h) => h,

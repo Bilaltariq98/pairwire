@@ -8,6 +8,7 @@ pub mod moq_audio;
 pub mod moq_screen;
 pub mod quality;
 pub mod screen;
+pub mod stream_router;
 pub mod transport;
 pub mod wt_session;
 
@@ -23,6 +24,7 @@ pub use moq_screen::{
 };
 pub use quality::{ConnectionHealth, QualityMonitor, QualityMonitorHandle, QualityTier};
 pub use screen::{ReceiverHandle, ScreenReceiver, ScreenSender, SenderHandle};
+pub use stream_router::{NonScreenReceiver, UniStreamRouter};
 pub use transport::Transport;
 
 /// ALPN protocol identifier for pairwire connections.

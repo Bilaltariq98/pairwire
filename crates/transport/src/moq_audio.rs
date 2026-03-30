@@ -17,7 +17,9 @@ use tokio::{
 };
 use tracing::{debug, info, instrument, warn};
 
-use crate::{connection::PairwireConnection, wt_session::IrohWtSession};
+use crate::{
+    connection::PairwireConnection, stream_router::NonScreenReceiver, wt_session::IrohWtSession,
+};
 
 /// Name of the audio track within the broadcast.
 pub const AUDIO_TRACK_NAME: &str = "audio";
@@ -136,19 +138,36 @@ impl MoqAudioSubscriberHandle {
 /// Subscribes to the host's audio track and feeds packets to the decode channel.
 pub struct MoqAudioSubscriber {
     conn: Arc<PairwireConnection>,
+    /// On the guest side, the stream router ensures moq-lite only gets
+    /// non-screen uni streams. `None` on the host side (no conflict).
+    non_screen_rx: Option<NonScreenReceiver>,
 }
 
 impl MoqAudioSubscriber {
     #[must_use]
     pub fn new(conn: Arc<PairwireConnection>) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            non_screen_rx: None,
+        }
+    }
+
+    /// Create a subscriber that reads uni streams via the stream router.
+    #[must_use]
+    pub fn with_router(conn: Arc<PairwireConnection>, router: NonScreenReceiver) -> Self {
+        Self {
+            conn,
+            non_screen_rx: Some(router),
+        }
     }
 
     #[instrument(skip(self, pkt_tx))]
     pub fn spawn(self, pkt_tx: mpsc::Sender<OpusPacket>) -> MoqAudioSubscriberHandle {
         let (stop_tx, stop_rx) = oneshot::channel();
         let join = tokio::spawn(async move {
-            if let Err(e) = audio_subscribe_loop(self.conn, pkt_tx, stop_rx).await {
+            if let Err(e) =
+                audio_subscribe_loop(self.conn, self.non_screen_rx, pkt_tx, stop_rx).await
+            {
                 warn!(error = %e, "moq audio subscriber error");
             }
             info!("moq audio subscriber stopped");
@@ -159,10 +178,14 @@ impl MoqAudioSubscriber {
 
 async fn audio_subscribe_loop(
     conn: Arc<PairwireConnection>,
+    non_screen_rx: Option<NonScreenReceiver>,
     pkt_tx: mpsc::Sender<OpusPacket>,
     mut stop_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let wt = IrohWtSession::new(conn.raw_conn().clone());
+    let wt = match non_screen_rx {
+        Some(router) => IrohWtSession::with_router(conn.raw_conn().clone(), router),
+        None => IrohWtSession::new(conn.raw_conn().clone()),
+    };
     let origin = OriginProducer::new();
 
     let _session = Client::new()

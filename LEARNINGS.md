@@ -134,6 +134,23 @@ Each entry should include:
 - **What**: QUIC datagrams are limited to path MTU minus overhead, typically ~1200 bytes. No fragmentation — if your payload exceeds this, it's your problem.
 - **Resolution**: Keep datagram payloads small. Cursor updates (~50 bytes) and heartbeats are fine. Anything larger must use streams.
 
+### 2026-03-30 — QUIC uni stream multiplexing: moq-lite and raw streams conflict
+- **Area**: transport, moq-lite, screen
+- **What**: moq-lite (for audio) and our raw screen transport both call `accept_uni()` on the same iroh connection. They steal each other's streams — moq-lite grabs screen streams and resets them ("sending stopped by peer"), while the screen receiver grabs moq-lite streams and fails to parse them. Result: garbled video and most frames dropped.
+- **Resolution**: Added a `UniStreamRouter` that reads a 1-byte type tag from each incoming uni stream. Screen streams are tagged with `0x53` ('S'). The router forwards tagged streams to `ScreenReceiver` and everything else to moq-lite via a `NonScreenReceiver` channel. The consumed tag byte is prepended back to moq-lite streams via `WtRecvStream::with_prefix`.
+- **Key insight**: Any time two protocols share a QUIC connection, you MUST demux incoming streams. QUIC `accept_uni()` is first-come-first-served with no type discrimination.
+
+### 2026-03-30 — scap captures at Retina resolution, not logical resolution
+- **Area**: scap, capture, ffmpeg
+- **What**: With `Resolution::Captured`, scap captures at the native pixel resolution of the display. On a Retina MacBook, this is 2x the logical resolution (e.g., 3024x1964 instead of 1512x982). If the encoder is initialized with a fixed 1920x1080 and `fill_bgra_frame` reads the capture data assuming 1920-wide rows, the row stride mismatch causes severe horizontal garbling.
+- **Resolution**: Defer scaler initialization until the first frame arrives. Use the actual frame dimensions (`raw.width`/`raw.height`) as the scaler input, and the config dimensions as the output. FFmpeg's `sws_scale` handles the resize + colorspace conversion in one step.
+- **Key insight**: Never assume capture dimensions match config dimensions. Always adapt to the actual frame.
+
+### 2026-03-30 — scap sends empty frames on idle status
+- **Area**: scap, capture
+- **What**: When macOS ScreenCaptureKit reports frame status=1 (idle/no new content), scap sends a `BGRAFrame { width: 0, height: 0, data: vec![] }`. If not filtered, this causes a panic in the encode thread (`range end index 7680 out of range for slice of length 0`).
+- **Resolution**: Filter out frames with `width == 0 || height == 0 || data.is_empty()` in `video_frame_to_raw()`.
+
 ### 2026-03-30 — postcard is not self-describing
 - **Area**: protocol
 - **What**: `postcard` serialization format does not include type information. Both sides must have exactly the same type definition to deserialize correctly.

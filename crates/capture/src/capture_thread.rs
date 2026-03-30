@@ -219,13 +219,23 @@ fn video_frame_to_raw(frame: scap::frame::VideoFrame) -> Option<RawFrame> {
         .as_micros() as u64;
 
     match frame {
-        VideoFrame::BGRA(f) => Some(RawFrame {
-            data: Bytes::from(f.data),
-            width: f.width as u32,
-            height: f.height as u32,
-            timestamp_us: now_us,
-        }),
+        VideoFrame::BGRA(f) => {
+            if f.width == 0 || f.height == 0 || f.data.is_empty() {
+                debug!("empty BGRA frame (idle status), dropping");
+                return None;
+            }
+            Some(RawFrame {
+                data: Bytes::from(f.data),
+                width: f.width as u32,
+                height: f.height as u32,
+                timestamp_us: now_us,
+            })
+        }
         VideoFrame::BGR0(f) => {
+            if f.width == 0 || f.height == 0 || f.data.is_empty() {
+                debug!("empty BGR0 frame (idle status), dropping");
+                return None;
+            }
             let mut bgra = Vec::with_capacity(f.data.len());
             for chunk in f.data.chunks_exact(4) {
                 bgra.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);

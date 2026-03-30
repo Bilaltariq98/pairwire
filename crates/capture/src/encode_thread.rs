@@ -94,16 +94,13 @@ mod inner {
         ffmpeg_next::init().map_err(|e| Error::Encode(format!("ffmpeg init: {e}")))?;
 
         let mut encoder = open_encoder(config)?;
-        let mut scaler = scaling::Context::get(
-            Pixel::BGRA,
-            config.width,
-            config.height,
-            Pixel::YUV420P,
-            config.width,
-            config.height,
-            Flags::BILINEAR,
-        )
-        .map_err(|e| Error::Encode(format!("scaler init: {e}")))?;
+
+        // Scaler and source dimensions are initialized on the first frame
+        // because scap may capture at a different resolution than config
+        // (e.g., Retina 2x). The scaler handles resize + colorspace conversion.
+        let mut scaler: Option<scaling::Context> = None;
+        let mut src_width: u32 = 0;
+        let mut src_height: u32 = 0;
 
         let keyframe_interval = config.keyframe_interval_secs * config.fps;
         let keepalive_after = config.keepalive_after_frames;
@@ -127,6 +124,33 @@ mod inner {
                 Ok(f) => f,
                 Err(_) => break,
             };
+
+            // Initialize or reinitialize the scaler when capture dimensions change.
+            if scaler.is_none() || raw.width != src_width || raw.height != src_height {
+                src_width = raw.width;
+                src_height = raw.height;
+                if src_width != config.width || src_height != config.height {
+                    info!(
+                        src_width,
+                        src_height,
+                        enc_width = config.width,
+                        enc_height = config.height,
+                        "capture resolution differs from encoder, scaler will resize"
+                    );
+                }
+                scaler = Some(
+                    scaling::Context::get(
+                        Pixel::BGRA,
+                        src_width,
+                        src_height,
+                        Pixel::YUV420P,
+                        config.width,
+                        config.height,
+                        Flags::BILINEAR,
+                    )
+                    .map_err(|e| Error::Encode(format!("scaler init: {e}")))?,
+                );
+            }
 
             let hash = hash_frame(&raw.data);
             if last_hash == Some(hash) {
@@ -152,11 +176,15 @@ mod inner {
             last_hash = Some(hash);
             static_frame_count = 0;
 
-            let mut src = frame::Video::new(Pixel::BGRA, config.width, config.height);
-            fill_bgra_frame(&mut src, &raw.data, config.width, config.height);
+            // Create source frame at the actual capture resolution.
+            let mut src = frame::Video::new(Pixel::BGRA, src_width, src_height);
+            fill_bgra_frame(&mut src, &raw.data, src_width, src_height);
 
+            // Scale (and resize if needed) to the encoder's output resolution.
             let mut yuv = frame::Video::new(Pixel::YUV420P, config.width, config.height);
             scaler
+                .as_mut()
+                .unwrap()
                 .run(&src, &mut yuv)
                 .map_err(|e| Error::Encode(format!("scale: {e}")))?;
 
