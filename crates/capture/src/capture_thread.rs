@@ -45,9 +45,15 @@ impl CaptureThread {
             ));
         }
         if !scap::has_permission() {
-            return Err(Error::Capture(
-                "screen capture permission not granted".into(),
-            ));
+            // Trigger the macOS TCC permission dialog. Returns true if granted.
+            // On first run this shows a system prompt; on subsequent runs it
+            // returns the cached decision without prompting.
+            info!("requesting screen capture permission from macOS");
+            if !scap::request_permission() {
+                return Err(Error::Capture(
+                    "screen capture permission not granted — enable in System Settings → Privacy & Security → Screen Recording".into(),
+                ));
+            }
         }
 
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);

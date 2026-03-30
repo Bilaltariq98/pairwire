@@ -89,8 +89,7 @@ pub async fn run_host(
     // Start audio pipeline if both peers support it.
     let audio_handles = if session.has_capability(&pairwire_protocol::Capability::Audio) {
         let audio_config = AudioConfig::default();
-        let (audio_capture, audio_frame_rx) = AudioCaptureThread::start_fake(audio_config.clone())
-            .context("failed to start audio capture")?;
+        let (audio_capture, audio_frame_rx) = start_audio_capture(audio_config.clone())?;
         let (audio_encode, audio_pkt_rx) = AudioEncodeThread::start(audio_config, audio_frame_rx)
             .context("failed to start audio encoder")?;
         let audio_pub = MoqAudioPublisher::new(Arc::clone(&conn));
@@ -325,6 +324,29 @@ fn start_capture(
     }
     // Fake source: always available, used when capture feature is off or permission denied.
     CaptureThread::start_fake(config).context("failed to start fake capture")
+}
+
+/// Start audio capture — real (cpal) when `audio` feature is enabled, fake sine otherwise.
+fn start_audio_capture(
+    config: AudioConfig,
+) -> Result<(
+    pairwire_audio::AudioCaptureThread,
+    std::sync::mpsc::Receiver<pairwire_audio::AudioFrame>,
+)> {
+    #[cfg(feature = "audio")]
+    {
+        match AudioCaptureThread::start(config.clone()) {
+            Ok(pair) => return Ok(pair),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "real audio capture unavailable — using fake source. \
+                     On macOS: grant Microphone permission in System Settings → Privacy."
+                );
+            }
+        }
+    }
+    AudioCaptureThread::start_fake(config).context("failed to start fake audio capture")
 }
 
 fn host_capabilities() -> Vec<Capability> {
