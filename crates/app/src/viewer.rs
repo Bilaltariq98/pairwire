@@ -11,10 +11,13 @@ mod inner {
     use tokio::sync::watch;
     use tracing::debug;
 
+    use crate::reconnect::ConnectionState;
+
     /// egui application state for the screen viewer.
     pub struct ViewerApp {
         frame_rx: watch::Receiver<Option<DecodedFrame>>,
         cursor_rx: watch::Receiver<Option<CursorUpdate>>,
+        conn_rx: watch::Receiver<ConnectionState>,
         texture: Option<TextureHandle>,
         frame_count: u64,
         last_fps_time: std::time::Instant,
@@ -25,10 +28,12 @@ mod inner {
         pub fn new(
             frame_rx: watch::Receiver<Option<DecodedFrame>>,
             cursor_rx: watch::Receiver<Option<CursorUpdate>>,
+            conn_rx: watch::Receiver<ConnectionState>,
         ) -> Self {
             Self {
                 frame_rx,
                 cursor_rx,
+                conn_rx,
                 texture: None,
                 frame_count: 0,
                 last_fps_time: std::time::Instant::now(),
@@ -76,8 +81,10 @@ mod inner {
             }
             ctx.request_repaint();
 
+            let conn_state = self.conn_rx.borrow().clone();
+
             egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(egui::Color32::BLACK))
+                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
                 .show(ctx, |ui| {
                     if let Some(tex) = &self.texture {
                         let available = ui.available_size();
@@ -129,7 +136,7 @@ mod inner {
                                 }
                             }
                         }
-                    } else {
+                    } else if conn_state == ConnectionState::Connected {
                         ui.centered_and_justified(|ui| {
                             ui.label(
                                 egui::RichText::new("Connecting…")
@@ -137,6 +144,27 @@ mod inner {
                                     .color(egui::Color32::GRAY),
                             );
                         });
+                    }
+
+                    // Connection state overlay (reconnecting / lost)
+                    match &conn_state {
+                        ConnectionState::Reconnecting { attempt, max } => {
+                            show_overlay(
+                                ui,
+                                &format!("Reconnecting… ({attempt}/{max})"),
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                                egui::Color32::from_rgb(255, 200, 50),
+                            );
+                        }
+                        ConnectionState::Lost => {
+                            show_overlay(
+                                ui,
+                                "Connection lost",
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                                egui::Color32::from_rgb(255, 80, 80),
+                            );
+                        }
+                        ConnectionState::Connected => {}
                     }
 
                     if self.fps > 0.0 {
@@ -152,11 +180,24 @@ mod inner {
         }
     }
 
+    fn show_overlay(ui: &egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) {
+        let rect = ui.max_rect();
+        ui.painter().rect_filled(rect, 0.0, bg);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(28.0),
+            fg,
+        );
+    }
+
     /// Launch the viewer window. Blocks until the window is closed.
     /// Must be called from the main thread.
     pub fn run_viewer(
         frame_rx: watch::Receiver<Option<DecodedFrame>>,
         cursor_rx: watch::Receiver<Option<CursorUpdate>>,
+        conn_rx: watch::Receiver<ConnectionState>,
         title: &str,
     ) -> anyhow::Result<()> {
         let options = eframe::NativeOptions {
@@ -170,7 +211,7 @@ mod inner {
         eframe::run_native(
             title,
             options,
-            Box::new(|_cc| Ok(Box::new(ViewerApp::new(frame_rx, cursor_rx)))),
+            Box::new(|_cc| Ok(Box::new(ViewerApp::new(frame_rx, cursor_rx, conn_rx)))),
         )
         .map_err(|e| anyhow::anyhow!("viewer error: {e}"))
     }

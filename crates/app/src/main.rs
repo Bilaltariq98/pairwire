@@ -5,10 +5,12 @@
 //!   pairwire join <invite-url> [--no-gui]
 
 mod cli;
+mod reconnect;
 mod session;
 mod viewer;
 
 use anyhow::Result;
+use reconnect::{ConnectionState, ReconnectPolicy};
 use tracing::info;
 
 fn main() -> Result<()> {
@@ -37,13 +39,26 @@ fn main() -> Result<()> {
                 tokio::sync::watch::channel::<Option<pairwire_capture::DecodedFrame>>(None);
             let (cursor_tx, cursor_rx) =
                 tokio::sync::watch::channel::<Option<pairwire_protocol::CursorUpdate>>(None);
+            let (conn_tx, conn_rx) = tokio::sync::watch::channel(ConnectionState::Connected);
+
             #[cfg(not(feature = "gui"))]
-            let _ = (&frame_rx, &cursor_rx);
+            let _ = (&frame_rx, &cursor_rx, &conn_rx);
 
             let no_gui = args.no_gui;
 
-            // Run the network session in a background task
-            let session_handle = rt.spawn(session::run_join(args, frame_tx, cursor_tx));
+            // Run the network session in a background task, wrapped in reconnect logic.
+            let session_handle = rt.spawn(async move {
+                let policy = ReconnectPolicy::default();
+                reconnect::with_reconnect(policy, conn_tx, move || {
+                    // Each reconnect attempt gets fresh senders; the watch receivers
+                    // on the viewer side keep the last frame visible during reconnect.
+                    let frame_tx = frame_tx.clone();
+                    let cursor_tx = cursor_tx.clone();
+                    let args = args.clone();
+                    async move { session::run_join(args, frame_tx, cursor_tx).await }
+                })
+                .await
+            });
 
             if no_gui {
                 // Headless mode: just wait for the session to end
@@ -58,7 +73,7 @@ fn main() -> Result<()> {
                 // GUI mode: run viewer on main thread (required by OS window systems)
                 #[cfg(feature = "gui")]
                 {
-                    viewer::run_viewer(frame_rx, cursor_rx, "pairwire")?;
+                    viewer::run_viewer(frame_rx, cursor_rx, conn_rx, "pairwire")?;
                 }
                 #[cfg(not(feature = "gui"))]
                 {

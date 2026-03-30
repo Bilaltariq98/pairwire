@@ -32,7 +32,7 @@ impl Default for HostArgs {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JoinArgs {
     pub invite_url: String,
     /// Skip the GUI and just print decoded frame stats (for testing).
