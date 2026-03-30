@@ -17,7 +17,7 @@
 > **Goal**: Green workspace that compiles, lints, tests, and gives agents a working baseline.
 
 ### P0.1: Initialize Cargo Workspace
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Create root `Cargo.toml` workspace with all crate members. Create crate directories with minimal `lib.rs` / `main.rs` stubs that compile.
 - **Crates to create**:
   - `crates/core` — shared types, config, error types
@@ -36,7 +36,7 @@
 - **Docs**: `docs/05-concrete-architecture.md` (crate structure)
 
 ### P0.2: Core Error and Config Types
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P0.1
 - **Description**: Define the shared error enum, config structures, and common types in `crates/core`.
 - **Deliverables**:
@@ -53,7 +53,7 @@
   - `just all` passes
 
 ### P0.3: Protocol Message Types
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P0.2
 - **Description**: Define all wire protocol message types in `crates/protocol`. These are the types serialized with `postcard` and sent over the network.
 - **Deliverables**:
@@ -76,7 +76,7 @@
 - **Docs**: `docs/03-quic-transport-primitives.md` (protocol design section), `docs/05-concrete-architecture.md` (protocol design)
 
 ### P0.4: CONVENTIONS.md
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P0.1
 - **Description**: Create `CONVENTIONS.md` as a living document for patterns and conventions discovered during development. Seed it with initial conventions from AGENTS.md and the research docs.
 - **Deliverables**:
@@ -89,7 +89,7 @@
   - Covers all sections listed above with concrete guidance
 
 ### P0.5: Test Harness & Stubs
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P0.2, P0.3
 - **Description**: Create test utilities and mock/stub infrastructure so agents can write integration tests without real network connections, screen capture hardware, or audio devices.
 - **Deliverables**:
