@@ -155,7 +155,7 @@
 - **Docs**: `docs/03-quic-transport-primitives.md`
 
 ### P1.3: Screen Capture Thread
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P0.2
 - **Description**: Implement the capture thread in `crates/capture`. Uses scap to capture the primary display and sends raw frames to a channel.
 - **Deliverables**:
@@ -171,7 +171,7 @@
 - **Docs**: `docs/04-screen-capture-encode-pipeline.md`
 
 ### P1.4: FFmpeg H.264 Encode Thread
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.3
 - **Description**: Implement the encode thread. Takes raw frames from capture channel, encodes to H.264 NAL units via FFmpeg hardware encoder, sends to output channel.
 - **Deliverables**:
@@ -190,7 +190,7 @@
 - **Docs**: `docs/04-screen-capture-encode-pipeline.md`
 
 ### P1.5: FFmpeg H.264 Decode Thread
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.4
 - **Description**: Implement the decode thread. Takes encoded packets, decodes to raw frames for rendering.
 - **Deliverables**:

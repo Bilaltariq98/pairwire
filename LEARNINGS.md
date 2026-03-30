@@ -14,6 +14,23 @@ Each entry should include:
 
 ## Entries
 
+### 2026-03-30 — FFmpeg context must be allocated with codec pointer
+- **Area**: ffmpeg-next, capture
+- **What**: `codec::context::Context::new()` calls `avcodec_alloc_context3(null)`, which leaves `codec_type = AVMEDIA_TYPE_UNKNOWN`. libx264 (and other encoders) reject this with "Generic error in an external library".
+- **Resolution**: Allocate with the codec pointer explicitly:
+  ```rust
+  let context = unsafe {
+      let ptr = avcodec_alloc_context3(codec.as_ptr());
+      codec::context::Context::wrap(ptr, None)
+  };
+  ```
+  Then call `.encoder().video()` on the resulting context, and `.open_as_with(codec, opts)` to open.
+
+### 2026-03-30 — OS thread channel design for FFmpeg threads
+- **Area**: capture, threading
+- **What**: `tokio::sync::mpsc::Receiver::blocking_recv()` requires a tokio runtime on the calling thread. FFmpeg encode/decode threads are plain OS threads with no runtime.
+- **Resolution**: Use `std::sync::mpsc` for OS-thread-to-OS-thread channels (capture→encode, encode→decode). Use `tokio::sync::mpsc` only at the async boundary (encode→network sender). `tokio::sync::mpsc::Sender::blocking_send()` is safe from OS threads.
+
 ### 2026-03-30 — iroh 0.97 API corrections
 - **Area**: iroh, transport
 - **What**: Several method names differ from what the docs/examples suggest:

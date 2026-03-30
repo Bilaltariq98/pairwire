@@ -1,15 +1,20 @@
-//! Screen capture and H.264 encoding pipeline.
+//! Screen capture and H.264 encoding/decoding pipeline.
 //!
-//! Architecture:
-//! - `CaptureThread`: dedicated OS thread running scap, sends `RawFrame` via channel
-//! - `EncodeThread`: dedicated OS thread running FFmpeg encoder, sends `EncodedPacket`
-//! - `DecodeThread`: dedicated OS thread running FFmpeg decoder, sends `DecodedFrame`
+//! Feature flags:
+//! - `capture`: real screen capture via scap (requires display hardware)
+//! - `ffmpeg`: H.264 encode/decode via FFmpeg (requires system FFmpeg libs)
 //!
-//! FFmpeg encoder/decoder contexts are NOT Send — they must stay on their thread.
-//! Communicate with the tokio runtime via `tokio::sync::mpsc` channels.
-//!
-//! Implemented in P1.3 (capture), P1.4 (encode), P1.5 (decode).
+//! Without feature flags, only `CaptureThread::start_fake()` is available.
 
+pub mod capture_thread;
+pub mod decode_thread;
+pub mod encode_thread;
 pub mod frame;
 
+pub use capture_thread::CaptureThread;
 pub use frame::{DecodedFrame, EncodedPacket, RawFrame};
+
+#[cfg(feature = "ffmpeg")]
+pub use decode_thread::DecodeThread;
+#[cfg(feature = "ffmpeg")]
+pub use encode_thread::EncodeThread;

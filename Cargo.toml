@@ -42,6 +42,8 @@ hex = "0.4"
 # P2P connectivity
 iroh = { version = "0.97", default-features = false }
 
+# Video encode/decode via FFmpeg (declared per-crate, not workspace-optional)
+
 # Base32 encoding for endpoint IDs in invite links
 data-encoding = "2"
 

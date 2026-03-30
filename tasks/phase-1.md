@@ -18,23 +18,26 @@
 - **Notes**: Length-prefixed postcard framing (4-byte LE length + payload). Max message 4MB. Datagram size asserted < 1200 bytes.
 
 ### P1.3 — Screen Capture Thread
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/capture`
-- **Key deliverables**: `CaptureThread`, `start() -> Receiver<RawFrame>`, `stop()`
-- **Depends on**: P0.2
-- **Platform**: macOS (scap + ScreenCaptureKit)
+- **Key deliverables**: `CaptureThread::start_fake()` (always available), `start()` (behind `capture` feature), `into_async_receiver()` bridge helper
+- **Channel design**: `std::sync::mpsc` output (OS thread → OS thread, no runtime needed)
+- **Tests**: fake_capture_produces_frames, fake_capture_frames_have_increasing_timestamps
 
 ### P1.4 — FFmpeg H.264 Encode Thread
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/capture`
-- **Key deliverables**: `EncodeThread`, hardware encoder selection (videotoolbox → libx264 fallback), static frame detection
-- **Depends on**: P1.3
+- **Key deliverables**: `EncodeThread` (behind `ffmpeg` feature), libx264 with ultrafast/zerolatency, h264_videotoolbox fallback, static frame hash detection
+- **Channel design**: `std::sync::mpsc` input, `tokio::sync::mpsc` output (blocking_send safe from OS thread)
+- **Key fix**: Must use `avcodec_alloc_context3(codec.as_ptr())` not null — sets codec_type correctly
+- **Tests**: ffmpeg_encode_direct, encode_fake_frames_produces_packets, static_frames_are_skipped
 
 ### P1.5 — FFmpeg H.264 Decode Thread
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/capture`
-- **Key deliverables**: `DecodeThread`, hardware decoder selection
-- **Depends on**: P1.4
+- **Key deliverables**: `DecodeThread` (behind `ffmpeg` feature), lazy scaler init on first frame, YUV→BGRA conversion
+- **Channel design**: `std::sync::mpsc` input, `tokio::sync::mpsc` output
+- **Tests**: encode_decode_round_trip (full pipeline: fake capture → encode → decode)
 
 ### P1.6 — Network Sender (Screen Frames)
 - **Status**: 🔲 Not started

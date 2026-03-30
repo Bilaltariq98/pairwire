@@ -130,7 +130,9 @@ pub struct LoopbackChannel<T> {
 }
 
 impl<T> LoopbackChannel<T> {
-    pub fn new(capacity: usize) -> (std::sync::mpsc::SyncSender<T>, std::sync::mpsc::Receiver<T>) {
+    pub fn channel(
+        capacity: usize,
+    ) -> (std::sync::mpsc::SyncSender<T>, std::sync::mpsc::Receiver<T>) {
         std::sync::mpsc::sync_channel(capacity)
     }
 }

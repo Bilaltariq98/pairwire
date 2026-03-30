@@ -5,8 +5,26 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-pairwire-core.workspace = true
+pairwire-core = { path = "../core", features = ["test-support"] }
 thiserror.workspace = true
 tokio.workspace = true
 bytes.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+scap = { version = "0.1.0-beta.1", optional = true }
+
+[features]
+# Enable real screen capture via scap. Requires display hardware and OS permissions.
+capture = ["dep:scap"]
+# Enable FFmpeg encode/decode. Requires FFmpeg system libraries (libavcodec etc).
+ffmpeg = ["dep:ffmpeg-next"]
+
+[dependencies.ffmpeg-next]
+version = "6"
+optional = true
+default-features = false
+features = ["codec", "format", "software-scaling"]
