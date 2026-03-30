@@ -12,7 +12,7 @@ path = "src/main.rs"
 pairwire-core.workspace = true
 pairwire-protocol.workspace = true
 pairwire-transport.workspace = true
-pairwire-capture.workspace = true
+pairwire-capture = { path = "../capture" }
 pairwire-audio.workspace = true
 pairwire-input.workspace = true
 pairwire-terminal.workspace = true
@@ -20,3 +20,18 @@ anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+rand = "0.9"
+
+[features]
+# Enable the graphical viewer. Requires a display and GPU.
+gui = ["dep:egui", "dep:eframe"]
+# Enable H.264 encode/decode. Requires system FFmpeg libraries.
+encode = ["pairwire-capture/ffmpeg"]
+
+[dependencies.egui]
+workspace = true
+optional = true
+
+[dependencies.eframe]
+workspace = true
+optional = true

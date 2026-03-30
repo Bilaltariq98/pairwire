@@ -44,6 +44,10 @@ iroh = { version = "0.97", default-features = false }
 
 # Video encode/decode via FFmpeg (declared per-crate, not workspace-optional)
 
+# UI framework (eframe 0.31 = egui 0.31, stable wgpu backend)
+egui = { version = "0.31", default-features = false }
+eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts"] }
+
 # Base32 encoding for endpoint IDs in invite links
 data-encoding = "2"
 
