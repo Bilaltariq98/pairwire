@@ -36,6 +36,11 @@ impl PairwireConnection {
         self.conn.remote_id()
     }
 
+    /// Access the underlying iroh `Connection` for use with web-transport-iroh.
+    pub fn raw_conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Open a bidirectional control stream (priority 1).
     ///
     /// Used for session management: handshake, capability negotiation, heartbeats.

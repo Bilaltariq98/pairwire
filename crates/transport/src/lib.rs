@@ -4,13 +4,18 @@ pub mod connection;
 pub mod cursor;
 pub mod handshake;
 pub mod invite;
+pub mod moq_screen;
 pub mod screen;
 pub mod transport;
+pub mod wt_session;
 
 pub use connection::PairwireConnection;
 pub use cursor::{CursorReceiver, CursorReceiverHandle, CursorSender, CursorSenderHandle};
 pub use handshake::{NegotiatedSession, guest_handshake, host_handshake, local_handshake};
 pub use invite::InviteLink;
+pub use moq_screen::{
+    MoqScreenPublisher, MoqScreenPublisherHandle, MoqScreenSubscriber, MoqScreenSubscriberHandle,
+};
 pub use screen::{ReceiverHandle, ScreenReceiver, ScreenSender, SenderHandle};
 pub use transport::Transport;
 
