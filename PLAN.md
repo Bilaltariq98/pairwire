@@ -231,13 +231,23 @@
   - `just all` passes
 
 ### P1.8: Cursor Sharing via Datagrams
-- **Status**: `[x]`
+- **Status**: `[~]` (transport layer done; not wired end-to-end — see notes)
 - **Depends on**: P1.2
 - **Description**: Send and receive cursor position updates via QUIC datagrams.
 - **Deliverables**:
   - `CursorSender` — polls cursor position, sends `CursorUpdate` datagrams at 60Hz when moving, throttles when still
   - `CursorReceiver` — receives datagrams, exposes latest cursor position via `Arc<AtomicCell<CursorPosition>>`
   - Platform cursor position reading (macOS: `CGEvent`)
+- **Notes**:
+  - `CursorSender`/`CursorReceiver` transport code exists and works.
+  - **NOT wired correctly in session.** Current flow is backwards: guest has `CursorSender` and host has `CursorReceiver`, but nothing feeds cursor positions into the guest's sender. The correct flow for screen sharing is: **host captures its own cursor → sends to guest → guest viewer renders overlay**.
+  - The host needs a `CursorSender` that polls local cursor position via `CGEvent` and sends datagrams.
+  - The guest needs a `CursorReceiver` whose output feeds into the viewer's `cursor_tx` watch channel.
+  - Viewer overlay code already exists (`viewer.rs` lines 106-137) and renders a crosshair when data arrives.
+- **Remaining work**:
+  - Implement platform cursor position polling (macOS: `CGEvent::new(CGEventType::Null)` → `.location()`)
+  - Wire host-side `CursorSender` with a polling loop
+  - Wire guest-side `CursorReceiver` output to the viewer's `cursor_tx`
 - **Acceptance criteria**:
   - Test: send 100 cursor updates, verify latest position is accessible (not all — datagrams are lossy)
   - Verify `CursorUpdate` serialized size < 50 bytes
@@ -245,7 +255,7 @@
 - **Docs**: `docs/03-quic-transport-primitives.md` (datagram section)
 
 ### P1.9: Basic Viewer UI
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.5, P1.8
 - **Description**: Minimal UI window that displays the decoded remote screen and overlays the remote cursor.
 - **Deliverables**:
@@ -254,6 +264,7 @@
   - Remote cursor overlay (colored dot/arrow at cursor position)
   - FPS counter and connection status display
   - Window title shows peer EndpointId (truncated)
+- **Notes**: Fully implemented in `crates/app/src/viewer.rs`. egui/wgpu viewer with BGRA→RGBA conversion, scaled texture display, cursor crosshair overlay, FPS counter, and reconnection status overlay. Cursor overlay renders correctly when data is provided (blocked on P1.8 wiring).
 - **Acceptance criteria**:
   - Window opens, displays frames from `FakeFrameSource` (no network needed)
   - Cursor overlay renders at correct position
@@ -261,15 +272,16 @@
   - `just all` passes
 
 ### P1.10: End-to-End Integration — Two Peers
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.1 through P1.9
 - **Description**: Wire everything together. Two instances of the app connect via iroh, one shares screen + cursor, the other views.
 - **Deliverables**:
-  - CLI interface: `rust-sharing host` (captures and shares) / `rust-sharing join <invite>` (views)
+  - CLI interface: `pairwire host` (captures and shares) / `pairwire join <invite>` (views)
   - Host: capture → encode → send + cursor send
   - Guest: receive → decode → display + cursor receive
   - Invite link generation and display on host startup
   - Graceful shutdown (Ctrl+C)
+- **Notes**: Fully working. Screen + audio streaming verified. Cursor overlay waiting on P1.8 wiring. Stream multiplexing conflict between moq-lite audio and raw screen streams fixed via `UniStreamRouter` (commit 0dc73fa). Retina resolution mismatch fixed via lazy scaler init.
 - **Acceptance criteria**:
   - Manual test: run host on one terminal, join on another (same machine is fine — iroh handles loopback)
   - Screen appears in viewer within 3 seconds
@@ -321,7 +333,7 @@
   - `just all` passes
 
 ### P2.3: Keyboard & Mouse Input Forwarding
-- **Status**: `[x]`
+- **Status**: `[~]` (code complete; not wired in session)
 - **Depends on**: P2.2
 - **Description**: Implement remote control in `crates/input`. Guest sends keyboard and mouse events; host injects them into the OS.
 - **Deliverables**:
@@ -330,6 +342,11 @@
   - macOS injection: `CGEvent` posting
   - Permission model: host must explicitly grant control
   - `ControlHandoff` message for granting/revoking permissions
+- **Notes**:
+  - `InputSender` and `InputReceiver` fully implemented in `crates/input/src/sender.rs` and `receiver.rs`.
+  - Protocol types (`KeyEvent`, `MouseClick`, `MouseScroll`) defined in `crates/protocol/src/input.rs`.
+  - **NOT instantiated in `crates/app/src/session.rs`** — no input stream is opened or accepted.
+- **Remaining work**: Wire `InputSender` in `run_join()` and `InputReceiver` in `run_host()`. Open/accept input stream. Add permission grant UI/flow.
 - **Acceptance criteria**:
   - Test: serialize and deserialize all input event types
   - Manual test: guest types, host sees keystrokes
@@ -338,7 +355,7 @@
 - **Docs**: `docs/05-concrete-architecture.md` (remote control protocol section)
 
 ### P2.4: Clipboard Sync
-- **Status**: `[x]`
+- **Status**: `[~]` (code complete; not wired in session)
 - **Depends on**: P2.2
 - **Description**: Bidirectional clipboard synchronization between peers.
 - **Deliverables**:
@@ -346,13 +363,17 @@
   - `ClipboardSync` message with format detection (text, image, files)
   - Configurable: auto-sync or manual
   - Size limit to prevent accidental large transfers
+- **Notes**:
+  - `ClipboardSender`/`ClipboardReceiver` fully implemented in `crates/input/src/clipboard.rs` with polling, auto-sync flag, 1MB size limit.
+  - **NOT spawned in session** — no clipboard monitors running.
+- **Remaining work**: Wire into `run_host()` and `run_join()`.
 - **Acceptance criteria**:
   - Test: text clipboard round-trips between peers
   - Large clipboard data (>1MB) is rejected or chunked
   - `just all` passes
 
 ### P2.5: Quality Adaptation
-- **Status**: `[x]`
+- **Status**: `[~]` (code complete; not wired in session)
 - **Depends on**: P2.1
 - **Description**: Monitor QUIC connection stats and adapt screen quality dynamically.
 - **Deliverables**:
@@ -363,6 +384,10 @@
     - RTT > 200ms: reduce FPS, increase keyframe interval
   - Recovery when metrics improve
   - `Heartbeat` datagram exchange for diagnostic visibility
+- **Notes**:
+  - `QualityMonitor` fully implemented in `crates/transport/src/quality.rs` with RTT/loss polling, tier adaptation (Full/Reduced/Degraded), and recovery hysteresis.
+  - **NOT instantiated in session** — encode thread never receives adapted configs via watch channel.
+- **Remaining work**: Spawn `QualityMonitor` in `run_host()`, connect its output watch channel to the encode thread to dynamically adjust bitrate/fps/resolution.
 - **Acceptance criteria**:
   - Test with simulated degradation: verify encoder config changes
   - Heartbeat messages round-trip correctly
@@ -472,17 +497,60 @@
 ### P3.8: Clippy Pedantic Pass
 - **Status**: `[x]`
 - **Notes**: Zero warnings under `-W clippy::pedantic`; 144 → 0 warnings across all 8 crates
-- **Depends on**: P1.9
-- **Description**: Minimal system tray (macOS menu bar) with session controls.
+
+---
+
+## Phase 3.5: Session Wiring (Code Exists — Needs Integration)
+
+> **Goal**: Wire up all completed-but-disconnected subsystems into the running app. All code below already exists and is tested in isolation — the work is pure orchestration in `session.rs`.
+> **Estimated effort**: 1-2 days
+> **Priority**: Do this before Phase 4. It's low-effort, high-impact.
+
+### P3.5.1: Wire Host Cursor Sending
+- **Status**: `[ ]`
+- **Depends on**: P1.8
+- **Description**: Host captures its own cursor position and sends to guest via datagrams. Guest viewer displays the overlay.
 - **Deliverables**:
-  - Start/stop sharing
-  - Copy invite link
-  - Connection status indicator
-  - Disconnect button
-  - Preferences shortcut
+  - Platform cursor polling on host (macOS: `CGEvent::new(CGEventType::Null).location()`)
+  - `CursorSender` spawned in `run_host()` with a polling loop feeding positions
+  - `CursorReceiver` spawned in `run_join()` with output forwarded to viewer's `cursor_tx`
 - **Acceptance criteria**:
-  - macOS: menu bar extra appears and functions
-  - `just all` passes
+  - Guest viewer shows a crosshair at the host's cursor position
+  - Cursor updates at ~60Hz when moving, throttled when still
+
+### P3.5.2: Wire Input Forwarding
+- **Status**: `[ ]`
+- **Depends on**: P2.3
+- **Description**: Wire `InputSender` (guest) and `InputReceiver` (host) into session.
+- **Deliverables**:
+  - Guest opens input stream, captures viewer keyboard/mouse events, sends to host
+  - Host accepts input stream, injects events via platform APIs
+  - Permission grant flow (host must accept before events are injected)
+- **Acceptance criteria**:
+  - Guest types in viewer window, keystrokes appear on host
+  - Guest mouse clicks in viewer trigger clicks on host at correct coordinates
+
+### P3.5.3: Wire Clipboard Sync
+- **Status**: `[ ]`
+- **Depends on**: P2.4
+- **Description**: Wire `ClipboardSender`/`ClipboardReceiver` into session.
+- **Deliverables**:
+  - Both host and guest spawn clipboard monitors
+  - Copy on one side appears on the other within ~500ms
+- **Acceptance criteria**:
+  - Text clipboard round-trips between peers
+  - Large data (>1MB) is rejected with a warning
+
+### P3.5.4: Wire Quality Adaptation
+- **Status**: `[ ]`
+- **Depends on**: P2.5
+- **Description**: Wire `QualityMonitor` into host session and connect to encode thread.
+- **Deliverables**:
+  - `QualityMonitor` spawned in `run_host()`
+  - Output watch channel connected to encode thread for dynamic bitrate/fps/resolution changes
+- **Acceptance criteria**:
+  - Under high RTT/loss, encoder downgrades quality tier
+  - When conditions improve, quality recovers
 
 ---
 
