@@ -57,17 +57,16 @@
 - **Tests**: cursor_update_serializes_under_mtu
 
 ### P1.9 — Basic Viewer UI
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/app`
-- **Key deliverables**: egui window, GPU texture upload (wgpu), cursor overlay, FPS counter
-- **Depends on**: P1.5, P1.8
+- **Key deliverables**: `ViewerApp` (egui), GPU texture upload via `ColorImage`, cursor overlay with click animation, FPS counter
+- **Notes**: Behind `gui` feature flag. `watch::Receiver` for frame/cursor updates. Aspect-ratio-preserving scale.
 
 ### P1.10 — End-to-End Integration
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/app`
-- **Key deliverables**: `pairwire host` / `pairwire join <invite>` CLI, graceful shutdown
-- **Depends on**: P1.1–P1.9
-- **Performance targets**: screen latency < 100ms, cursor latency < 50ms, CPU < 15% at 1080p 30fps
+- **Key deliverables**: `pairwire host` / `pairwire join <invite>` CLI (`cli.rs`), `run_host()`/`run_join()` async orchestrators (`session.rs`), graceful shutdown via `Ctrl-C`
+- **Notes**: Encode/GUI paths are feature-gated. `watch` channels bridge async session to egui viewer thread.
 
 ## Notes
 
