@@ -500,57 +500,149 @@
 
 ---
 
-## Phase 3.5: Session Wiring (Code Exists — Needs Integration)
+## Phase 3.5: Interaction Layer (Tuple-Style Collaboration)
 
-> **Goal**: Wire up all completed-but-disconnected subsystems into the running app. All code below already exists and is tested in isolation — the work is pure orchestration in `session.rs`.
-> **Estimated effort**: 1-2 days
-> **Priority**: Do this before Phase 4. It's low-effort, high-impact.
+> **Goal**: Build the full interaction model — bidirectional cursors, control takeover, drawing, reactions. This is what turns "screen viewer" into "pair programming tool."
+>
+> **Design philosophy**: Both peers are equal participants. Either can point, draw, type, react. The screen is a shared canvas with two cursors, not a one-way broadcast.
+>
+> **Estimated effort**: 2-3 weeks
+> **Priority**: Do this before Phase 4. It's the core UX.
 
-### P3.5.1: Wire Host Cursor Sending
+### Interaction Model
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  SHARED SCREEN                       │
+│                                                      │
+│   🔴 Host cursor (baked into capture by scap)        │
+│   🔵 Guest cursor (overlay, sent via datagrams)      │
+│                                                      │
+│   ✏️  Drawing strokes (either peer, distinct colors)  │
+│   😀 Reactions (float up from cursor, fade out)      │
+│                                                      │
+│   [Active controller]: whoever clicked last          │
+│   [Observer]: sees everything, can draw & react      │
+└─────────────────────────────────────────────────────┘
+```
+
+**Cursor rules:**
+- Host cursor is always visible in the screen capture (scap `show_cursor: true`). No overlay needed — it's "free."
+- Guest cursor is an overlay rendered on both sides: on the host's screen (drawn by host app) and in the guest's viewer (drawn locally for zero-latency feedback).
+- Both cursors always visible. No hiding, no "your turn" gating.
+
+**Control rules:**
+- Default: host has control (their real OS cursor).
+- Guest clicks in viewer → `ControlRequest` sent → host auto-accepts (configurable) → guest's keyboard/mouse events injected on host.
+- Host moves their real mouse → automatically reclaims control. Guest input paused until they click again.
+- Either side can draw or react at any time regardless of who has control.
+
+**Wire protocol additions** (new types in `crates/protocol/`):
+- `CursorUpdate` — already exists. Add `peer_role: PeerRole` field.
+- `ControlRequest { peer_id }` / `ControlGrant { peer_id }` — on control stream.
+- `DrawStroke { peer_id, color, points, timestamp }` — on reliable stream.
+- `DrawPoint { peer_id, x, y }` — via datagram for real-time preview.
+- `Reaction { peer_id, emoji, x, y, timestamp }` — via datagram.
+
+### P3.5.1: Bidirectional Cursor Presence
 - **Status**: `[ ]`
 - **Depends on**: P1.8
-- **Description**: Host captures its own cursor position and sends to guest via datagrams. Guest viewer displays the overlay.
+- **Description**: Both peers see each other's cursor at all times.
 - **Deliverables**:
-  - Platform cursor polling on host (macOS: `CGEvent::new(CGEventType::Null).location()`)
-  - `CursorSender` spawned in `run_host()` with a polling loop feeding positions
-  - `CursorReceiver` spawned in `run_join()` with output forwarded to viewer's `cursor_tx`
+  - **Host side**: Poll local cursor position (macOS: `CGEvent`), send `CursorUpdate` datagrams to guest at up to 60Hz. Receive guest's `CursorUpdate` and render a colored overlay on the host display (or in the host's tray/status UI if no host viewer).
+  - **Guest side**: Track mouse position within the viewer window, map to host display coordinates, send `CursorUpdate` datagrams to host. Receive host's `CursorUpdate` — but since the host cursor is already in the captured video, this is optional (useful for coordinate-aware features like "snap to host cursor").
+  - Distinct cursor colors: host = red crosshair, guest = blue crosshair (configurable later).
+  - Throttle: only send when position changes by >2px. Idle after 500ms of no movement.
 - **Acceptance criteria**:
-  - Guest viewer shows a crosshair at the host's cursor position
-  - Cursor updates at ~60Hz when moving, throttled when still
+  - Guest viewer shows host cursor movements in real-time (via screen capture, already works)
+  - Host sees guest cursor as a colored overlay
+  - Cursor updates are <50 bytes per datagram
+  - `just all` passes
 
-### P3.5.2: Wire Input Forwarding
+### P3.5.2: Control Takeover
 - **Status**: `[ ]`
-- **Depends on**: P2.3
-- **Description**: Wire `InputSender` (guest) and `InputReceiver` (host) into session.
+- **Depends on**: P3.5.1, P2.3
+- **Description**: Guest can take keyboard/mouse control by clicking in the viewer. Host reclaims by moving their real mouse. Like Tuple's "click to drive" model.
 - **Deliverables**:
-  - Guest opens input stream, captures viewer keyboard/mouse events, sends to host
-  - Host accepts input stream, injects events via platform APIs
-  - Permission grant flow (host must accept before events are injected)
+  - `ControlState` enum: `HostActive | GuestActive | GuestRequested`
+  - `ControlRequest` / `ControlGrant` messages on the control stream
+  - Guest click in viewer → sends `ControlRequest` → host auto-grants (default) or prompts
+  - While guest is active: viewer captures keyboard events + mouse clicks/moves → `InputSender` forwards to host → `InputReceiver` injects via `CGEvent`
+  - Host moves their real mouse → `ControlRevoke` sent → guest returns to observer mode
+  - Visual indicator in viewer: "You have control" / "Host has control" badge
+  - Coordinate mapping: guest viewer pixels → host display pixels (accounting for scale factor and viewer window size)
 - **Acceptance criteria**:
-  - Guest types in viewer window, keystrokes appear on host
-  - Guest mouse clicks in viewer trigger clicks on host at correct coordinates
+  - Guest clicks in viewer, types — keystrokes appear on host
+  - Host wiggles mouse — control returns to host, guest typing stops injecting
+  - Coordinate mapping is accurate (click targets correct UI elements on host)
+  - `just all` passes
 
-### P3.5.3: Wire Clipboard Sync
+### P3.5.3: Drawing & Annotations
+- **Status**: `[ ]`
+- **Depends on**: P3.5.1
+- **Description**: Either peer can draw on the shared screen. Strokes are overlays (not baked into capture). Inspired by Tuple's laser pointer + persistent drawing.
+- **Deliverables**:
+  - **Two drawing modes**:
+    - **Laser pointer** (default): hold a hotkey (e.g., Cmd/Ctrl) and move mouse. Trail fades after ~2 seconds. For "look here" moments.
+    - **Persistent draw**: toggle with a keybind. Strokes remain until cleared.
+  - Drawing data flow:
+    - Real-time: `DrawPoint` datagrams for low-latency stroke preview (lossy is fine — worst case a point is skipped)
+    - Completion: `DrawStroke` on reliable stream with full point list for accurate rendering
+  - Each peer gets a distinct color (derived from peer_id hash or configurable)
+  - Clear all: hotkey or control message to erase the canvas
+  - Render: egui painter overlay on top of the screen texture, below the cursor overlay
+- **Protocol types**:
+  - `DrawPoint { peer_id: u8, x: u16, y: u16 }` — datagram, <20 bytes
+  - `DrawStroke { peer_id: u8, color: [u8; 3], points: Vec<(u16, u16)>, mode: DrawMode }` — stream
+  - `DrawClear { peer_id: u8 }` — clear one peer's strokes or all
+- **Acceptance criteria**:
+  - Both peers can draw simultaneously with distinct colors
+  - Laser pointer trail fades smoothly over ~2 seconds
+  - Persistent strokes survive until explicitly cleared
+  - Drawing works regardless of who has control
+  - `just all` passes
+
+### P3.5.4: Reactions
+- **Status**: `[ ]`
+- **Depends on**: P3.5.1
+- **Description**: Quick emoji reactions that appear at the sender's cursor position and float upward. For "nice!", "I see the bug", "wait what?" moments without interrupting voice chat.
+- **Deliverables**:
+  - Predefined reaction set: 👍 👎 ❤️ 🎉 ❓ 🐛 💡 🔥 (8 reactions, keybind or picker)
+  - `Reaction` datagram: `{ peer_id, emoji_id: u8, x: u16, y: u16 }` — <15 bytes
+  - Render: emoji appears at cursor position, floats up ~50px over 2 seconds, fades out
+  - Multiple reactions can be in-flight simultaneously (max 10 visible, drop oldest)
+  - Hotkey: number keys 1-8 while holding a modifier, or a floating picker in the viewer
+- **Acceptance criteria**:
+  - Send a reaction, see it appear on both screens at the sender's cursor position
+  - Reactions fade out after ~2 seconds
+  - Works regardless of who has control
+  - `just all` passes
+
+### P3.5.5: Wire Clipboard Sync
 - **Status**: `[ ]`
 - **Depends on**: P2.4
 - **Description**: Wire `ClipboardSender`/`ClipboardReceiver` into session.
 - **Deliverables**:
   - Both host and guest spawn clipboard monitors
   - Copy on one side appears on the other within ~500ms
+  - Visual toast: "Clipboard synced" indicator
 - **Acceptance criteria**:
   - Text clipboard round-trips between peers
   - Large data (>1MB) is rejected with a warning
+  - `just all` passes
 
-### P3.5.4: Wire Quality Adaptation
+### P3.5.6: Wire Quality Adaptation
 - **Status**: `[ ]`
 - **Depends on**: P2.5
 - **Description**: Wire `QualityMonitor` into host session and connect to encode thread.
 - **Deliverables**:
   - `QualityMonitor` spawned in `run_host()`
   - Output watch channel connected to encode thread for dynamic bitrate/fps/resolution changes
+  - Visual indicator in viewer: connection quality badge (green/yellow/red)
 - **Acceptance criteria**:
   - Under high RTT/loss, encoder downgrades quality tier
   - When conditions improve, quality recovers
+  - `just all` passes
 
 ---
 
@@ -608,20 +700,41 @@
 
 ### P5.1: Recording (Save Session to File)
 - **Status**: `[ ]`
-- **Description**: Record screen + audio to a local file during a session.
+- **Description**: Record screen + audio to a local file during a session. Mux H.264 video + Opus audio into MP4/MKV.
 
-### P5.2: Annotation / Drawing Tools
+### P5.2: Multi-Party Sessions (3+ Peers)
 - **Status**: `[ ]`
-- **Description**: Draw on the shared screen. Strokes via datagrams (points) + reliable stream (stroke completion).
+- **Description**: Extend protocol for N peers with a relay/mesh topology. Each peer gets a distinct cursor color.
 
-### P5.3: Multi-Party Sessions (3+ Peers)
+### P5.3: AI-Assisted Pairing
 - **Status**: `[ ]`
-- **Description**: Extend protocol for N peers with a relay/mesh topology.
+- **Description**: Shared LLM context in the pairing session. "Ask the AI about this code" as a first-class feature. Could use screen content + terminal history as context.
 
-### P5.4: AI-Assisted Pairing
-- **Status**: `[ ]`
-- **Description**: Shared LLM context in the pairing session. "Ask the AI about this code" as a first-class feature.
-
-### P5.5: Editor Integration (LSP-Aware Cursors)
+### P5.4: Editor Integration (LSP-Aware Cursors)
 - **Status**: `[ ]`
 - **Description**: Share editor state at the semantic level (LSP events, cursor position in file) alongside screen sharing.
+
+### P5.5: Rich Reactions — Custom Animated Stickers with Sound
+- **Status**: `[ ]`
+- **Description**: Go beyond static emoji. Custom reactions that are short animated clips with audio — think Discord stickers meets Twitch alerts, but for pair programming.
+- **Format concept**: `.pwreact` — a lightweight reaction bundle:
+  - **Visual**: Animated WebP or APNG (transparent background), max 128x128px, max 2s loop
+  - **Audio**: Short Opus clip (optional), max 2s, auto-mixed at low volume so it doesn't interrupt voice chat
+  - **Metadata**: name, author, category, trigger shortcode (e.g., `:shipit:`)
+  - Bundle is just a zip with `manifest.toml` + assets. Small enough to send inline via QUIC stream on first use, then cached by peer.
+- **Why not GIF/video?**: GIFs are huge and have no alpha. Video codecs (VP9/AV1 with alpha) are overkill for 128px 2s clips. WebP/APNG give transparency + animation + tiny file size. The audio channel is the differentiator — a quick "ding!" or airhorn or applause makes reactions feel alive.
+- **UX flow**:
+  - Built-in pack ships with the app (8-12 reactions: applause, mind-blown, ship-it, bug-found, etc.)
+  - Users can import `.pwreact` packs (drag-and-drop or CLI `pairwire react install <path>`)
+  - Teams can share packs via URL (hosted or P2P via iroh)
+  - Reaction picker in viewer: grid of animated thumbnails, search by shortcode
+  - Hotkey: type `:shortcode:` in a reaction input bar, or number keys for favorites
+- **Wire protocol**:
+  - First use of a custom reaction: sender transmits the bundle inline (~10-50KB) via reliable stream
+  - Subsequent uses: just the reaction ID (datagram, <20 bytes) — peer already has it cached
+  - `ReactionBundle { id: u64, name, visual: Bytes, audio: Option<Bytes> }` — stream
+  - `CustomReaction { peer_id, bundle_id: u64, x, y }` — datagram
+- **Stretch considerations**:
+  - Could support transparent video (VP9 alpha / AV1 alpha) for higher-quality animations if bundle size budget allows (~200KB)
+  - Could support "reaction GIFs" — short looping clips from a URL, rendered with transparency
+  - Sound reactions could be positional (play from the cursor location in stereo) for fun spatial feel
