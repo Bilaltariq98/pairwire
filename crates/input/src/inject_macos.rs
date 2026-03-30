@@ -108,7 +108,7 @@ fn inject_scroll(e: &MouseScroll) -> Result<()> {
     let delta_y = (e.delta_y / 100) as i32;
     let delta_x = (e.delta_x / 100) as i32;
 
-    let event = CGEvent::new_scroll_event(source, ScrollEventUnit::Pixel, 2, delta_y, delta_x, 0)
+    let event = CGEvent::new_scroll_event(source, ScrollEventUnit::PIXEL, 2, delta_y, delta_x, 0)
         .map_err(|_| Error::PermissionDenied("CGEvent scroll creation failed".into()))?;
     event.post(CGEventTapLocation::HID);
     Ok(())
