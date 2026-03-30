@@ -19,14 +19,14 @@ Each entry should include:
 - **What**: `cargo build --features pairwire/ffmpeg` fails with two sequential errors on a fresh Mac:
   1. `The system library libavutil was not found` — FFmpeg not installed
   2. `fatal error: '/usr/include/libavcodec/avfft.h' file not found` — Homebrew installs headers under its own prefix, not `/usr/include`
-- **Resolution**: Install FFmpeg via Homebrew, then set both `PKG_CONFIG_PATH` and `CPATH` before building:
+- **Resolution**: Install FFmpeg via Homebrew, then set `PKG_CONFIG_PATH` and `BINDGEN_EXTRA_CLANG_ARGS` before building:
   ```bash
   brew install ffmpeg
   export PKG_CONFIG_PATH="$(brew --prefix ffmpeg)/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
-  export CPATH="$(brew --prefix ffmpeg)/include"
+  export BINDGEN_EXTRA_CLANG_ARGS="-I$(brew --prefix ffmpeg)/include"
   cargo build --workspace --features pairwire/ffmpeg,pairwire/gui
   ```
-  Add both exports to `~/.zshrc` to make them permanent. The `CPATH` export is the critical one — without it, `ffmpeg-sys-next`'s bindgen step cannot find the FFmpeg headers even when pkg-config succeeds.
+  Add both to `~/.zshrc` to make them permanent. `CPATH` does NOT work — bindgen invokes clang directly and ignores `CPATH`. The correct variable is `BINDGEN_EXTRA_CLANG_ARGS`.
 
 ### 2026-03-30 — FFmpeg context must be allocated with codec pointer
 - **Area**: ffmpeg-next, capture
