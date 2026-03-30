@@ -86,7 +86,7 @@ fn playback_loop(
         .default_output_device()
         .ok_or_else(|| Error::Audio("no output device found".into()))?;
 
-    info!(device = %device.description().unwrap_or_default(), "audio playback device selected");
+    info!(device = %device.description().map(|d| d.name).unwrap_or_default(), "audio playback device selected");
 
     #[allow(clippy::cast_possible_truncation)] // channels is always 1 or 2
     let stream_config = StreamConfig {

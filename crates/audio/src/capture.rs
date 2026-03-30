@@ -44,7 +44,7 @@ impl AudioCaptureThread {
             .default_input_device()
             .ok_or_else(|| Error::Audio("no input device found".into()))?;
 
-        info!(device = %device.description().unwrap_or_default(), "audio capture device selected");
+        info!(device = %device.description().map(|d| d.name).unwrap_or_default(), "audio capture device selected");
 
         let supported = device
             .default_input_config()
