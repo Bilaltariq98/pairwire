@@ -44,7 +44,7 @@ impl AudioCaptureThread {
             .default_input_device()
             .ok_or_else(|| Error::Audio("no input device found".into()))?;
 
-        info!(device = %device.description().map(|d| d.name).unwrap_or_default(), "audio capture device selected");
+        info!(device = %device.description().map(|d| d.name().to_owned()).unwrap_or_default(), "audio capture device selected");
 
         let supported = device
             .default_input_config()
@@ -59,6 +59,7 @@ impl AudioCaptureThread {
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_stream = Arc::clone(&stop_flag);
+        let stop_flag_thread = Arc::clone(&stop_flag);
         let sample_rate = config.sample_rate;
         let channels = config.channels;
 
@@ -100,7 +101,7 @@ impl AudioCaptureThread {
             .spawn(move || {
                 info!("audio capture thread started");
                 // Keep stream alive until stop is signalled.
-                while !stop_flag.load(Ordering::Relaxed) {
+                while !stop_flag_thread.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(10));
                 }
                 drop(stream);
