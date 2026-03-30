@@ -131,11 +131,13 @@ pub async fn run_join(
     let screen_recv = ScreenReceiver::new(Arc::clone(&conn));
     let recv_handle = screen_recv.spawn(pkt_tx);
 
-    let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(1);
+    // Keep cursor_update_tx alive for the duration of the session.
+    // Dropping it immediately causes CursorSender to exit before the connection closes.
+    let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(64);
     let cursor_send = CursorSender::new(Arc::clone(&conn));
     let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
-    // cursor_update_tx kept alive for future input forwarding
-    drop(cursor_update_tx);
+    // cursor_update_tx will be wired to mouse input in Phase 2; hold it here for now.
+    let _cursor_update_tx = cursor_update_tx;
 
     #[cfg(feature = "encode")]
     {

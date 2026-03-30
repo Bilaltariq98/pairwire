@@ -27,6 +27,8 @@ rand = "0.9"
 gui = ["dep:egui", "dep:eframe"]
 # Enable H.264 encode/decode. Requires system FFmpeg libraries.
 encode = ["pairwire-capture/ffmpeg"]
+# Alias so `--features pairwire/ffmpeg` works as expected.
+ffmpeg = ["encode"]
 
 [dependencies.egui]
 workspace = true
