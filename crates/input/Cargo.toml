@@ -7,6 +7,17 @@ version.workspace = true
 [dependencies]
 pairwire-core.workspace = true
 pairwire-protocol.workspace = true
+pairwire-transport = { path = "../transport" }
+iroh.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+postcard = { version = "1", features = ["alloc"] }
+bytes.workspace = true
+serde.workspace = true
+arboard = "3"
+
+# macOS: CGEvent injection for keyboard/mouse
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "0.25", features = ["highsierra"] }
+core-foundation = "0.10"

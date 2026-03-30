@@ -1,15 +1,42 @@
 //! Keyboard, mouse, and clipboard input forwarding.
 //!
 //! Two roles:
-//! - `InputSender` (guest side): captures local input events, serializes, sends on QUIC stream
-//! - `InputReceiver` (host side): receives events, injects into OS via platform APIs
+//! - `InputSender` (guest side): receives `InputMessage` events from a channel,
+//!   serializes them, and sends on a reliable QUIC unidirectional stream.
+//! - `InputReceiver` (host side): reads `InputMessage` events from a QUIC stream,
+//!   checks permissions, and injects them into the OS.
 //!
-//! Permission model: host must explicitly grant control via `ControlHandoff` before
-//! any input events are injected. Events received without permission are silently dropped.
+//! Permission model: the host must grant `ControlHandoff` before any events are
+//! injected. Events received without permission are silently dropped.
 //!
 //! Platform injection:
-//! - macOS: CGEvent posting (requires Accessibility permission)
-//! - Windows: SendInput API (Phase 3)
-//! - Linux: uinput / XTest (Phase 3)
-//!
-//! Implemented in P2.3.
+//! - macOS: CGEvent posting via `core-graphics` (requires Accessibility permission)
+//! - Other platforms: logged as unimplemented (Phase 3)
+
+pub mod clipboard;
+pub mod receiver;
+pub mod sender;
+
+#[cfg(target_os = "macos")]
+mod inject_macos;
+
+#[cfg(not(target_os = "macos"))]
+mod inject_stub;
+
+pub use clipboard::{
+    ClipboardReceiver, ClipboardReceiverHandle, ClipboardSender, ClipboardSenderHandle,
+};
+pub use receiver::{InputReceiver, InputReceiverHandle};
+pub use sender::{InputSender, InputSenderHandle};
+
+/// Permission state for input injection on the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputPermission {
+    /// No input events will be injected.
+    #[default]
+    Denied,
+    /// All keyboard and mouse events are injected.
+    FullControl,
+    /// Only keyboard events are injected.
+    KeyboardOnly,
+}
