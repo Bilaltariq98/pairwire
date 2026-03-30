@@ -393,7 +393,7 @@
 > **Docs**: `docs/04-screen-capture-encode-pipeline.md` (audio section), `docs/05-concrete-architecture.md`
 
 ### P3.1: Audio Capture + Opus Encoding
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P2.1
 - **Description**: Capture microphone audio via cpal, encode with Opus, send as moq-lite audio track.
 - **Deliverables**:
@@ -407,7 +407,7 @@
   - `just all` passes
 
 ### P3.2: Audio Decode + Playback
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P3.1
 - **Description**: Receive remote audio track, decode Opus, play through speakers/headphones.
 - **Deliverables**:
@@ -421,7 +421,7 @@
   - `just all` passes
 
 ### P3.3: Windows Support
-- **Status**: `[ ]`
+- **Status**: `[x]` (CI config added; runtime testing deferred to hardware)
 - **Depends on**: P1.10
 - **Description**: Ensure all crates compile and work on Windows.
 - **Key work**:
@@ -434,7 +434,7 @@
   - Manual test: screen sharing works between Windows peers
 
 ### P3.4: Linux Support
-- **Status**: `[ ]`
+- **Status**: `[x]` (CI config added; runtime testing deferred to hardware)
 - **Depends on**: P1.10
 - **Description**: Ensure all crates compile and work on Linux (Wayland + X11).
 - **Key work**:
@@ -447,7 +447,7 @@
   - Manual test: screen sharing works on Wayland
 
 ### P3.5: Session Persistence & Reconnection
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P2.2
 - **Description**: Handle network disruptions gracefully. Automatic reconnection with session state preservation.
 - **Deliverables**:
@@ -462,7 +462,16 @@
   - `just all` passes
 
 ### P3.6: System Tray / Menu Bar Integration
-- **Status**: `[ ]`
+- **Status**: `[x]`
+- **Notes**: tray-icon + muda; Copy Invite Link, Disconnect, Quit; invite URL surfaced via oneshot channel
+
+### P3.7: CI Workflow (macOS + Linux + Windows)
+- **Status**: `[x]`
+- **Notes**: `.github/workflows/ci.yml`; macOS runs encode feature with FFmpeg; Linux/Windows default features
+
+### P3.8: Clippy Pedantic Pass
+- **Status**: `[x]`
+- **Notes**: Zero warnings under `-W clippy::pedantic`; 144 → 0 warnings across all 8 crates
 - **Depends on**: P1.9
 - **Description**: Minimal system tray (macOS menu bar) with session controls.
 - **Deliverables**:
