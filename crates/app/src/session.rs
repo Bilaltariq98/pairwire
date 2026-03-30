@@ -328,12 +328,27 @@ fn start_capture(
 }
 
 fn host_capabilities() -> Vec<Capability> {
-    #[cfg(feature = "encode")]
-    return vec![Capability::Screen, Capability::Audio];
-    #[cfg(not(feature = "encode"))]
-    return vec![Capability::Screen];
+    #[cfg(feature = "audio")]
+    {
+        vec![Capability::Screen, Capability::Audio]
+    }
+    #[cfg(not(feature = "audio"))]
+    {
+        vec![Capability::Screen]
+    }
 }
 
 fn guest_capabilities() -> Vec<Capability> {
-    vec![Capability::Screen, Capability::RemoteControl]
+    #[cfg(feature = "audio")]
+    {
+        vec![
+            Capability::Screen,
+            Capability::RemoteControl,
+            Capability::Audio,
+        ]
+    }
+    #[cfg(not(feature = "audio"))]
+    {
+        vec![Capability::Screen, Capability::RemoteControl]
+    }
 }
