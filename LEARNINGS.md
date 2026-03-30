@@ -14,6 +14,20 @@ Each entry should include:
 
 ## Entries
 
+### 2026-03-30 — FFmpeg macOS Homebrew build setup
+- **Area**: ffmpeg, build, macOS
+- **What**: `cargo build --features pairwire/ffmpeg` fails with two sequential errors on a fresh Mac:
+  1. `The system library libavutil was not found` — FFmpeg not installed
+  2. `fatal error: '/usr/include/libavcodec/avfft.h' file not found` — Homebrew installs headers under its own prefix, not `/usr/include`
+- **Resolution**: Install FFmpeg via Homebrew, then set both `PKG_CONFIG_PATH` and `CPATH` before building:
+  ```bash
+  brew install ffmpeg
+  export PKG_CONFIG_PATH="$(brew --prefix ffmpeg)/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+  export CPATH="$(brew --prefix ffmpeg)/include"
+  cargo build --workspace --features pairwire/ffmpeg,pairwire/gui
+  ```
+  Add both exports to `~/.zshrc` to make them permanent. The `CPATH` export is the critical one — without it, `ffmpeg-sys-next`'s bindgen step cannot find the FFmpeg headers even when pkg-config succeeds.
+
 ### 2026-03-30 — FFmpeg context must be allocated with codec pointer
 - **Area**: ffmpeg-next, capture
 - **What**: `codec::context::Context::new()` calls `avcodec_alloc_context3(null)`, which leaves `codec_type = AVMEDIA_TYPE_UNKNOWN`. libx264 (and other encoders) reject this with "Generic error in an external library".
