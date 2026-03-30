@@ -1,0 +1,12 @@
+[package]
+name = "pairwire-capture"
+description = "Screen capture (scap) and H.264 encoding (FFmpeg) pipeline"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+pairwire-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+tracing.workspace = true

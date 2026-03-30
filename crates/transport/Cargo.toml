@@ -1,0 +1,16 @@
+[package]
+name = "pairwire-transport"
+description = "iroh P2P connectivity and QUIC stream/datagram helpers"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+pairwire-core.workspace = true
+pairwire-protocol.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde.workspace = true
+postcard = { version = "1", features = ["alloc"] }
+bytes.workspace = true
+tracing.workspace = true
+hex = "0.4"

@@ -1,0 +1,12 @@
+[package]
+name = "pairwire-audio"
+description = "Audio capture (cpal) and Opus encoding/decoding pipeline"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+pairwire-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+tracing.workspace = true

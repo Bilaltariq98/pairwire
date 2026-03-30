@@ -1,0 +1,18 @@
+[package]
+name = "pairwire-core"
+description = "Shared types, config, and error definitions for pairwire"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+hex = "0.4"
+
+[features]
+test-support = []
+
+[dev-dependencies]
+postcard = { version = "1", features = ["alloc"] }

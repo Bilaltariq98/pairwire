@@ -8,7 +8,7 @@ Rust-native P2P pair programming tool. Terminal-first collaboration over QUIC (i
 
 1. `PLAN.md` — find your task, understand what phase it belongs to
 2. `AGENTS.md` — coding conventions, architecture, protocol reference
-3. `CONVENTIONS.md` — established patterns and coding conventions in the codebase
+3. `CONVENTIONS.md` — **ground truth** for patterns established in this codebase
 4. `LEARNINGS.md` — check for known gotchas before starting
 5. Relevant `docs/` file(s) — deep context when needed:
    - Connectivity/NAT: `docs/01-iroh-noq-connectivity.md`

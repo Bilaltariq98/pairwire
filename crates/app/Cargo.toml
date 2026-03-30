@@ -1,0 +1,22 @@
+[package]
+name = "pairwire"
+description = "P2P screen sharing and pair programming tool"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "pairwire"
+path = "src/main.rs"
+
+[dependencies]
+pairwire-core.workspace = true
+pairwire-protocol.workspace = true
+pairwire-transport.workspace = true
+pairwire-capture.workspace = true
+pairwire-audio.workspace = true
+pairwire-input.workspace = true
+pairwire-terminal.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

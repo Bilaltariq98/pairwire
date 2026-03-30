@@ -1,0 +1,16 @@
+[package]
+name = "pairwire-protocol"
+description = "Wire protocol message types for pairwire, serialized with postcard"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard = { version = "1", features = ["alloc"] }
+pairwire-core.workspace = true
+
+[features]
+test-support = []
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }

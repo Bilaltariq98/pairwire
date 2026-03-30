@@ -1,0 +1,54 @@
+//! Frame types passed between capture, encode, decode, and render threads.
+
+use bytes::Bytes;
+
+/// A raw uncompressed frame from the screen capturer.
+#[derive(Debug, Clone)]
+pub struct RawFrame {
+    /// Pixel data in BGRA format (4 bytes per pixel).
+    pub data: Bytes,
+    pub width: u32,
+    pub height: u32,
+    /// Capture timestamp in microseconds (monotonic).
+    pub timestamp_us: u64,
+}
+
+impl RawFrame {
+    /// Expected byte length for a BGRA frame of given dimensions.
+    pub fn expected_len(width: u32, height: u32) -> usize {
+        (width as usize) * (height as usize) * 4
+    }
+}
+
+/// An H.264-encoded packet (one or more NAL units).
+#[derive(Debug, Clone)]
+pub struct EncodedPacket {
+    /// NAL unit data.
+    pub data: Bytes,
+    /// Presentation timestamp in microseconds.
+    pub timestamp_us: u64,
+    /// Whether this packet starts a new keyframe group (IDR).
+    pub is_keyframe: bool,
+}
+
+/// A decoded frame ready for GPU upload and display.
+#[derive(Debug, Clone)]
+pub struct DecodedFrame {
+    /// Pixel data (format depends on decoder output, typically YUV420 or BGRA).
+    pub data: Bytes,
+    pub width: u32,
+    pub height: u32,
+    /// Presentation timestamp in microseconds.
+    pub timestamp_us: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_frame_expected_len() {
+        assert_eq!(RawFrame::expected_len(1920, 1080), 1920 * 1080 * 4);
+        assert_eq!(RawFrame::expected_len(1280, 720), 1280 * 720 * 4);
+    }
+}

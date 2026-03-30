@@ -1,0 +1,12 @@
+[package]
+name = "pairwire-input"
+description = "Keyboard, mouse, and clipboard input capture and injection"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+pairwire-core.workspace = true
+pairwire-protocol.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

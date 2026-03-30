@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/protocol",
+    "crates/transport",
+    "crates/capture",
+    "crates/audio",
+    "crates/input",
+    "crates/terminal",
+    "crates/app",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+authors = ["pairwire contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Bytes
+bytes = "1"
+
+# Hex encoding
+hex = "0.4"
+
+# Internal crates
+pairwire-core = { path = "crates/core" }
+pairwire-protocol = { path = "crates/protocol" }
+pairwire-transport = { path = "crates/transport" }
+pairwire-capture = { path = "crates/capture" }
+pairwire-audio = { path = "crates/audio" }
+pairwire-input = { path = "crates/input" }
+pairwire-terminal = { path = "crates/terminal" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0
+debug = true

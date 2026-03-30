@@ -1,0 +1,11 @@
+[package]
+name = "pairwire-terminal"
+description = "PTY-based terminal sharing over QUIC streams"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+pairwire-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
