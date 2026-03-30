@@ -4,6 +4,7 @@ pub mod connection;
 pub mod cursor;
 pub mod handshake;
 pub mod invite;
+pub mod moq_audio;
 pub mod moq_screen;
 pub mod quality;
 pub mod screen;
@@ -14,6 +15,9 @@ pub use connection::PairwireConnection;
 pub use cursor::{CursorReceiver, CursorReceiverHandle, CursorSender, CursorSenderHandle};
 pub use handshake::{NegotiatedSession, guest_handshake, host_handshake, local_handshake};
 pub use invite::InviteLink;
+pub use moq_audio::{
+    MoqAudioPublisher, MoqAudioPublisherHandle, MoqAudioSubscriber, MoqAudioSubscriberHandle,
+};
 pub use moq_screen::{
     MoqScreenPublisher, MoqScreenPublisherHandle, MoqScreenSubscriber, MoqScreenSubscriberHandle,
 };

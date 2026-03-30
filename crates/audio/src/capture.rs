@@ -14,9 +14,13 @@ use std::{
 };
 
 use pairwire_core::{Error, Result, config::AudioConfig};
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(feature = "capture")]
+use tracing::warn;
 
-use crate::{OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE, frame::AudioFrame};
+#[cfg(feature = "capture")]
+use crate::OPUS_SAMPLE_RATE;
+use crate::{OPUS_FRAME_SAMPLES, frame::AudioFrame};
 
 const CAPTURE_CHANNEL_CAPACITY: usize = 8;
 

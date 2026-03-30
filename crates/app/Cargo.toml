@@ -13,7 +13,7 @@ pairwire-core.workspace = true
 pairwire-protocol.workspace = true
 pairwire-transport.workspace = true
 pairwire-capture = { path = "../capture" }
-pairwire-audio.workspace = true
+pairwire-audio = { path = "../audio" }
 pairwire-input.workspace = true
 pairwire-terminal.workspace = true
 anyhow.workspace = true

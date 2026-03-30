@@ -9,17 +9,20 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use pairwire_audio::{
+    AudioCaptureThread, AudioDecodeThread, AudioEncodeThread, AudioPlaybackThread,
+};
 use pairwire_capture::{CaptureThread, DecodedFrame};
 use pairwire_core::{
     SessionId,
-    config::{CaptureConfig, VideoEncoder},
+    config::{AudioConfig, CaptureConfig, VideoEncoder},
 };
 use pairwire_protocol::{Capability, CursorUpdate};
 #[cfg(feature = "encode")]
 use pairwire_transport::{CursorReceiver, ScreenSender};
 use pairwire_transport::{
-    CursorSender, NegotiatedSession, ScreenReceiver, Transport, guest_handshake, host_handshake,
-    local_handshake,
+    CursorSender, MoqAudioPublisher, MoqAudioSubscriber, NegotiatedSession, ScreenReceiver,
+    Transport, guest_handshake, host_handshake, local_handshake,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -71,6 +74,22 @@ pub async fn run_host(args: HostArgs) -> Result<()> {
         "handshake complete"
     );
 
+    // Start audio pipeline if both peers support it.
+    let audio_handles = if session.has_capability(&pairwire_protocol::Capability::Audio) {
+        let audio_config = AudioConfig::default();
+        let (audio_capture, audio_frame_rx) = AudioCaptureThread::start_fake(audio_config.clone())
+            .context("failed to start audio capture")?;
+        let (audio_encode, audio_pkt_rx) = AudioEncodeThread::start(audio_config, audio_frame_rx)
+            .context("failed to start audio encoder")?;
+        let audio_pub = MoqAudioPublisher::new(Arc::clone(&conn));
+        let audio_pub_handle = audio_pub.spawn(audio_pkt_rx);
+        info!("audio pipeline started (host)");
+        Some((audio_capture, audio_encode, audio_pub_handle))
+    } else {
+        warn!("no Audio capability — not sending audio");
+        None
+    };
+
     // Encode + send only when FFmpeg is available and codec was negotiated.
     #[cfg(feature = "encode")]
     {
@@ -102,6 +121,12 @@ pub async fn run_host(args: HostArgs) -> Result<()> {
         warn!("encode feature not enabled — handshake done but not sending frames");
         conn.closed().await;
         info!("guest disconnected");
+    }
+
+    if let Some((audio_capture, audio_encode, audio_pub_handle)) = audio_handles {
+        audio_pub_handle.stop().await;
+        audio_encode.stop();
+        audio_capture.stop();
     }
 
     capture_thread.stop();
@@ -149,12 +174,28 @@ pub async fn run_join(
     let recv_handle = screen_recv.spawn(pkt_tx);
 
     // Keep cursor_update_tx alive for the duration of the session.
-    // Dropping it immediately causes CursorSender to exit before the connection closes.
     let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(64);
     let cursor_send = CursorSender::new(Arc::clone(&conn));
     let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
-    // cursor_update_tx will be wired to mouse input in P2.3; hold it here for now.
     let _cursor_update_tx = cursor_update_tx;
+
+    // Start audio receive pipeline if both peers support it.
+    let audio_handles = if session.has_capability(&pairwire_protocol::Capability::Audio) {
+        let audio_config = AudioConfig::default();
+        let (audio_pkt_tx, audio_pkt_rx) = tokio::sync::mpsc::channel(32);
+        let audio_sub = MoqAudioSubscriber::new(Arc::clone(&conn));
+        let audio_sub_handle = audio_sub.spawn(audio_pkt_tx);
+        let (audio_decode, audio_frame_rx) =
+            AudioDecodeThread::start(audio_config.clone(), audio_pkt_rx)
+                .context("failed to start audio decoder")?;
+        let audio_playback = AudioPlaybackThread::start(audio_config, audio_frame_rx)
+            .context("failed to start audio playback")?;
+        info!("audio pipeline started (guest)");
+        Some((audio_sub_handle, audio_decode, audio_playback))
+    } else {
+        warn!("no Audio capability — not receiving audio");
+        None
+    };
 
     #[cfg(feature = "encode")]
     {
@@ -185,6 +226,12 @@ pub async fn run_join(
         warn!("encode feature not enabled — handshake done but not decoding frames");
         conn.closed().await;
         info!("host disconnected");
+    }
+
+    if let Some((audio_sub_handle, audio_decode, audio_playback)) = audio_handles {
+        audio_sub_handle.stop().await;
+        audio_decode.stop();
+        audio_playback.stop();
     }
 
     recv_handle.stop().await;

@@ -23,6 +23,7 @@ use tracing::{info, warn};
 use crate::frame::AudioFrame;
 
 /// Jitter buffer target depth in frames (each frame = 20ms → 40ms buffer).
+#[cfg(feature = "capture")]
 const JITTER_BUFFER_FRAMES: usize = 2;
 
 /// Handle to a running audio playback thread.
