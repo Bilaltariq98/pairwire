@@ -310,7 +310,7 @@ fn start_capture(
 )> {
     #[cfg(feature = "capture")]
     {
-        match CaptureThread::start(config) {
+        match CaptureThread::start(config.clone()) {
             Ok(pair) => return Ok(pair),
             Err(e) => {
                 // Permission or hardware failure — fall through to fake source with a clear message.
