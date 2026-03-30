@@ -19,14 +19,19 @@ Each entry should include:
 - **What**: `cargo build --features pairwire/ffmpeg` fails with two sequential errors on a fresh Mac:
   1. `The system library libavutil was not found` — FFmpeg not installed
   2. `fatal error: '/usr/include/libavcodec/avfft.h' file not found` — Homebrew installs headers under its own prefix, not `/usr/include`
-- **Resolution**: Install FFmpeg via Homebrew, then set `PKG_CONFIG_PATH` and `BINDGEN_EXTRA_CLANG_ARGS` before building:
+- **Resolution**: Install FFmpeg via Homebrew, set env vars, and use `ffmpeg-next = "8"` (not 6 or 7):
   ```bash
   brew install ffmpeg
   export PKG_CONFIG_PATH="$(brew --prefix ffmpeg)/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
   export BINDGEN_EXTRA_CLANG_ARGS="-I$(brew --prefix ffmpeg)/include"
   cargo build --workspace --features pairwire/ffmpeg,pairwire/gui
   ```
-  Add both to `~/.zshrc` to make them permanent. `CPATH` does NOT work — bindgen invokes clang directly and ignores `CPATH`. The correct variable is `BINDGEN_EXTRA_CLANG_ARGS`.
+  Add both exports to `~/.zshrc` to make them permanent.
+- **Version mapping** (critical): Homebrew ships FFmpeg 7.x. `avfft.h` was removed in FFmpeg 7. The crate version must match:
+  - `ffmpeg-next = "6"` → targets FFmpeg 6.x → `avfft.h` missing error on Homebrew
+  - `ffmpeg-next = "7"` → targets FFmpeg 6.x headers → same error
+  - `ffmpeg-next = "8"` → targets FFmpeg 7.x → ✅ works with Homebrew FFmpeg
+- `CPATH` does NOT work — bindgen invokes clang directly and ignores it. Use `BINDGEN_EXTRA_CLANG_ARGS`.
 
 ### 2026-03-30 — web-transport-iroh is pinned to iroh 0.96, not 0.97
 - **Area**: moq-lite, iroh, web-transport
