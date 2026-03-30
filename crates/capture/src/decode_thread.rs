@@ -26,7 +26,7 @@ mod inner {
     };
     use pairwire_core::{Error, Result};
     use tokio::sync::mpsc as async_mpsc;
-    use tracing::{info, warn};
+    use tracing::{debug, info, warn};
 
     use crate::frame::{DecodedFrame, EncodedPacket};
 

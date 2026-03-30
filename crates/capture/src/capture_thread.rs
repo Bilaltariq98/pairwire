@@ -16,6 +16,8 @@ use std::{
 };
 
 use pairwire_core::{Error, Result, config::CaptureConfig};
+#[cfg(feature = "capture")]
+use tracing::warn;
 use tracing::{debug, info};
 
 use crate::frame::RawFrame;
