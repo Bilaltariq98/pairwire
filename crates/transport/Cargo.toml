@@ -14,3 +14,10 @@ postcard = { version = "1", features = ["alloc"] }
 bytes.workspace = true
 tracing.workspace = true
 hex = "0.4"
+iroh.workspace = true
+data-encoding.workspace = true
+
+[dev-dependencies]
+rand = "0.9"
+tokio = { version = "1", features = ["full"] }
+pairwire-protocol = { path = "../protocol", features = ["test-support"] }

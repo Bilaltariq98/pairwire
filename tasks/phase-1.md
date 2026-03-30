@@ -6,16 +6,16 @@
 ## Tasks
 
 ### P1.1 — iroh Endpoint Setup
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/transport`
-- **Key deliverables**: `Transport`, `InviteLink` (full impl), `connect()`, `accept()`
-- **Depends on**: P0.2, P0.5
+- **Key deliverables**: `Transport` (bind/connect/accept), `InviteLink` (Display+FromStr), `ALPN` constant
+- **Notes**: iroh 0.97 API — `endpoint.id()`, `endpoint.addr()`, `endpoint.online().await`, `conn.remote_id()`. See LEARNINGS.md.
 
 ### P1.2 — Raw Stream & Datagram Helpers
-- **Status**: 🔲 Not started
+- **Status**: ✅ Complete
 - **Crate**: `crates/transport`
-- **Key deliverables**: `open_control_stream()`, `open_input_stream()`, `send_datagram()`, `send_message<T>()`, `recv_message<T>()`
-- **Depends on**: P1.1
+- **Key deliverables**: `PairwireConnection` wrapper, `open_control_stream()`, `open_input_stream()`, `accept_bi()`, `accept_uni()`, `send_cursor_datagram()`, `recv_cursor_datagram()`, `send_message<T>()`, `recv_message<T>()`
+- **Notes**: Length-prefixed postcard framing (4-byte LE length + payload). Max message 4MB. Datagram size asserted < 1200 bytes.
 
 ### P1.3 — Screen Capture Thread
 - **Status**: 🔲 Not started

@@ -39,6 +39,12 @@ bytes = "1"
 # Hex encoding
 hex = "0.4"
 
+# P2P connectivity
+iroh = { version = "0.97", default-features = false }
+
+# Base32 encoding for endpoint IDs in invite links
+data-encoding = "2"
+
 # Internal crates
 pairwire-core = { path = "crates/core" }
 pairwire-protocol = { path = "crates/protocol" }

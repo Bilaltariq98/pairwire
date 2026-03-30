@@ -121,7 +121,7 @@
 > **Docs**: All of `docs/01` through `docs/05`
 
 ### P1.1: iroh Endpoint Setup
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P0.2, P0.5
 - **Description**: Create the transport layer in `crates/transport`. Set up iroh endpoint creation, invite link generation/parsing, and peer connection.
 - **Deliverables**:
@@ -138,7 +138,7 @@
 - **Docs**: `docs/01-iroh-noq-connectivity.md`
 
 ### P1.2: Raw Stream & Datagram Helpers
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.1
 - **Description**: Add typed stream and datagram helpers to the `Connection` wrapper. These are the building blocks for all data exchange.
 - **Deliverables**:

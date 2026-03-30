@@ -14,6 +14,27 @@ Each entry should include:
 
 ## Entries
 
+### 2026-03-30 — iroh 0.97 API corrections
+- **Area**: iroh, transport
+- **What**: Several method names differ from what the docs/examples suggest:
+  - `endpoint.id()` not `endpoint.endpoint_id()`
+  - `endpoint.addr()` not `endpoint.endpoint_addr()`
+  - `endpoint.online().await` to wait for relay assignment (no return value)
+  - `conn.remote_id()` not `conn.remote_endpoint_id()`
+  - `EndpointId` is a type alias for `PublicKey`; `Display` uses lowercase hex
+  - `SecretKey::generate` requires `&mut impl CryptoRng` (not by value)
+- **Resolution**: Always check the actual source in `~/.cargo/registry/src/` before writing iroh code.
+
+### 2026-03-30 — rand version conflict with iroh
+- **Area**: iroh, transport
+- **What**: iroh-base uses `rand_core 0.9`. Using `rand 0.8` in the same crate causes a `CryptoRng` trait mismatch because `rand 0.8` depends on `rand_core 0.6`.
+- **Resolution**: Use `rand = "0.9"` in any crate that also depends on iroh. Also: `rand::thread_rng()` is renamed to `rand::rng()` in rand 0.9.
+
+### 2026-03-30 — iroh test compilation is slow
+- **Area**: iroh, build
+- **What**: `cargo test --workspace` appears to hang because compiling iroh (noq, iroh-relay, etc.) takes 60–90 seconds on first build. It's not actually hung.
+- **Resolution**: Run `cargo test -p pairwire-core -p pairwire-protocol -p pairwire-capture -p pairwire-audio` for fast iteration. Run `cargo test -p pairwire-transport` separately with a longer timeout.
+
 ### 2026-03-30 — Project Bootstrapped
 - **Area**: project
 - **What**: Repository initialized with research docs, agent instructions, and phased build plan.
