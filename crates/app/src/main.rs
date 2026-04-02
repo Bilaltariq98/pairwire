@@ -94,22 +94,27 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
                 break;
             }
 
-            // On macOS, the tray icon and its menu require the NSApplication
-            // run loop to process events. We spin the run loop with a short
-            // timeout so menu popups and click events work properly.
+            // On macOS, the tray menu requires the NSApplication event
+            // dispatch loop — CFRunLoopRunInMode only pumps CF sources, NOT
+            // AppKit events (menu clicks, popups). We use the standard Cocoa
+            // event pump: nextEventMatchingMask + sendEvent.
             #[cfg(target_os = "macos")]
             {
-                use core_foundation::runloop::{
-                    CFRunLoopRunInMode, kCFRunLoopDefaultMode, kCFRunLoopRunTimedOut,
-                };
-                unsafe {
-                    // Process all pending events, then wait up to 50ms for more.
-                    // returnAfterSourceHandled=true so menus can pump the loop.
-                    loop {
-                        let result = CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true as u8);
-                        if result == kCFRunLoopRunTimedOut {
-                            break;
-                        }
+                use objc2_app_kit::{NSApplication, NSEventMask};
+                use objc2_foundation::{MainThreadMarker, NSDate};
+
+                let mtm = MainThreadMarker::new().expect("must be main thread");
+                let app = NSApplication::sharedApplication(mtm);
+                loop {
+                    let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                        NSEventMask::Any,
+                        Some(&NSDate::dateWithTimeIntervalSinceNow(0.05)),
+                        objc2_foundation::ns_string!("kCFRunLoopDefaultMode"),
+                        true,
+                    );
+                    match event {
+                        Some(event) => app.sendEvent(&event),
+                        None => break,
                     }
                 }
             }
