@@ -65,6 +65,20 @@ mod inner {
         ///
         /// Must be called from the main thread.
         pub fn new(invite_url: Option<String>) -> anyhow::Result<Self> {
+            // macOS requires the process to register as a GUI app before tray
+            // icons become visible. Without this, a CLI binary's tray icon is
+            // created but never shown.
+            #[cfg(target_os = "macos")]
+            {
+                use objc2_foundation::MainThreadMarker;
+                if let Some(mtm) = MainThreadMarker::new() {
+                    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+                    let app = NSApplication::sharedApplication(mtm);
+                    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+                    debug!("macOS activation policy set to Accessory");
+                }
+            }
+
             let copy_item = MenuItem::new("Copy Invite Link", invite_url.is_some(), None);
             let disconnect_item = MenuItem::new("Disconnect", true, None);
             let separator = PredefinedMenuItem::separator();
