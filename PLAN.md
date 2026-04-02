@@ -973,11 +973,14 @@
   Announcements: leaves publish to root, leaves watch root for peer discovery
   ```
 - **What to think about when we get here**:
-  - Start with 3 nodes (US, EU, APAC) — matches the live cdn.moq.dev topology, already proven
-  - Room invites encode the leaf URL; client geo-selects nearest leaf at invite generation time
-  - Node failure mid-session: reconnect to same leaf (if recovered) or reroute via another leaf
-  - Paid-tier features at the relay layer: recording (tap hang tracks → object storage), live transcription (forward `audio/asr` simulcast track to Whisper worker), analytics, team room management
-  - Self-hosted path: moq-relay is open source; teams run their own node(s) pointed at by pairwire config
+  - **Option A — Cloudflare's relay first**: Cloudflare operates a public MoQ relay on their anycast network (`relay.cloudflare.mediaoverquic.com`). Same protocol, global coverage, zero ops. Could be the right default before pairwire has scale to justify running its own nodes. Downside: less control over paid-tier feature attachment (recording, transcription).
+  - **Option B — self-hosted moq-relay**: 3 nodes (US, EU, APAC) matches the live `cdn.moq.dev` topology. Terraform module is already in the moq-dev/moq repo. GCP/Linode or similar. Gives full control for attaching recording, Whisper, analytics workers to the relay.
+  - Likely path: start with Cloudflare for early paid tier, migrate to self-hosted as volume and feature requirements justify it.
+  - Room invites encode the relay URL; switching relay providers is a config change, not a protocol change.
+  - Node failure mid-session: reconnect to same leaf (if recovered) or reroute via another leaf.
+  - Paid-tier features at the relay layer: recording (tap hang tracks → object storage), live transcription (forward `audio/asr` simulcast track to Whisper worker), analytics, team room management.
+  - Self-hosted path: moq-relay is open source; teams run their own node(s) pointed at by pairwire config.
+  - Tree topology (moq-dev/moq#927): when shipped, enables 2 nodes per region with a regional sub-root. Not available yet — revisit.
 - **Not blocked on anything in the codebase** — P5.1 client works against any moq-relay node. This task is infra + ops + paid-tier product decisions.
 - **Acceptance criteria**: TBD when we revisit post-launch.
 

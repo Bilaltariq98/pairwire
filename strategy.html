@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pairwire — Strategy Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #0B0A09;
+    --bg2:       #141210;
+    --bg3:       #1C1916;
+    --bg4:       #252119;
+    --copper:    #C8844A;
+    --copper-lt: #E09A62;
+    --copper-dk: #9A6030;
+    --amber:     #E8B84B;
+    --cream:     #F0EDE8;
+    --warm-gray: #8A8480;
+    --muted:     #4A4540;
+    --green:     #4CAF7D;
+    --red:       #E05A4A;
+    --blue:      #5A9AE0;
+
+    --sans: 'Inter', system-ui, sans-serif;
+    --mono: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--cream);
+    font-family: var(--sans);
+    overflow: hidden;
+  }
+
+  /* ── Slide Container ─────────────────────────────────── */
+  .deck {
+    width: 100vw; height: 100vh;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: none;
+    padding: 64px 72px;
+    overflow: hidden;
+  }
+  .slide.active { display: flex; }
+
+  /* ── Navigation ──────────────────────────────────────── */
+  .nav {
+    position: fixed;
+    bottom: 28px; left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    z-index: 100;
+    background: rgba(11,10,9,0.8);
+    border: 1px solid var(--muted);
+    border-radius: 32px;
+    padding: 10px 20px;
+    backdrop-filter: blur(12px);
+  }
+  .nav button {
+    background: none; border: none;
+    color: var(--warm-gray);
+    font-family: var(--mono);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 16px;
+    transition: all 0.2s;
+  }
+  .nav button:hover { color: var(--cream); background: var(--bg4); }
+  .nav .counter {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--warm-gray);
+    min-width: 48px;
+    text-align: center;
+    letter-spacing: 0.05em;
+  }
+  .progress-dots {
+    display: flex; gap: 6px; align-items: center;
+  }
+  .dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: all 0.2s;
+    cursor: pointer;
+  }
+  .dot.active { background: var(--copper); width: 14px; border-radius: 3px; }
+
+  /* ── SVG Decorators ──────────────────────────────────── */
+  .wire-bg {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.06;
+  }
+
+  /* ── Typography ──────────────────────────────────────── */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--copper);
+    margin-bottom: 16px;
+  }
+  h1 { font-size: clamp(48px, 7vw, 88px); font-weight: 900; line-height: 0.95; letter-spacing: -0.03em; }
+  h2 { font-size: clamp(28px, 3.5vw, 44px); font-weight: 700; line-height: 1.05; letter-spacing: -0.02em; }
+  h3 { font-size: clamp(18px, 2vw, 24px); font-weight: 600; line-height: 1.2; }
+  .body { font-size: 15px; line-height: 1.65; color: var(--warm-gray); font-weight: 400; }
+  .mono { font-family: var(--mono); }
+  .copper { color: var(--copper); }
+  .amber { color: var(--amber); }
+  .cream { color: var(--cream); }
+  .muted { color: var(--warm-gray); }
+
+  /* ── Cards / Surfaces ────────────────────────────────── */
+  .card {
+    background: var(--bg3);
+    border: 1px solid var(--bg4);
+    border-radius: 12px;
+    padding: 24px 28px;
+  }
+  .card-accent {
+    border-left: 3px solid var(--copper);
+  }
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid currentColor;
+  }
+  .chip-copper { color: var(--copper); }
+  .chip-green  { color: var(--green); }
+  .chip-red    { color: var(--red); }
+  .chip-blue   { color: var(--blue); }
+  .chip-amber  { color: var(--amber); }
+
+  /* ── Utility ─────────────────────────────────────────── */
+  .row { display: flex; gap: 24px; }
+  .col { display: flex; flex-direction: column; gap: 16px; }
+  .flex-1 { flex: 1; }
+  .flex-2 { flex: 2; }
+  .flex-3 { flex: 3; }
+  .gap-8  { gap: 8px; }
+  .gap-12 { gap: 12px; }
+  .gap-32 { gap: 32px; }
+  .mt-8  { margin-top: 8px; }
+  .mt-16 { margin-top: 16px; }
+  .mt-24 { margin-top: 24px; }
+  .mt-32 { margin-top: 32px; }
+  .divider {
+    height: 1px;
+    background: var(--bg4);
+    margin: 20px 0;
+  }
+
+  /* Terminal mockup */
+  .terminal {
+    background: #0D0C0B;
+    border: 1px solid var(--bg4);
+    border-radius: 10px;
+    overflow: hidden;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .term-bar {
+    background: var(--bg3);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--bg4);
+  }
+  .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-body { padding: 20px 20px; line-height: 1.7; }
+  .term-prompt { color: var(--copper); }
+  .term-cmd    { color: var(--cream); }
+  .term-out    { color: var(--warm-gray); }
+  .term-ok     { color: var(--green); }
+  .term-accent { color: var(--amber); }
+
+  /* Mermaid */
+  .mermaid { text-align: center; }
+
+  /* Comparison table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--warm-gray);
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--bg4);
+  }
+  td { padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr.highlight-row td { background: rgba(200,132,74,0.07); }
+  .check  { color: var(--green); }
+  .cross  { color: var(--red); }
+  .partial { color: var(--amber); }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 1 — TITLE                     ║
+     ╚══════════════════════════════════════╝ */
+  #s1 {
+    flex-direction: column;
+    justify-content: flex-end;
+    padding-bottom: 80px;
+    background:
+      radial-gradient(ellipse 80% 60% at 70% 30%, rgba(200,132,74,0.08) 0%, transparent 70%),
+      var(--bg);
+  }
+  .title-super {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--copper);
+    margin-bottom: 24px;
+  }
+  .title-main {
+    font-size: clamp(72px, 10vw, 120px);
+    font-weight: 900;
+    letter-spacing: -0.04em;
+    line-height: 0.9;
+    color: var(--cream);
+  }
+  .title-main span { color: var(--copper); }
+  .title-sub {
+    margin-top: 28px;
+    font-size: 18px;
+    color: var(--warm-gray);
+    font-weight: 400;
+    max-width: 520px;
+    line-height: 1.55;
+  }
+  .title-meta {
+    margin-top: 48px;
+    display: flex;
+    gap: 32px;
+    align-items: center;
+  }
+  .meta-item {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+  }
+  .meta-item span { color: var(--cream); }
+  .wire-trace {
+    position: absolute;
+    top: 0; right: 0;
+    width: 55%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0.15;
+  }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 2 — PROBLEM                   ║
+     ╚══════════════════════════════════════╝ */
+  #s2 { flex-direction: row; align-items: center; gap: 64px; }
+  .problem-number {
+    font-family: var(--mono);
+    font-size: 64px;
+    font-weight: 700;
+    color: var(--bg4);
+    line-height: 1;
+    user-select: none;
+  }
+  .pain-item {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--bg4);
+  }
+  .pain-item:last-child { border-bottom: none; }
+  .pain-icon { font-size: 20px; margin-top: 2px; flex-shrink: 0; width: 28px; }
+  .pain-label { font-size: 15px; font-weight: 600; color: var(--cream); }
+  .pain-desc  { font-size: 13px; color: var(--warm-gray); margin-top: 3px; line-height: 1.5; }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 3 — WHAT IT IS                ║
+     ╚══════════════════════════════════════╝ */
+  #s3 { flex-direction: row; gap: 48px; align-items: flex-start; padding-top: 56px; }
+  .feature-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 16px;
+  }
+  .feat-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--copper);
+    margin-top: 7px;
+    flex-shrink: 0;
+  }
+  .feat-title  { font-size: 14px; font-weight: 600; color: var(--cream); }
+  .feat-detail { font-size: 12px; color: var(--warm-gray); margin-top: 2px; line-height: 1.45; }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 4 — ARCHITECTURE              ║
+     ╚══════════════════════════════════════╝ */
+  #s4 { flex-direction: column; align-items: center; justify-content: center; }
+  #s4 .mermaid { width: 100%; max-width: 900px; }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 5 — COMPETITION               ║
+     ╚══════════════════════════════════════╝ */
+  #s5 { flex-direction: row; gap: 56px; align-items: flex-start; padding-top: 52px; }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 6 — GTM V1                    ║
+     ╚══════════════════════════════════════╝ */
+  #s6 {
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    background:
+      radial-gradient(ellipse 50% 70% at 90% 50%, rgba(200,132,74,0.06) 0%, transparent 70%),
+      var(--bg);
+  }
+  .install-block {
+    background: #0D0C0B;
+    border: 1px solid var(--copper-dk);
+    border-radius: 10px;
+    padding: 22px 28px;
+    font-family: var(--mono);
+    font-size: 16px;
+    color: var(--cream);
+    margin-top: 28px;
+    position: relative;
+    overflow: hidden;
+  }
+  .install-block::before {
+    content: '$ ';
+    color: var(--copper);
+  }
+  .install-block .cursor {
+    display: inline-block;
+    width: 9px; height: 16px;
+    background: var(--copper);
+    animation: blink 1.1s step-end infinite;
+    vertical-align: text-bottom;
+    margin-left: 2px;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  .v1-pillars {
+    display: flex;
+    gap: 20px;
+    margin-top: 40px;
+  }
+  .pillar {
+    flex: 1;
+    background: var(--bg3);
+    border: 1px solid var(--bg4);
+    border-top: 2px solid var(--copper);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .pillar-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--copper); margin-bottom: 8px; }
+  .pillar-value { font-size: 15px; font-weight: 600; color: var(--cream); line-height: 1.4; }
+  .pillar-note  { font-size: 12px; color: var(--warm-gray); margin-top: 4px; line-height: 1.4; }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 7 — MONETISATION              ║
+     ╚══════════════════════════════════════╝ */
+  #s7 { flex-direction: row; gap: 32px; align-items: stretch; padding-top: 52px; }
+  .tier-card {
+    flex: 1;
+    border-radius: 14px;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    border: 1px solid var(--bg4);
+  }
+  .tier-free { background: var(--bg2); }
+  .tier-paid {
+    background: linear-gradient(145deg, #1E1610 0%, #16120D 100%);
+    border-color: var(--copper-dk);
+    position: relative;
+    overflow: hidden;
+  }
+  .tier-paid::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--copper-dk), var(--amber), var(--copper-dk));
+  }
+  .tier-name { font-size: 11px; font-family: var(--mono); letter-spacing: 0.15em; text-transform: uppercase; }
+  .tier-price { font-size: 36px; font-weight: 900; letter-spacing: -0.02em; line-height: 1; }
+  .tier-price sub { font-size: 14px; font-weight: 400; color: var(--warm-gray); }
+  .tier-feature {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    font-size: 13px;
+  }
+  .tier-feature .icon { flex-shrink: 0; margin-top: 1px; }
+  .tier-divider { height: 1px; background: var(--bg4); }
+  .tier-cta {
+    margin-top: auto;
+    font-size: 12px;
+    color: var(--warm-gray);
+    font-style: italic;
+    line-height: 1.5;
+  }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 8 — THE MOAT                  ║
+     ╚══════════════════════════════════════╝ */
+  #s8 { flex-direction: row; gap: 56px; align-items: flex-start; padding-top: 52px; }
+  .moat-layer {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--bg4);
+  }
+  .moat-layer:last-child { border-bottom: none; }
+  .moat-num {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--bg4);
+    line-height: 1;
+    min-width: 40px;
+  }
+  .moat-title  { font-size: 15px; font-weight: 600; color: var(--cream); }
+  .moat-detail { font-size: 13px; color: var(--warm-gray); margin-top: 4px; line-height: 1.55; }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 9 — RAID                      ║
+     ╚══════════════════════════════════════╝ */
+  #s9 { flex-direction: column; gap: 0; padding-top: 48px; }
+  .raid-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 16px;
+    flex: 1;
+    margin-top: 24px;
+  }
+  .raid-cell {
+    background: var(--bg2);
+    border: 1px solid var(--bg4);
+    border-radius: 12px;
+    padding: 20px 22px;
+    overflow: hidden;
+  }
+  .raid-header {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .raid-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .raid-item {
+    font-size: 12px;
+    color: var(--warm-gray);
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    line-height: 1.45;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .raid-item:last-child { border-bottom: none; }
+  .raid-item-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; margin-top: 6px; flex-shrink: 0; }
+  .raid-risks    .raid-header { color: var(--red);    } .raid-risks    .raid-dot { background: var(--red); }
+  .raid-assumptions .raid-header { color: var(--amber); } .raid-assumptions .raid-dot { background: var(--amber); }
+  .raid-issues   .raid-header { color: var(--copper); } .raid-issues   .raid-dot { background: var(--copper); }
+  .raid-deps     .raid-header { color: var(--blue);   } .raid-deps     .raid-dot { background: var(--blue); }
+  .raid-item.raid-risks     { color: rgba(224,90,74,0.75); }
+  .raid-item.raid-assumptions { color: rgba(232,184,75,0.75); }
+  .raid-item.raid-issues    { color: rgba(200,132,74,0.75); }
+  .raid-item.raid-deps      { color: rgba(90,154,224,0.75); }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 10 — BRAND MOODBOARD          ║
+     ╚══════════════════════════════════════╝ */
+  #s10 {
+    flex-direction: column;
+    background:
+      radial-gradient(ellipse 60% 50% at 20% 80%, rgba(200,132,74,0.07) 0%, transparent 60%),
+      radial-gradient(ellipse 40% 40% at 80% 20%, rgba(232,184,75,0.04) 0%, transparent 60%),
+      var(--bg);
+    padding-top: 48px;
+  }
+  .swatch-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+  }
+  .swatch {
+    flex: 1;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .swatch-color { height: 64px; }
+  .swatch-info {
+    padding: 10px 12px;
+    background: var(--bg3);
+    border: 1px solid var(--bg4);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+  }
+  .swatch-name  { font-size: 12px; font-weight: 600; color: var(--cream); }
+  .swatch-hex   { font-family: var(--mono); font-size: 10px; color: var(--warm-gray); margin-top: 2px; }
+  .swatch-use   { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .mood-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-top: 20px;
+  }
+  .mood-block {
+    background: var(--bg3);
+    border: 1px solid var(--bg4);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .mood-label { font-family: var(--mono); font-size: 10px; color: var(--copper); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 10px; }
+  .type-sample-h { font-size: 22px; font-weight: 900; letter-spacing: -0.02em; color: var(--cream); line-height: 1.1; }
+  .type-sample-m { font-family: var(--mono); font-size: 13px; color: var(--copper-lt); margin-top: 6px; }
+  .persona-tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    background: var(--bg4);
+    color: var(--warm-gray);
+    margin: 3px 3px 0 0;
+  }
+  .comp-logos {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .comp-logo {
+    font-size: 12px;
+    padding: 5px 12px;
+    border: 1px solid var(--bg4);
+    border-radius: 6px;
+    color: var(--warm-gray);
+    font-family: var(--mono);
+  }
+
+  /* ╔══════════════════════════════════════╗
+     ║  SLIDE 11 — NEXT STEPS               ║
+     ╚══════════════════════════════════════╝ */
+  #s11 { flex-direction: column; justify-content: center; align-items: flex-start; gap: 0; }
+  .roadmap-row {
+    display: flex;
+    gap: 0;
+    margin-top: 36px;
+    position: relative;
+  }
+  .roadmap-row::before {
+    content: '';
+    position: absolute;
+    top: 22px; left: 22px; right: 22px;
+    height: 1px;
+    background: var(--bg4);
+  }
+  .roadmap-phase {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 0 12px;
+    position: relative;
+  }
+  .phase-node {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    position: relative;
+    z-index: 1;
+    background: var(--bg);
+    border: 2px solid var(--bg4);
+    color: var(--warm-gray);
+  }
+  .phase-node.done     { border-color: var(--green);  color: var(--green);  }
+  .phase-node.active   { border-color: var(--copper); color: var(--copper); background: rgba(200,132,74,0.1); }
+  .phase-node.upcoming { border-color: var(--muted);  color: var(--muted);  }
+  .phase-label { font-size: 11px; font-weight: 600; color: var(--cream); text-align: center; line-height: 1.3; }
+  .phase-items { list-style: none; text-align: center; }
+  .phase-items li { font-size: 11px; color: var(--warm-gray); padding: 2px 0; line-height: 1.4; }
+  .phase-tag {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: center;
+  }
+  .cta-row {
+    margin-top: 44px;
+    display: flex;
+    gap: 24px;
+    align-items: center;
+  }
+  .cta-primary {
+    background: var(--copper);
+    color: var(--bg);
+    font-weight: 700;
+    font-size: 14px;
+    padding: 12px 28px;
+    border-radius: 8px;
+    font-family: var(--mono);
+    letter-spacing: 0.05em;
+  }
+  .cta-secondary {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--warm-gray);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 1 — TITLE
+  ══════════════════════════════════════════ -->
+  <div class="slide active" id="s1">
+    <svg class="wire-trace" viewBox="0 0 600 800" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMaxYMid slice">
+      <path d="M600 0 L600 200 L400 200 L400 400 L500 400 L500 600 L300 600 L300 800" stroke="#C8844A" stroke-width="1.5" fill="none"/>
+      <path d="M600 100 L450 100 L450 300 L550 300 L550 500 L350 500 L350 700" stroke="#C8844A" stroke-width="1" fill="none" opacity="0.5"/>
+      <circle cx="400" cy="200" r="4" fill="#C8844A"/>
+      <circle cx="500" cy="400" r="4" fill="#C8844A"/>
+      <circle cx="300" cy="600" r="4" fill="#C8844A"/>
+      <circle cx="450" cy="100" r="3" fill="#C8844A" opacity="0.5"/>
+      <circle cx="550" cy="300" r="3" fill="#C8844A" opacity="0.5"/>
+      <!-- Animated signal dot -->
+      <circle r="5" fill="#E8B84B" opacity="0.8">
+        <animateMotion dur="4s" repeatCount="indefinite"
+          path="M600 0 L600 200 L400 200 L400 400 L500 400 L500 600 L300 600 L300 800"/>
+      </circle>
+    </svg>
+
+    <div class="title-super">Strategy Overview — 2026</div>
+    <div class="title-main">pair<span>wire</span></div>
+    <div class="title-sub">A Rust-native pair programming tool. Terminal-first, P2P, zero accounts. Built on QUIC. Fast by construction.</div>
+    <div class="title-meta">
+      <div class="meta-item">Stack <span>Rust · iroh · moq-lite · FFmpeg</span></div>
+      <div class="meta-item">Protocol <span>QUIC / MoQ</span></div>
+      <div class="meta-item">Status <span>Phase 3 — Audio + Platform</span></div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 2 — THE PROBLEM
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s2">
+    <div class="col flex-1" style="justify-content: center; padding-right: 24px; border-right: 1px solid var(--bg4);">
+      <div class="eyebrow">The Problem</div>
+      <h2>Pair programming tools<br>don't actually pair.</h2>
+      <div class="body mt-16" style="max-width: 320px;">Every existing tool makes a trade-off that breaks the workflow. Pairwire is built to close all of them.</div>
+      <div class="mt-32">
+        <div style="font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px;">Market gap</div>
+        <div style="font-size: 36px; font-weight: 900; color: var(--cream);">$0</div>
+        <div style="font-size: 13px; color: var(--warm-gray); margin-top: 2px;">cost to use Tuple if you're on Linux</div>
+        <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">(it doesn't support Linux)</div>
+      </div>
+    </div>
+
+    <div class="col flex-2" style="justify-content: center; padding-left: 24px;">
+      <div class="pain-item">
+        <div class="pain-icon">🐢</div>
+        <div>
+          <div class="pain-label">Zoom & Meet: latency floors</div>
+          <div class="pain-desc">200–500ms screen share delay. Video compression blurs text. Designed for meetings, not typing.</div>
+        </div>
+      </div>
+      <div class="pain-item">
+        <div class="pain-icon">💰</div>
+        <div>
+          <div class="pain-label">Tuple: great tool, expensive gate</div>
+          <div class="pain-desc">$99/user/year. macOS + Windows only. No Linux. Screen-capture only — no terminal-native sharing.</div>
+        </div>
+      </div>
+      <div class="pain-item">
+        <div class="pain-icon">🔒</div>
+        <div>
+          <div class="pain-label">VS Live Share: editor prison</div>
+          <div class="pain-desc">VS Code / Visual Studio only. No screen context, no audio, can't show a browser or design tool.</div>
+        </div>
+      </div>
+      <div class="pain-item">
+        <div class="pain-icon">📺</div>
+        <div>
+          <div class="pain-label">Screen capture is the wrong primitive</div>
+          <div class="pain-desc">Every tool sends pixels. Terminals are text. A PTY forward is 100× cheaper and perfectly sharp.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 3 — WHAT PAIRWIRE IS
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s3">
+    <div class="col flex-1" style="padding-right: 32px;">
+      <div class="eyebrow">The Product</div>
+      <h2>Everything in<br>one binary.</h2>
+      <div class="body mt-16" style="max-width: 300px;">One <code style="font-family:var(--mono);font-size:13px;color:var(--copper-lt);">pairwire</code> binary. No daemon, no Electron, no accounts. Starts in milliseconds.</div>
+      <div class="mt-32">
+        <div class="feature-row"><div class="feat-dot"></div><div><div class="feat-title">Screen sharing</div><div class="feat-detail">H.264 via FFmpeg + VideoToolbox (HW). QUIC streams. Priority scheduling per track.</div></div></div>
+        <div class="feature-row"><div class="feat-dot"></div><div><div class="feat-title">Audio</div><div class="feat-detail">cpal capture · Opus 48kHz · VAD silence suppression · jitter buffer.</div></div></div>
+        <div class="feature-row"><div class="feat-dot"></div><div><div class="feat-title">Remote control</div><div class="feat-detail">Keyboard + mouse injection via CGEvent. Click to drive. Host reclaims on mouse move.</div></div></div>
+        <div class="feature-row"><div class="feat-dot"></div><div><div class="feat-title">Terminal sharing</div><div class="feat-detail">PTY forwarding — not screen capture. Pixel-perfect. Your fonts, your theme. Read-only / RW permissions.</div></div></div>
+        <div class="feature-row"><div class="feat-dot"></div><div><div class="feat-title">Localhost tunneling</div><div class="feat-detail">QUIC proxy of host's dev server to guest. No SSH, no ngrok, no config.</div></div></div>
+        <div class="feature-row"><div class="feat-dot"></div><div><div class="feat-title">Cursor · draw · reactions</div><div class="feat-detail">Bidirectional cursors, laser pointer, persistent strokes, emoji reactions. All via datagrams.</div></div></div>
+      </div>
+    </div>
+    <div class="col flex-2" style="justify-content: center;">
+      <div class="terminal">
+        <div class="term-bar">
+          <div class="term-dot" style="background:#E05A4A"></div>
+          <div class="term-dot" style="background:#E8B84B"></div>
+          <div class="term-dot" style="background:#4CAF7D"></div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--warm-gray);margin-left:8px;">zsh — pairwire</div>
+        </div>
+        <div class="term-body">
+          <div><span class="term-prompt">❯ </span><span class="term-cmd">pairwire host --tunnel 3000 --terminal</span></div>
+          <div class="term-out" style="margin-top:12px;color:var(--copper-lt)">pairwire v0.1.0</div>
+          <div class="term-out" style="margin-top:10px;">  Invite link:</div>
+          <div class="term-accent" style="margin-left:4px;word-break:break-all;font-size:12px;">  pairwire://0f02581240ab?relay=euc1.relay.pairwire.dev&amp;token=eyJ...</div>
+          <div class="term-out" style="margin-top:10px;">  Sharing: screen (1080p30) · audio · terminal</div>
+          <div class="term-out">  Tunnels: :3000 (pre-approved)</div>
+          <div class="term-out">  Waiting for guest…</div>
+          <div class="term-ok" style="margin-top:10px;">  ✓ alice connected (12ms RTT, direct P2P)</div>
+          <div class="term-ok">  ✓ Audio active</div>
+          <div class="term-ok">  ✓ Tunnel :3000 → alice:3000</div>
+          <div style="margin-top:12px;"><span class="term-prompt">❯ </span><span class="cursor"></span></div>
+        </div>
+      </div>
+      <div class="row mt-16 gap-8" style="flex-wrap:wrap;">
+        <span class="chip chip-green">No accounts</span>
+        <span class="chip chip-copper">P2P encrypted</span>
+        <span class="chip chip-copper">~5MB binary</span>
+        <span class="chip chip-amber">macOS · Linux · Windows</span>
+        <span class="chip chip-blue">Hardware encode</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 4 — ARCHITECTURE (SVG)
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s4" style="flex-direction:column; justify-content:space-between; padding-top:52px; padding-bottom:72px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <div>
+        <div class="eyebrow">Architecture</div>
+        <h2 style="font-size:28px;">Single process. QUIC all the way down.</h2>
+      </div>
+      <div style="display:flex;gap:12px;">
+        <span class="chip chip-green">1:1 P2P</span>
+        <span class="chip chip-copper">relay optional</span>
+      </div>
+    </div>
+
+    <!-- SVG Architecture Diagram -->
+    <svg viewBox="0 0 1100 380" style="width:100%;flex:1;max-height:340px;" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#C8844A" opacity="0.7"/>
+        </marker>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4A4540"/>
+        </marker>
+        <marker id="arr-rev" markerWidth="8" markerHeight="8" refX="2" refY="3" orient="auto">
+          <path d="M8,0 L8,6 L0,3 z" fill="#C8844A" opacity="0.7"/>
+        </marker>
+      </defs>
+
+      <!-- HOST box -->
+      <rect x="20" y="30" width="430" height="300" rx="12" fill="#1C1916" stroke="#2A2520" stroke-width="1.5"/>
+      <text x="36" y="22" font-family="JetBrains Mono,monospace" font-size="10" fill="#8A8480" letter-spacing="2" text-anchor="start">HOST PROCESS</text>
+
+      <!-- GUEST box -->
+      <rect x="650" y="30" width="430" height="300" rx="12" fill="#1C1916" stroke="#2A2520" stroke-width="1.5"/>
+      <text x="666" y="22" font-family="JetBrains Mono,monospace" font-size="10" fill="#8A8480" letter-spacing="2" text-anchor="start">GUEST PROCESS</text>
+
+      <!-- HOST nodes -->
+      <!-- scap -->
+      <rect x="44" y="60" width="90" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="89" y="80" font-family="JetBrains Mono,monospace" font-size="11" fill="#F0EDE8" text-anchor="middle">scap</text>
+      <text x="89" y="96" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">capture</text>
+
+      <!-- cpal -->
+      <rect x="44" y="192" width="90" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="89" y="212" font-family="JetBrains Mono,monospace" font-size="11" fill="#F0EDE8" text-anchor="middle">cpal</text>
+      <text x="89" y="228" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">audio in</text>
+
+      <!-- FFmpeg encode -->
+      <rect x="168" y="60" width="100" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="218" y="80" font-family="JetBrains Mono,monospace" font-size="11" fill="#F0EDE8" text-anchor="middle">FFmpeg</text>
+      <text x="218" y="96" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">H.264 encode</text>
+
+      <!-- Opus encode -->
+      <rect x="168" y="192" width="100" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="218" y="212" font-family="JetBrains Mono,monospace" font-size="11" fill="#F0EDE8" text-anchor="middle">Opus</text>
+      <text x="218" y="228" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">encode</text>
+
+      <!-- moq-lite / hang -->
+      <rect x="300" y="116" width="110" height="54" rx="8" fill="#252119" stroke="#9A6030" stroke-width="1.5"/>
+      <text x="355" y="138" font-family="JetBrains Mono,monospace" font-size="11" fill="#C8844A" text-anchor="middle">moq-lite</text>
+      <text x="355" y="154" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">+ hang tracks</text>
+
+      <!-- iroh HOST -->
+      <rect x="300" y="228" width="110" height="72" rx="8" fill="#252119" stroke="#C8844A" stroke-width="1.5"/>
+      <text x="355" y="256" font-family="JetBrains Mono,monospace" font-size="11" fill="#E09A62" text-anchor="middle">iroh</text>
+      <text x="355" y="272" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">transport</text>
+      <text x="355" y="289" font-family="JetBrains Mono,monospace" font-size="8" fill="#4A4540" text-anchor="middle">QUIC TLS 1.3</text>
+
+      <!-- HOST arrows -->
+      <line x1="134" y1="84" x2="166" y2="84" stroke="#4A4540" stroke-width="1.2" marker-end="url(#arr2)"/>
+      <line x1="134" y1="216" x2="166" y2="216" stroke="#4A4540" stroke-width="1.2" marker-end="url(#arr2)"/>
+      <line x1="268" y1="84" x2="298" y2="136" stroke="#C8844A" stroke-width="1.2" opacity="0.6" marker-end="url(#arr)"/>
+      <line x1="268" y1="216" x2="298" y2="155" stroke="#C8844A" stroke-width="1.2" opacity="0.6" marker-end="url(#arr)"/>
+      <line x1="355" y1="170" x2="355" y2="226" stroke="#C8844A" stroke-width="1.2" opacity="0.7" marker-end="url(#arr)"/>
+
+      <!-- QUIC connection (middle) -->
+      <rect x="462" y="155" width="176" height="60" rx="10" fill="#141210" stroke="#C8844A" stroke-width="1" stroke-dasharray="4 3"/>
+      <text x="550" y="179" font-family="JetBrains Mono,monospace" font-size="10" fill="#C8844A" text-anchor="middle">QUIC TLS 1.3</text>
+      <text x="550" y="196" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">P2P · relay fallback</text>
+      <!-- bidirectional arrows -->
+      <line x1="462" y1="178" x2="412" y2="270" stroke="#C8844A" stroke-width="1.5" opacity="0.8" marker-end="url(#arr)" marker-start="url(#arr-rev)"/>
+      <line x1="638" y1="178" x2="688" y2="270" stroke="#C8844A" stroke-width="1.5" opacity="0.8" marker-end="url(#arr)" marker-start="url(#arr-rev)"/>
+
+      <!-- Signal animation along QUIC line -->
+      <circle r="4" fill="#E8B84B" opacity="0.9">
+        <animateMotion dur="2.5s" repeatCount="indefinite" path="M412,270 L462,178 L638,178 L688,270"/>
+      </circle>
+
+      <!-- GUEST nodes -->
+      <!-- iroh GUEST -->
+      <rect x="690" y="228" width="110" height="72" rx="8" fill="#252119" stroke="#C8844A" stroke-width="1.5"/>
+      <text x="745" y="256" font-family="JetBrains Mono,monospace" font-size="11" fill="#E09A62" text-anchor="middle">iroh</text>
+      <text x="745" y="272" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">transport</text>
+      <text x="745" y="289" font-family="JetBrains Mono,monospace" font-size="8" fill="#4A4540" text-anchor="middle">QUIC TLS 1.3</text>
+
+      <!-- moq-lite consumer -->
+      <rect x="690" y="116" width="110" height="54" rx="8" fill="#252119" stroke="#9A6030" stroke-width="1.5"/>
+      <text x="745" y="138" font-family="JetBrains Mono,monospace" font-size="11" fill="#C8844A" text-anchor="middle">moq-lite</text>
+      <text x="745" y="154" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">subscriber</text>
+
+      <!-- FFmpeg decode -->
+      <rect x="832" y="60" width="100" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="882" y="80" font-family="JetBrains Mono,monospace" font-size="11" fill="#F0EDE8" text-anchor="middle">FFmpeg</text>
+      <text x="882" y="96" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">H.264 decode</text>
+
+      <!-- Opus decode -->
+      <rect x="832" y="192" width="100" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="882" y="212" font-family="JetBrains Mono,monospace" font-size="11" fill="#F0EDE8" text-anchor="middle">Opus</text>
+      <text x="882" y="228" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">decode</text>
+
+      <!-- egui viewer -->
+      <rect x="966" y="60" width="84" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="1008" y="80" font-family="JetBrains Mono,monospace" font-size="10" fill="#F0EDE8" text-anchor="middle">egui/wgpu</text>
+      <text x="1008" y="96" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">viewer</text>
+
+      <!-- cpal out -->
+      <rect x="966" y="192" width="84" height="48" rx="8" fill="#252119" stroke="#4A4540"/>
+      <text x="1008" y="212" font-family="JetBrains Mono,monospace" font-size="10" fill="#F0EDE8" text-anchor="middle">cpal</text>
+      <text x="1008" y="228" font-family="JetBrains Mono,monospace" font-size="9" fill="#8A8480" text-anchor="middle">playback</text>
+
+      <!-- GUEST arrows -->
+      <line x1="745" y1="228" x2="745" y2="172" stroke="#C8844A" stroke-width="1.2" opacity="0.7" marker-end="url(#arr)"/>
+      <line x1="800" y1="136" x2="830" y2="84" stroke="#C8844A" stroke-width="1.2" opacity="0.6" marker-end="url(#arr)"/>
+      <line x1="800" y1="154" x2="830" y2="216" stroke="#C8844A" stroke-width="1.2" opacity="0.6" marker-end="url(#arr)"/>
+      <line x1="932" y1="84" x2="964" y2="84" stroke="#4A4540" stroke-width="1.2" marker-end="url(#arr2)"/>
+      <line x1="932" y1="216" x2="964" y2="216" stroke="#4A4540" stroke-width="1.2" marker-end="url(#arr2)"/>
+
+      <!-- PTY / Tunnel labels on iroh boxes -->
+      <text x="355" y="309" font-family="JetBrains Mono,monospace" font-size="8" fill="#4A4540" text-anchor="middle">+ PTY · tunnel · cursor</text>
+      <text x="745" y="309" font-family="JetBrains Mono,monospace" font-size="8" fill="#4A4540" text-anchor="middle">+ PTY · tunnel · cursor</text>
+    </svg>
+
+    <!-- Bottom legend -->
+    <div class="row" style="gap:16px; margin-top:0;">
+      <div class="card flex-1" style="padding:12px 16px;">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--copper);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:6px;">Media tracks</div>
+        <div style="font-size:12px;color:var(--warm-gray);">moq-lite + hang — priority scheduling, group/frame model, WebCodecs frames</div>
+      </div>
+      <div class="card flex-1" style="padding:12px 16px;">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--copper);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:6px;">Control / input</div>
+        <div style="font-size:12px;color:var(--warm-gray);">Raw QUIC bidi streams — keyboard, mouse, clipboard, handshake, tunnel protocol</div>
+      </div>
+      <div class="card flex-1" style="padding:12px 16px;">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--copper);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:6px;">Presence</div>
+        <div style="font-size:12px;color:var(--warm-gray);">QUIC datagrams — cursor, drawing points, emoji reactions (&lt;50 bytes each)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 5 — COMPETITION
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s5">
+    <div class="col" style="flex: 0 0 220px; justify-content: flex-start; padding-top: 4px;">
+      <div class="eyebrow">Competition</div>
+      <h2>The only tool that<br>does all of it.</h2>
+      <div class="body mt-16">The market is either expensive, locked to one editor, or just not built for pairing.</div>
+
+      <div class="mt-32 col gap-8">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px;">Our edges</div>
+        <div style="font-size:13px;color:var(--cream);">✦ <span style="color:var(--copper)">Free</span> 1:1 — forever</div>
+        <div style="font-size:13px;color:var(--cream);">✦ <span style="color:var(--copper)">Linux</span> first-class</div>
+        <div style="font-size:13px;color:var(--cream);">✦ PTY terminal sharing</div>
+        <div style="font-size:13px;color:var(--cream);">✦ Localhost tunneling</div>
+        <div style="font-size:13px;color:var(--cream);">✦ Zero Electron</div>
+        <div style="font-size:13px;color:var(--cream);">✦ Open source</div>
+      </div>
+    </div>
+    <div class="flex-2" style="overflow: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Pairwire</th>
+            <th>Tuple</th>
+            <th>VS Live Share</th>
+            <th>Discord</th>
+            <th>Zoom</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="highlight-row">
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Free tier</span></td>
+            <td><span class="check">✓ Always</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="partial">~ limited</span></td>
+          </tr>
+          <tr>
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Linux</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Screen sharing</span></td>
+            <td><span class="check">✓ H.264 HW</span></td>
+            <td><span class="check">✓ 5K</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="partial">~ 1080p</span></td>
+            <td><span class="partial">~ laggy</span></td>
+          </tr>
+          <tr>
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Remote control</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="partial">~ editor only</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr class="highlight-row">
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Terminal (PTY)</span></td>
+            <td><span class="check">✓ native PTY</span></td>
+            <td><span class="cross">✗ screen only</span></td>
+            <td><span class="partial">~ shared term</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr class="highlight-row">
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Localhost tunnels</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Audio</span></td>
+            <td><span class="check">✓ Opus</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">No Electron</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Open source</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td><span style="font-family:var(--mono);font-size:12px;color:var(--cream)">Multi-party</span></td>
+            <td><span class="partial">~ v2</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 6 — GTM V1
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s6">
+    <div style="max-width: 700px;">
+      <div class="eyebrow">Go-to-Market · v1</div>
+      <h2>Ship a .sh file.<br>Let developers find it.</h2>
+      <div class="body mt-16" style="max-width: 560px;">
+        v1 is not a product launch — it's a <em style="color:var(--cream);font-style:normal;">developer artefact</em>. A single install script. Free forever. No accounts. No friction. Word-of-mouth is the only GTM that works for developer tools.
+      </div>
+      <div class="install-block">
+        curl -fsSL https://pairwire.dev/install.sh | sh<span class="cursor"></span>
+      </div>
+      <div class="v1-pillars">
+        <div class="pillar">
+          <div class="pillar-label">Distribution</div>
+          <div class="pillar-value">pairwire.dev</div>
+          <div class="pillar-note">.sh installer → GitHub releases binary. Homebrew tap. Eventually: package managers.</div>
+        </div>
+        <div class="pillar">
+          <div class="pillar-label">Connectivity</div>
+          <div class="pillar-value">CF Relay + iroh P2P</div>
+          <div class="pillar-note">Cloudflare's MoQ relay for NAT hole-punch. Direct QUIC when possible. Zero server ops.</div>
+        </div>
+        <div class="pillar">
+          <div class="pillar-label">Acquisition</div>
+          <div class="pillar-value">Show the demo</div>
+          <div class="pillar-note">Terminal output as social proof. "Here's me pairing with Alice with zero setup." HN, Reddit, Twitter.</div>
+        </div>
+        <div class="pillar">
+          <div class="pillar-label">Server cost</div>
+          <div class="pillar-value">~$0</div>
+          <div class="pillar-note">1:1 is pure P2P. CF relay is free for low-volume. No database, no auth service, no API.</div>
+        </div>
+      </div>
+    </div>
+    <svg style="position:absolute;right:64px;top:50%;transform:translateY(-50%);width:240px;height:320px;opacity:0.12;" viewBox="0 0 240 320">
+      <rect x="10" y="10" width="220" height="300" rx="12" stroke="#C8844A" stroke-width="1.5" fill="none"/>
+      <line x1="10" y1="48" x2="230" y2="48" stroke="#C8844A" stroke-width="1"/>
+      <circle cx="28" cy="29" r="6" fill="#E05A4A"/>
+      <circle cx="46" cy="29" r="6" fill="#E8B84B"/>
+      <circle cx="64" cy="29" r="6" fill="#4CAF7D"/>
+      <rect x="28" y="64" width="80" height="8" rx="2" fill="#C8844A" opacity="0.6"/>
+      <rect x="28" y="82" width="160" height="6" rx="2" fill="#C8844A" opacity="0.3"/>
+      <rect x="28" y="96" width="140" height="6" rx="2" fill="#C8844A" opacity="0.3"/>
+      <rect x="28" y="118" width="184" height="32" rx="6" fill="#C8844A" opacity="0.15" stroke="#C8844A" stroke-width="1"/>
+      <rect x="36" y="130" width="120" height="8" rx="2" fill="#C8844A" opacity="0.5"/>
+      <rect x="28" y="166" width="60" height="6" rx="2" fill="#4CAF7D" opacity="0.6"/>
+      <rect x="96" y="166" width="80" height="6" rx="2" fill="#4CAF7D" opacity="0.6"/>
+      <rect x="28" y="182" width="100" height="6" rx="2" fill="#4CAF7D" opacity="0.4"/>
+    </svg>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 7 — MONETISATION
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s7">
+    <div class="col" style="flex: 0 0 240px; justify-content: flex-start; padding-top: 4px; padding-right: 40px; border-right: 1px solid var(--bg4);">
+      <div class="eyebrow">Monetisation</div>
+      <h2>Free gets you in.<br>Rooms make it pay.</h2>
+      <div class="body mt-16">The 1:1 free tier isn't charity — it's distribution. Every free user is a potential upgrade when they need a third person in the room.</div>
+      <div class="mt-24 card" style="padding:16px 18px;">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">Comparable shape</div>
+        <div style="font-size:13px;color:var(--warm-gray);line-height:1.6;">Tuple charges $99/user/year with no free tier. Pairwire's free 1:1 is the wedge — then convert teams at a lower per-seat rate with more features.</div>
+      </div>
+    </div>
+    <div style="flex: 1; display: flex; flex-direction: column; padding-left: 32px;">
+      <div style="flex:1; display:flex; gap:20px; align-items:stretch;">
+        <div class="tier-card tier-free">
+          <div class="tier-name" style="color: var(--warm-gray);">Direct — Free</div>
+          <div class="tier-price cream">$0 <sub>/forever</sub></div>
+          <div class="tier-divider"></div>
+          <div class="tier-feature"><span class="icon check">✓</span> 1:1 sessions only</div>
+          <div class="tier-feature"><span class="icon check">✓</span> Screen + audio + terminal</div>
+          <div class="tier-feature"><span class="icon check">✓</span> Remote control + tunnels</div>
+          <div class="tier-feature"><span class="icon check">✓</span> P2P encrypted — no server</div>
+          <div class="tier-feature"><span class="icon check">✓</span> macOS · Linux · Windows</div>
+          <div class="tier-feature"><span class="icon cross" style="color:var(--muted)">—</span> <span style="color:var(--muted)">3+ peers</span></div>
+          <div class="tier-feature"><span class="icon cross" style="color:var(--muted)">—</span> <span style="color:var(--muted)">Recording</span></div>
+          <div class="tier-feature"><span class="icon cross" style="color:var(--muted)">—</span> <span style="color:var(--muted)">Transcription</span></div>
+          <div class="tier-cta">The complete pair programming experience. No feature cuts that matter for 1:1.</div>
+        </div>
+        <div class="tier-card tier-paid">
+          <div class="tier-name" style="color: var(--copper);">Rooms — Paid</div>
+          <div class="tier-price" style="color:var(--amber)">TBD <sub>/user/mo</sub></div>
+          <div class="tier-divider"></div>
+          <div class="tier-feature"><span class="icon check">✓</span> Everything in Free</div>
+          <div class="tier-feature"><span class="icon" style="color:var(--copper)">✦</span> 3–8 peers per room</div>
+          <div class="tier-feature"><span class="icon" style="color:var(--copper)">✦</span> Session recording</div>
+          <div class="tier-feature"><span class="icon" style="color:var(--copper)">✦</span> Live transcription (Whisper)</div>
+          <div class="tier-feature"><span class="icon" style="color:var(--copper)">✦</span> Team room management</div>
+          <div class="tier-feature"><span class="icon" style="color:var(--copper)">✦</span> Analytics + quality metrics</div>
+          <div class="tier-feature"><span class="icon" style="color:var(--copper)">✦</span> Persistent room IDs + SSO</div>
+          <div class="tier-feature"><span class="icon" style="color:var(--copper)">✦</span> Self-hosted relay option</div>
+          <div class="tier-cta">Powered by moq-relay. QUIC TLS means relay operator can't read session content — only metadata.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 8 — THE MOAT
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s8">
+    <div class="col flex-1" style="padding-right: 56px; border-right: 1px solid var(--bg4); justify-content: flex-start; padding-top: 4px;">
+      <div class="eyebrow">The Moat</div>
+      <h2>Infrastructure is the<br>paid-tier lock-in.</h2>
+      <div class="body mt-16" style="max-width:320px;">Free tier builds trust. The relay network enables features that physically can't exist P2P. That's the product moat — not price, not features, but infrastructure.</div>
+      <div class="mt-24 card card-accent" style="padding:16px 20px;">
+        <div style="font-size:13px;color:var(--warm-gray);line-height:1.65;">QUIC TLS 1.3 means the relay <em style="color:var(--cream);font-style:normal;">cannot read</em> session content. It can only route, timestamp, and count. Recording and transcription are opt-in features that run at the relay — not surveillance.</div>
+      </div>
+
+      <div class="mt-24">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:12px;">Relay topology</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--warm-gray);line-height:1.8;background:var(--bg3);border-radius:8px;padding:16px;">
+          Root (discovery only)<br>
+          ├── Leaf US  ←→  Leaf EU<br>
+          └──────────→  Leaf APAC<br>
+          <span style="color:var(--muted);">(NxN mesh, 2 hops max)</span>
+        </div>
+      </div>
+    </div>
+    <div class="col flex-2" style="padding-left: 24px; justify-content: flex-start; padding-top: 4px;">
+      <div class="moat-layer">
+        <div class="moat-num">01</div>
+        <div>
+          <div class="moat-title">Relay as SFU</div>
+          <div class="moat-detail">moq-relay (from moq-dev/moq) handles fan-out. Host uploads once regardless of guest count. v1 uses Cloudflare's anycast relay — zero ops. v2 operates own nodes for feature control.</div>
+        </div>
+      </div>
+      <div class="moat-layer">
+        <div class="moat-num">02</div>
+        <div>
+          <div class="moat-title">Recording at the relay</div>
+          <div class="moat-detail">Relay taps hang tracks → object storage. Playback via web viewer. Opt-in. Can't exist in P2P — there's no third-party to write to disk.</div>
+        </div>
+      </div>
+      <div class="moat-layer">
+        <div class="moat-num">03</div>
+        <div>
+          <div class="moat-title">Live transcription</div>
+          <div class="moat-detail">audio/asr simulcast track (16kHz mono Opus) forwarded to Whisper worker at relay. Captions streamed back as a hang text track. P2P can't run Whisper on behalf of both peers.</div>
+        </div>
+      </div>
+      <div class="moat-layer">
+        <div class="moat-num">04</div>
+        <div>
+          <div class="moat-title">Protocol is the moat</div>
+          <div class="moat-detail">moq-lite + hang is an open standard. But operating a low-latency, globally-distributed relay network on top of it takes time and capital. Cloudflare could compete — but you'll get there first among developer tools.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 9 — RAID LOG
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s9">
+    <div class="eyebrow">RAID Log</div>
+    <div class="raid-grid">
+
+      <div class="raid-cell raid-risks">
+        <div class="raid-header"><div class="raid-dot"></div>Risks</div>
+        <div class="raid-item raid-risks"><div class="raid-item-dot"></div>moq-dev/moq is pre-1.0 — API instability, breaking changes on upgrade</div>
+        <div class="raid-item raid-risks"><div class="raid-item-dot"></div>Tuple adds Linux + drops price — shrinks the wedge</div>
+        <div class="raid-item raid-risks"><div class="raid-item-dot"></div>scap (beta) platform-specific bugs; no dirty-rect exposure</div>
+        <div class="raid-item raid-risks"><div class="raid-item-dot"></div>macOS ScreenCaptureKit sandbox tightening could break capture</div>
+        <div class="raid-item raid-risks"><div class="raid-item-dot"></div>FFmpeg static linking complexity per platform / CI burden</div>
+        <div class="raid-item raid-risks"><div class="raid-item-dot"></div>moq-relay single root node — no HA until Issue #927 ships</div>
+        <div class="raid-item raid-risks"><div class="raid-item-dot"></div>Network effects: developers use what their team uses</div>
+      </div>
+
+      <div class="raid-cell raid-assumptions">
+        <div class="raid-header"><div class="raid-dot"></div>Assumptions</div>
+        <div class="raid-item raid-assumptions"><div class="raid-item-dot"></div>Developers will install via .sh — no GUI installer needed for v1</div>
+        <div class="raid-item raid-assumptions"><div class="raid-item-dot"></div>1:1 free tier is sufficient for acquisition; teams upgrade to rooms</div>
+        <div class="raid-item raid-assumptions"><div class="raid-item-dot"></div>Cloudflare CF relay handles NAT reliably enough for v1 (no self-ops)</div>
+        <div class="raid-item raid-assumptions"><div class="raid-item-dot"></div>hang adoption (P2.1.1) lands without major regressions in existing pipeline</div>
+        <div class="raid-item raid-assumptions"><div class="raid-item-dot"></div>moq-relay clusters to production scale — evidenced by cdn.moq.dev (3 nodes live)</div>
+        <div class="raid-item raid-assumptions"><div class="raid-item-dot"></div>Developer audience tolerates CLI-first UX over polished GUI onboarding</div>
+        <div class="raid-item raid-assumptions"><div class="raid-item-dot"></div>Linux market is large enough to justify first-class support from day 1</div>
+      </div>
+
+      <div class="raid-cell raid-issues">
+        <div class="raid-header"><div class="raid-dot"></div>Issues (Known)</div>
+        <div class="raid-item raid-issues"><div class="raid-item-dot"></div>Cursor wiring incomplete — P3.5.1 not yet started</div>
+        <div class="raid-item raid-issues"><div class="raid-item-dot"></div>Input forwarding (keyboard/mouse) not wired into session — P3.5.2</div>
+        <div class="raid-item raid-issues"><div class="raid-item-dot"></div>Clipboard sync code complete but not wired — P3.5.5</div>
+        <div class="raid-item raid-issues"><div class="raid-item-dot"></div>Quality adaptation code complete but not wired — P3.5.6</div>
+        <div class="raid-item raid-issues"><div class="raid-item-dot"></div>Bidirectional audio (guest mic → host) absent — P3.2.1</div>
+        <div class="raid-item raid-issues"><div class="raid-item-dot"></div>hang layer not yet adopted — using custom ScreenFrameHeader — P2.1.1</div>
+        <div class="raid-item raid-issues"><div class="raid-item-dot"></div>Video "not crisp" at 4K→1080p — root cause: Constrained Baseline profile (P4.7.1)</div>
+      </div>
+
+      <div class="raid-cell raid-deps">
+        <div class="raid-header"><div class="raid-dot"></div>Dependencies</div>
+        <div class="raid-item raid-deps"><div class="raid-item-dot"></div>iroh (pre-1.0) — sole network layer, pinned to 0.97</div>
+        <div class="raid-item raid-deps"><div class="raid-item-dot"></div>moq-dev/moq — moq-lite, hang, moq-relay (Luke Curley / Discord)</div>
+        <div class="raid-item raid-deps"><div class="raid-item-dot"></div>scap (beta 0.1.x) — cross-platform screen capture</div>
+        <div class="raid-item raid-deps"><div class="raid-item-dot"></div>ffmpeg-next 8.x — video encode/decode, hardware acceleration</div>
+        <div class="raid-item raid-deps"><div class="raid-item-dot"></div>Cloudflare MoQ relay — v1 NAT hole-punch and relay fallback</div>
+        <div class="raid-item raid-deps"><div class="raid-item-dot"></div>moq-dev/moq#927 — tree topology, required for multi-region HA (unshipped)</div>
+        <div class="raid-item raid-deps"><div class="raid-item-dot"></div>cpal 0.17 / audiopus — audio capture and Opus encoding</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 10 — BRAND MOODBOARD
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s10">
+    <div class="eyebrow">Brand Identity</div>
+    <div class="row" style="align-items:flex-start; gap:48px; flex:1;">
+      <div class="col" style="flex: 0 0 340px;">
+        <h2 style="font-size:32px;">Warm Signal.</h2>
+        <div class="body mt-8" style="max-width:300px;font-size:13px;">Copper wire. Direct connection. Elevated developer taste. Not a hacker aesthetic — a craftsperson's tool.</div>
+        <div class="swatch-row">
+          <div class="swatch">
+            <div class="swatch-color" style="background:#0B0A09;border:1px solid #252119;border-bottom:none;border-radius:8px 8px 0 0;"></div>
+            <div class="swatch-info"><div class="swatch-name">Void</div><div class="swatch-hex">#0B0A09</div><div class="swatch-use">Base background</div></div>
+          </div>
+          <div class="swatch">
+            <div class="swatch-color" style="background:#C8844A;border-radius:8px 8px 0 0;"></div>
+            <div class="swatch-info"><div class="swatch-name">Copper</div><div class="swatch-hex">#C8844A</div><div class="swatch-use">Primary accent</div></div>
+          </div>
+          <div class="swatch">
+            <div class="swatch-color" style="background:#E8B84B;border-radius:8px 8px 0 0;"></div>
+            <div class="swatch-info"><div class="swatch-name">Amber</div><div class="swatch-hex">#E8B84B</div><div class="swatch-use">Highlight / signal</div></div>
+          </div>
+          <div class="swatch">
+            <div class="swatch-color" style="background:#F0EDE8;border-radius:8px 8px 0 0;"></div>
+            <div class="swatch-info"><div class="swatch-name">Cream</div><div class="swatch-hex">#F0EDE8</div><div class="swatch-use">Body text</div></div>
+          </div>
+          <div class="swatch">
+            <div class="swatch-color" style="background:#4CAF7D;border-radius:8px 8px 0 0;"></div>
+            <div class="swatch-info"><div class="swatch-name">Signal</div><div class="swatch-hex">#4CAF7D</div><div class="swatch-use">Success / active</div></div>
+          </div>
+        </div>
+        <div class="mt-16">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px;">Personality</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            <span class="persona-tag">Precise</span>
+            <span class="persona-tag">Fast</span>
+            <span class="persona-tag">Craft-forward</span>
+            <span class="persona-tag">Trustworthy</span>
+            <span class="persona-tag">Terminal-native</span>
+            <span class="persona-tag">No fluff</span>
+            <span class="persona-tag">Direct</span>
+            <span class="persona-tag">Open</span>
+          </div>
+        </div>
+      </div>
+      <div class="col flex-2">
+        <div class="mood-grid">
+          <div class="mood-block">
+            <div class="mood-label">Display type</div>
+            <div class="type-sample-h">pair<span style="color:var(--copper)">wire</span></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:8px;">Inter 900 · −0.03em tracking · tight leading</div>
+          </div>
+          <div class="mood-block">
+            <div class="mood-label">Data / code type</div>
+            <div class="type-sample-m">$ pairwire host</div>
+            <div class="type-sample-m" style="color:var(--warm-gray);font-size:11px;margin-top:4px;">12ms RTT · 1080p · P2P</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:8px;">JetBrains Mono · data chrome</div>
+          </div>
+          <div class="mood-block">
+            <div class="mood-label">Comps / vibes</div>
+            <div class="comp-logos">
+              <span class="comp-logo">Ghostty</span>
+              <span class="comp-logo">Zed</span>
+              <span class="comp-logo">Linear</span>
+              <span class="comp-logo">Warp</span>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:10px;">Precision + developer trust. Speed as aesthetics. Considered dark.</div>
+          </div>
+          <div class="mood-block">
+            <div class="mood-label">Not this</div>
+            <div style="font-size:12px;color:var(--warm-gray);line-height:1.6;margin-top:4px;">✗ Generic SaaS purple<br>✗ Figma pastel gradients<br>✗ Generic "hacker green on black"<br>✗ Enterprise navy + white</div>
+          </div>
+          <div class="mood-block" style="grid-column: span 2;">
+            <div class="mood-label">Wire metaphor — the visual language</div>
+            <div style="display:flex;gap:16px;align-items:center;margin-top:8px;">
+              <svg width="180" height="48" viewBox="0 0 180 48">
+                <path d="M8 24 L40 24 L40 8 L80 8 L80 24 L120 24 L120 40 L160 40 L160 24 L175 24" stroke="#C8844A" stroke-width="1.5" fill="none"/>
+                <circle cx="40" cy="8" r="3" fill="#C8844A"/>
+                <circle cx="80" cy="24" r="3" fill="#C8844A"/>
+                <circle cx="120" cy="40" r="3" fill="#C8844A"/>
+                <circle cx="160" cy="24" r="3" fill="#C8844A"/>
+                <circle r="4" fill="#E8B84B">
+                  <animateMotion dur="3s" repeatCount="indefinite" path="M8 24 L40 24 L40 8 L80 8 L80 24 L120 24 L120 40 L160 40 L160 24 L175 24"/>
+                </circle>
+              </svg>
+              <div style="font-size:12px;color:var(--warm-gray);line-height:1.55;flex:1;">PCB trace aesthetics — copper pathways, signal nodes, right-angle routes. Used sparingly as decorative chrome: slide backgrounds, loading states, connection indicators.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SLIDE 11 — NEXT STEPS
+  ══════════════════════════════════════════ -->
+  <div class="slide" id="s11">
+    <div class="eyebrow">Roadmap</div>
+    <h2>From working prototype<br>to shipped product.</h2>
+    <div class="roadmap-row">
+      <div class="roadmap-phase">
+        <div class="phase-node done">P0–2</div>
+        <div class="phase-label">Foundation<br>& Protocol</div>
+        <ul class="phase-items">
+          <li>Workspace + crates</li>
+          <li>moq-lite screen</li>
+          <li>Handshake</li>
+          <li>Remote control code</li>
+        </ul>
+        <div class="phase-tag">done</div>
+      </div>
+      <div class="roadmap-phase">
+        <div class="phase-node done">P3</div>
+        <div class="phase-label">Audio +<br>Platforms</div>
+        <ul class="phase-items">
+          <li>Opus encode/decode</li>
+          <li>Win / Linux CI</li>
+          <li>Tray integration</li>
+          <li>Reconnection</li>
+        </ul>
+        <div class="phase-tag">done</div>
+      </div>
+      <div class="roadmap-phase">
+        <div class="phase-node active">P3.5</div>
+        <div class="phase-label">Interaction<br>Layer</div>
+        <ul class="phase-items">
+          <li style="color:var(--copper)">Bidirectional cursors</li>
+          <li style="color:var(--copper)">Control takeover</li>
+          <li style="color:var(--copper)">Drawing + reactions</li>
+          <li style="color:var(--copper)">Wire clipboard + quality</li>
+        </ul>
+        <div class="phase-tag" style="color:var(--copper)">in progress</div>
+      </div>
+      <div class="roadmap-phase">
+        <div class="phase-node upcoming">P4</div>
+        <div class="phase-label">Terminal +<br>Tunnels</div>
+        <ul class="phase-items">
+          <li>PTY sharing</li>
+          <li>Localhost proxy</li>
+          <li>hang adoption</li>
+          <li>Quality negotiation</li>
+        </ul>
+        <div class="phase-tag">next</div>
+      </div>
+      <div class="roadmap-phase">
+        <div class="phase-node upcoming">v1</div>
+        <div class="phase-label">Launch<br>pairwire.dev</div>
+        <ul class="phase-items">
+          <li>.sh installer</li>
+          <li>Binary releases</li>
+          <li>CF relay integration</li>
+          <li>Free · 1:1 · forever</li>
+        </ul>
+        <div class="phase-tag" style="color:var(--amber)">ship it</div>
+      </div>
+      <div class="roadmap-phase">
+        <div class="phase-node upcoming">P5</div>
+        <div class="phase-label">Multi-party<br>Rooms</div>
+        <ul class="phase-items">
+          <li>moq-relay rooms</li>
+          <li>Room invites</li>
+          <li>Recording</li>
+          <li>Paid tier</li>
+        </ul>
+        <div class="phase-tag">v2</div>
+      </div>
+      <div class="roadmap-phase">
+        <div class="phase-node upcoming">PW</div>
+        <div class="phase-label">Web<br>Viewer</div>
+        <ul class="phase-items">
+          <li>WebTransport bridge</li>
+          <li>WebCodecs player</li>
+          <li>Browser cursor/draw</li>
+          <li>Send a link</li>
+        </ul>
+        <div class="phase-tag">v2+</div>
+      </div>
+    </div>
+    <div class="cta-row">
+      <div class="cta-primary">pairwire.dev</div>
+      <div class="cta-secondary">github.com/pairwire</div>
+      <div style="font-family:var(--mono);font-size:12px;color:var(--muted)">curl -fsSL https://pairwire.dev/install.sh | sh</div>
+    </div>
+  </div>
+
+</div><!-- /deck -->
+
+<!-- Navigation -->
+<div class="nav">
+  <button onclick="prevSlide()">← prev</button>
+  <div class="progress-dots" id="dots"></div>
+  <span class="counter" id="counter">1 / 11</span>
+  <button onclick="nextSlide()">next →</button>
+</div>
+
+<script>
+
+let current = 0;
+const slides = document.querySelectorAll('.slide');
+const N = slides.length;
+
+const dotsEl = document.getElementById('dots');
+for (let i = 0; i < N; i++) {
+  const d = document.createElement('div');
+  d.className = 'dot' + (i === 0 ? ' active' : '');
+  d.onclick = () => goTo(i);
+  dotsEl.appendChild(d);
+}
+
+function goTo(n) {
+  slides[current].classList.remove('active');
+  dotsEl.children[current].classList.remove('active');
+  current = (n + N) % N;
+  slides[current].classList.add('active');
+  dotsEl.children[current].classList.add('active');
+  document.getElementById('counter').textContent = `${current + 1} / ${N}`;
+}
+function nextSlide() { goTo(current + 1); }
+function prevSlide() { goTo(current - 1); }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ') nextSlide();
+  if (e.key === 'ArrowLeft') prevSlide();
+});
+</script>
+</body>
+</html>
