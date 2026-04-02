@@ -272,7 +272,7 @@
   - `just all` passes
 
 ### P1.10: End-to-End Integration — Two Peers
-- **Status**: `[x]`
+- **Status**: `[x]` (screen + audio working; cursor deferred to P3.5.1)
 - **Depends on**: P1.1 through P1.9
 - **Description**: Wire everything together. Two instances of the app connect via iroh, one shares screen + cursor, the other views.
 - **Deliverables**:
@@ -281,16 +281,16 @@
   - Guest: receive → decode → display + cursor receive
   - Invite link generation and display on host startup
   - Graceful shutdown (Ctrl+C)
-- **Notes**: Fully working. Screen + audio streaming verified. Cursor overlay waiting on P1.8 wiring. Stream multiplexing conflict between moq-lite audio and raw screen streams fixed via `UniStreamRouter` (commit 0dc73fa). Retina resolution mismatch fixed via lazy scaler init.
+- **Notes**: Screen + audio streaming verified end-to-end. Cursor overlay infrastructure exists in viewer but awaiting P3.5.1 for data flow wiring. Stream multiplexing conflict fixed via `UniStreamRouter` (commit 0dc73fa). Retina resolution mismatch fixed via lazy scaler init.
 - **Acceptance criteria**:
+  - ~~Cursor position updates visible~~ (deferred to P3.5.1)
   - Manual test: run host on one terminal, join on another (same machine is fine — iroh handles loopback)
   - Screen appears in viewer within 3 seconds
-  - Cursor position updates visible
   - Clean shutdown without panics
   - `just all` passes
 - **Performance targets** (measure and record in LEARNINGS.md):
   - Screen latency < 100ms
-  - Cursor latency < 50ms
+  - Cursor latency < 50ms (once P3.5.1 complete)
   - CPU usage < 15% at 1080p 30fps
 
 ---
@@ -333,7 +333,7 @@
   - `just all` passes
 
 ### P2.3: Keyboard & Mouse Input Forwarding
-- **Status**: `[~]` (code complete; not wired in session)
+- **Status**: `[x]` (code complete — session wiring is P3.5.2)
 - **Depends on**: P2.2
 - **Description**: Implement remote control in `crates/input`. Guest sends keyboard and mouse events; host injects them into the OS.
 - **Deliverables**:
@@ -355,7 +355,7 @@
 - **Docs**: `docs/05-concrete-architecture.md` (remote control protocol section)
 
 ### P2.4: Clipboard Sync
-- **Status**: `[~]` (code complete; not wired in session)
+- **Status**: `[x]` (code complete — session wiring is P3.5.5)
 - **Depends on**: P2.2
 - **Description**: Bidirectional clipboard synchronization between peers.
 - **Deliverables**:
@@ -373,7 +373,7 @@
   - `just all` passes
 
 ### P2.5: Quality Adaptation
-- **Status**: `[~]` (code complete; not wired in session)
+- **Status**: `[x]` (code complete — session wiring is P3.5.6)
 - **Depends on**: P2.1
 - **Description**: Monitor QUIC connection stats and adapt screen quality dynamically.
 - **Deliverables**:
@@ -443,6 +443,21 @@
 - **Acceptance criteria**:
   - End-to-end audio: capture → encode → network → decode → playback
   - No audible glitches under normal network conditions
+  - `just all` passes
+
+### P3.2.1: Bidirectional Audio (Guest Mic → Host)
+- **Status**: `[ ]`
+- **Depends on**: P3.1, P3.2
+- **Description**: P3.1 and P3.2 implement one-directional audio (host mic → guest speakers). For real pair programming both peers need to speak and hear each other. The guest/joiner must also capture their microphone and publish it as a moq-lite audio track; the host receives and plays it.
+- **Deliverables**:
+  - Wire guest-side audio capture + Opus encode in `run_join()` (mirrors the host-side pipeline in `run_host()`)
+  - Wire host-side audio decode + playback of the guest's track in `run_host()`
+  - Both peers publish and subscribe to each other's audio track (two separate moq-lite tracks: one per direction)
+  - Ensure volume/mute controls apply to the correct track on each side
+- **Notes**: Current state — host mic → guest speakers works (verified in first real-device test, 2026-04-01). Guest mic → host is entirely absent from the session wiring.
+- **Acceptance criteria**:
+  - Guest speaks, host hears them
+  - Both directions work simultaneously without echo (echo cancellation is stretch — AEC is a separate concern)
   - `just all` passes
 
 ### P3.3: Windows Support
@@ -548,6 +563,12 @@
 - **Status**: `[ ]`
 - **Depends on**: P1.8
 - **Description**: Both peers see each other's cursor at all times.
+- **Code locations**:
+  - `crates/transport/src/cursor.rs` — `CursorSender` / `CursorReceiver` (transport layer, already works)
+  - `crates/app/src/session.rs::run_host()` ~line 115 — currently spawns `CursorReceiver` only. **Add**: `CursorSender` with a cursor-polling loop.
+  - `crates/app/src/session.rs::run_join()` ~line 192 — `cursor_update_tx` created but **never fed data**. Wire viewer mouse position → `cursor_update_tx`. Forward `CursorReceiver` output → `_cursor_tx` watch channel (line 152).
+  - `crates/app/src/viewer.rs` ~line 105 — cursor overlay rendering code. **Already works** when data arrives via `cursor_rx`.
+  - **New**: Platform cursor polling function (macOS: `CGEvent::new(CGEventType::Null).location()`) in `crates/input/` or `crates/capture/`.
 - **Deliverables**:
   - **Host side**: Poll local cursor position (macOS: `CGEvent`), send `CursorUpdate` datagrams to guest at up to 60Hz. Receive guest's `CursorUpdate` and render a colored overlay on the host display (or in the host's tray/status UI if no host viewer).
   - **Guest side**: Track mouse position within the viewer window, map to host display coordinates, send `CursorUpdate` datagrams to host. Receive host's `CursorUpdate` — but since the host cursor is already in the captured video, this is optional (useful for coordinate-aware features like "snap to host cursor").
@@ -557,12 +578,20 @@
   - Guest viewer shows host cursor movements in real-time (via screen capture, already works)
   - Host sees guest cursor as a colored overlay
   - Cursor updates are <50 bytes per datagram
+  - Manual test: move mouse on guest viewer, see crosshair move on host
   - `just all` passes
 
 ### P3.5.2: Control Takeover
 - **Status**: `[ ]`
 - **Depends on**: P3.5.1, P2.3
 - **Description**: Guest can take keyboard/mouse control by clicking in the viewer. Host reclaims by moving their real mouse. Like Tuple's "click to drive" model.
+- **Code locations**:
+  - `crates/input/src/sender.rs` — `InputSender::new(stream).spawn(input_rx)` (code complete, needs stream)
+  - `crates/input/src/receiver.rs` — `InputReceiver::new(stream).spawn()` (code complete, needs stream)
+  - `crates/app/src/session.rs::run_host()` — **Add after line ~115**: accept input stream via `conn.accept_uni()`, spawn `InputReceiver`
+  - `crates/app/src/session.rs::run_join()` — **Add after line ~195**: open input stream via `conn.open_input_stream()`, spawn `InputSender`
+  - `crates/app/src/viewer.rs` — **Add**: capture egui keyboard/mouse events, send via `input_tx` channel to `InputSender`
+  - `crates/protocol/src/control.rs` — **Add**: `ControlRequest`/`ControlGrant`/`ControlRevoke` variants to `ControlMessage`
 - **Deliverables**:
   - `ControlState` enum: `HostActive | GuestActive | GuestRequested`
   - `ControlRequest` / `ControlGrant` messages on the control stream
@@ -572,8 +601,8 @@
   - Visual indicator in viewer: "You have control" / "Host has control" badge
   - Coordinate mapping: guest viewer pixels → host display pixels (accounting for scale factor and viewer window size)
 - **Acceptance criteria**:
-  - Guest clicks in viewer, types — keystrokes appear on host
-  - Host wiggles mouse — control returns to host, guest typing stops injecting
+  - Manual test: guest clicks in viewer, types — keystrokes appear on host
+  - Manual test: host wiggles mouse — control returns to host, guest typing stops injecting
   - Coordinate mapping is accurate (click targets correct UI elements on host)
   - `just all` passes
 
@@ -591,6 +620,14 @@
   - Each peer gets a distinct color (derived from peer_id hash or configurable)
   - Clear all: hotkey or control message to erase the canvas
   - Render: egui painter overlay on top of the screen texture, below the cursor overlay
+- **Code locations**:
+  - `crates/protocol/src/drawing.rs` — **New**: `DrawPoint`, `DrawStroke`, `DrawClear`, `DrawMode` types
+  - `crates/protocol/src/lib.rs` — **Add**: `pub mod drawing;` + re-exports
+  - `crates/protocol/src/control.rs` — **Add**: `DrawClear` variant to `ControlMessage` enum (line 70)
+  - `crates/transport/src/drawing.rs` — **New**: `DrawingSender` (datagrams for `DrawPoint`, stream for `DrawStroke`) + `DrawingReceiver` (mirrors cursor.rs pattern at line 77)
+  - `crates/transport/src/connection.rs` — **Add**: `send_draw_datagram()` / `recv_draw_datagram()` methods (pattern: `send_cursor_datagram` at existing datagram methods)
+  - `crates/app/src/viewer.rs:76` — **Modify**: `ViewerApp` gets `drawing_rx: watch::Receiver<Vec<DrawStroke>>`, render strokes in `update()` between screen texture (line 98) and cursor overlay (line 106)
+  - `crates/app/src/session.rs` — **Add**: spawn `DrawingSender` + `DrawingReceiver` in both `run_host()` and `run_join()`
 - **Protocol types**:
   - `DrawPoint { peer_id: u8, x: u16, y: u16 }` — datagram, <20 bytes
   - `DrawStroke { peer_id: u8, color: [u8; 3], points: Vec<(u16, u16)>, mode: DrawMode }` — stream
@@ -612,6 +649,13 @@
   - Render: emoji appears at cursor position, floats up ~50px over 2 seconds, fades out
   - Multiple reactions can be in-flight simultaneously (max 10 visible, drop oldest)
   - Hotkey: number keys 1-8 while holding a modifier, or a floating picker in the viewer
+- **Code locations**:
+  - `crates/protocol/src/reaction.rs` — **New**: `Reaction { peer_id: u8, emoji_id: u8, x: u16, y: u16 }` type + `EMOJI_SET` const array
+  - `crates/protocol/src/lib.rs` — **Add**: `pub mod reaction;` + re-exports
+  - `crates/transport/src/reaction.rs` — **New**: `ReactionSender` / `ReactionReceiver` (datagram-only, mirrors cursor.rs pattern at line 23/77)
+  - `crates/transport/src/connection.rs` — **Add**: `send_reaction_datagram()` / `recv_reaction_datagram()` methods (pattern: `send_cursor_datagram`)
+  - `crates/app/src/viewer.rs:17` — **Modify**: `ViewerApp` gets `reaction_rx: watch::Receiver<Vec<ActiveReaction>>` where `ActiveReaction` tracks position + spawn time for fade animation; render in `update()` after cursor overlay (line 138)
+  - `crates/app/src/session.rs` — **Add**: spawn `ReactionSender` + `ReactionReceiver` in both `run_host()` and `run_join()`
 - **Acceptance criteria**:
   - Send a reaction, see it appear on both screens at the sender's cursor position
   - Reactions fade out after ~2 seconds
@@ -622,12 +666,17 @@
 - **Status**: `[ ]`
 - **Depends on**: P2.4
 - **Description**: Wire `ClipboardSender`/`ClipboardReceiver` into session.
+- **Code locations**:
+  - `crates/input/src/clipboard.rs` — `ClipboardSender::new(event_tx, auto_sync).spawn()` (line 71), `ClipboardReceiver` (line 171) — code complete
+  - `crates/app/src/session.rs::run_host()` — **Add**: spawn `ClipboardSender` + `ClipboardReceiver` after handshake
+  - `crates/app/src/session.rs::run_join()` — **Add**: spawn `ClipboardSender` + `ClipboardReceiver` after handshake
+  - Both share clipboard events via the existing input stream (clipboard uses `InputMessage::Clipboard` variant)
 - **Deliverables**:
   - Both host and guest spawn clipboard monitors
   - Copy on one side appears on the other within ~500ms
   - Visual toast: "Clipboard synced" indicator
 - **Acceptance criteria**:
-  - Text clipboard round-trips between peers
+  - Manual test: copy text on host, paste on guest — text matches
   - Large data (>1MB) is rejected with a warning
   - `just all` passes
 
@@ -635,86 +684,258 @@
 - **Status**: `[ ]`
 - **Depends on**: P2.5
 - **Description**: Wire `QualityMonitor` into host session and connect to encode thread.
+- **Code locations**:
+  - `crates/transport/src/quality.rs` — `QualityMonitor::new(conn, base_config).spawn()` → returns `(handle, watch::Receiver<CaptureConfig>)` (line 114) — code complete
+  - `crates/app/src/session.rs::run_host()` — **Add after line ~112**: spawn `QualityMonitor`, pass the `watch::Receiver<CaptureConfig>` to the encode thread so it can dynamically adjust bitrate/fps/resolution
+  - `crates/capture/src/encode_thread.rs` — **Modify**: accept a `watch::Receiver<CaptureConfig>` and check for changes each frame, reinitializing encoder params when the config changes
 - **Deliverables**:
   - `QualityMonitor` spawned in `run_host()`
   - Output watch channel connected to encode thread for dynamic bitrate/fps/resolution changes
   - Visual indicator in viewer: connection quality badge (green/yellow/red)
 - **Acceptance criteria**:
-  - Under high RTT/loss, encoder downgrades quality tier
+  - Manual test: simulate high latency, verify encoder downgrades quality tier
   - When conditions improve, quality recovers
   - `just all` passes
 
 ---
 
-## Phase 4: Terminal Sharing (Differentiator)
+## Phase 4: Terminal Sharing + Localhost Tunneling
 
-> **Goal**: Share terminal sessions natively via PTY forwarding — the unique feature no competitor has.
-> **Estimated effort**: 3-4 weeks
-> **Docs**: `docs/06-competitive-analysis.md` (terminal-first wedge)
+> **Goal**: Share terminal sessions natively via PTY forwarding AND tunnel localhost ports over the existing P2P connection. Together these complete the "I can see your code, run your app, and use your services" story.
+> **Estimated effort**: 4-5 weeks
+> **Docs**: `docs/06-competitive-analysis.md`, `docs/07-ux-design.md`, `docs/09-localhost-tunneling.md`
 
-### P4.1: PTY Capture
+### P4.1: PTY Capture & Multi-Session Management
 - **Status**: `[ ]`
-- **Description**: Capture terminal output by creating a PTY and reading its output stream.
+- **Description**: Capture terminal output by creating PTYs and reading their output streams. Support multiple concurrent terminal sessions (one running the server, one for tests, one for git).
 - **Deliverables**:
-  - Create PTY with configurable shell (detect user's default)
+  - `TerminalSession { id: u8, shell, cwd, permission: ReadOnly | ReadWrite }` — managed by host
+  - Create PTY with configurable shell (detect `$SHELL` or explicit path)
   - Read PTY output as byte stream
   - Handle terminal resize (SIGWINCH)
-  - `TerminalFrame` — output bytes + size + timestamp
+  - `TerminalFrame { session_id, data, timestamp }` — output chunk
+  - `TerminalOpen / TerminalClose / TerminalResize` control messages
+  - Max 8 concurrent sessions
+  - **State snapshot on join**: When guest connects mid-session, send the current screen buffer (maintained via `vte` crate) so they don't see a blank terminal
 - **Acceptance criteria**:
   - Test: spawn PTY, send "echo hello", receive "hello" in output
+  - Multiple sessions can run concurrently
   - Resize propagation works
+  - Late-joining guest sees existing terminal content
   - `just all` passes
 
-### P4.2: Terminal State Streaming
+### P4.2: Terminal Streaming Over QUIC
 - **Status**: `[ ]`
 - **Depends on**: P4.1, P1.2
-- **Description**: Stream terminal output over a reliable QUIC stream to the remote peer.
+- **Description**: Stream terminal I/O over a dedicated reliable QUIC stream per session. Bidirectional: host output → guest display, guest input → host PTY (when permitted).
 - **Deliverables**:
-  - Dedicated reliable stream for terminal data (priority 1)
-  - Terminal resize messages
-  - Input forwarding (guest types → host PTY)
+  - One QUIC bidi stream per terminal session (priority 1 — same as input)
+  - Stream type tag `0x54` ('T') for terminal streams (via `UniStreamRouter` pattern)
+  - `TerminalData { session_id, direction: Output|Input, data }` framing
+  - Permission enforcement: host controls read-only vs read-write per session
+  - Guest input only forwarded when session is read-write AND guest has control (P3.5.2)
 - **Acceptance criteria**:
   - End-to-end: guest sees host's terminal output in real-time
-  - Guest can type and host's terminal receives input
+  - Guest can type into read-write sessions
+  - Read-only sessions reject guest input
   - `just all` passes
 
-### P4.3: Terminal Renderer
+### P4.3: Terminal Renderer — Two Paths
 - **Status**: `[ ]`
 - **Depends on**: P4.2
-- **Description**: Render received terminal output in the viewer UI using a terminal emulator widget.
-- **Deliverables**:
-  - Terminal emulator (consider `alacritty_terminal` or `vte` crate for parsing)
-  - Render terminal grid in the UI (egui/iced)
-  - Support colors, cursor, scrollback
-  - User's own font and theme preferences
+- **Description**: Two ways for guests to access shared terminals, serving different user types.
+- **Path A — Native terminal (power users)**:
+  - `pairwire terminal attach <session_id>` bridges the QUIC stream to a local PTY
+  - Opens in the user's real terminal emulator — their fonts, keybinds, tmux, everything
+  - This is how SSH works and it's the primary recommended path
+  - Implementation: spawn a local PTY, pipe QUIC stream bytes to/from it
+- **Path B — In-viewer terminal panel (GUI users)**:
+  - Split view in the egui viewer: screen share on top/left, terminal panel on bottom/right
+  - Terminal rendering via `alacritty_terminal` or `vte` crate for ANSI parsing
+  - Support 24-bit color, Unicode, cursor, scrollback (10k lines default)
+  - Good enough for watching logs and light interaction, not meant to replace a real terminal
+  - Tab bar for switching between terminal sessions
 - **Acceptance criteria**:
-  - Terminal output renders correctly (colors, cursor position)
-  - Scrollback works
+  - Path A: `pairwire terminal attach 1` opens a working terminal in the user's shell
+  - Path B: Terminal panel in viewer renders ANSI output correctly (colors, cursor)
+  - Both paths work simultaneously (one user on Path A, another on Path B)
+  - `just all` passes
+
+### P4.4: Tunnel Protocol & Host-Side Proxy
+- **Status**: `[ ]`
+- **Depends on**: P1.2
+- **Description**: Define tunnel protocol types and implement the host-side proxy that connects incoming QUIC streams to localhost ports.
+- **Docs**: `docs/09-localhost-tunneling.md`
+- **Deliverables**:
+  - Protocol types in `crates/protocol/`:
+    - `TunnelOffer { ports: Vec<TunnelPort> }` — host advertises available ports during handshake
+    - `TunnelRequest { tunnel_id: u16, host_port: u16, guest_bind_port: u16 }` — guest requests a tunnel
+    - `TunnelAccept { tunnel_id: u16 }` / `TunnelReject { tunnel_id: u16, reason }` — host responds
+    - `TunnelClose { tunnel_id: u16 }` — either side tears down
+  - `TunnelManager` on host:
+    - Configured via `--tunnel 3000,5432` or config file `default_ports`
+    - Accepts QUIC bidi streams tagged `0x4C` ('L' for localhost)
+    - For each stream: connect to `127.0.0.1:<host_port>`, proxy bytes bidirectionally
+  - Security: database ports (3306, 5432, 6379, 27017) blocked by default (configurable)
+  - Host must approve tunnel requests (auto-accept configurable in `permissions.auto_accept_tunnels`)
+- **Acceptance criteria**:
+  - Host offers port 3000, guest requests tunnel, QUIC stream opens, bytes flow to localhost:3000
+  - Database port blocked by default, allowed with explicit config
+  - `just all` passes
+
+### P4.5: Tunnel Guest-Side Listener & Bidirectional Proxy
+- **Status**: `[ ]`
+- **Depends on**: P4.4
+- **Description**: Guest-side TCP listener that binds local ports and proxies to the host via QUIC.
+- **Deliverables**:
+  - `TunnelClient` on guest:
+    - For each accepted tunnel: bind `127.0.0.1:<guest_bind_port>` as TCP listener
+    - Each incoming TCP connection opens a new QUIC bidi stream to host
+    - `tokio::io::copy_bidirectional` for byte proxying (~50 lines per direction)
+  - Handle multiple concurrent TCP connections per tunnel (browser opens 6 connections)
+  - Graceful cleanup: TCP close → QUIC stream finish, QUIC stream close → TCP reset
+  - Port conflict on guest: try requested port, if taken auto-pick and warn user
+- **Acceptance criteria**:
+  - Guest opens browser to `localhost:3000`, sees host's dev server
+  - Multiple concurrent connections work (e.g., browser + API client)
+  - WebSocket upgrade works through the tunnel
+  - `just all` passes
+
+### P4.6: Tunnel Management CLI & UI
+- **Status**: `[ ]`
+- **Depends on**: P4.5
+- **Description**: CLI commands and session bar panel for managing tunnels.
+- **Deliverables**:
+  - CLI: `pairwire tunnel ls`, `pairwire tunnel add <port>`, `pairwire tunnel stop <port>`
+  - Host auto-detection mode (optional): monitor listening sockets, offer new ones
+  - Session bar tunnel panel: list active tunnels with status indicators
+  - Startup output: "Binding localhost:3000 → host:3000 ✓"
+- **Acceptance criteria**:
+  - `pairwire tunnel ls` shows active tunnels with status
+  - Tunnels can be added/removed during a live session
+  - `just all` passes
+
+### P4.7: Settings & Config System
+- **Status**: `[ ]`
+- **Description**: Persistent configuration with three-layer merge: CLI flags > config.toml > defaults.
+- **Docs**: `docs/07-ux-design.md` (settings section)
+- **Deliverables**:
+  - `Settings` struct in `crates/core/` that merges all layers
+  - Config file at `~/.config/pairwire/config.toml` (platform-correct via `directories` crate)
+  - TOML format, human-editable
+  - Sections: identity, capture, audio, permissions, terminal, tunnels, ui
+  - **Audio quality knobs** (user-overridable ceiling): `audio.bitrate_kbps` (default: 64 — 32 kbps showed artifacting in real-device test), `audio.channels` (default: mono)
+  - **Video quality**: user config provides a ceiling (max_fps, max_resolution, h264_profile); actual operating point is negotiated — see P4.7.1
+  - CLI: `pairwire config edit` (opens in `$EDITOR`), `pairwire config get <key>`, `pairwire config set <key> <value>`
+  - Safe defaults: remote_control=denied, clipboard_sync=text_only, terminal_access=read_only, database_ports=blocked
+- **Acceptance criteria**:
+  - Config file created on first run with commented defaults
+  - CLI flag overrides config file value
+  - `pairwire config set capture.fps 60` persists correctly
+  - `just all` passes
+
+### P4.7.1: Intelligent Quality Negotiation
+- **Status**: `[ ]`
+- **Depends on**: P2.2, P4.7
+- **Description**: The encode resolution and quality profile should not be a static default — they should be derived from both peers' capabilities and the joiner's actual viewer size. Encoding at the host's native Retina resolution when the guest's viewer is 1440p is pure bandwidth waste and causes unnecessary downscaling artifacts on the receive side.
+- **Design**:
+  - **Handshake already exchanges display info** (resolution, scale factor) — extend it to also exchange:
+    - Viewer window size (joiner sends its current window dimensions)
+    - Hardware encoder/decoder availability (VideoToolbox, NVENC, VA-API, etc.)
+    - Max acceptable resolution (from user config ceiling if set)
+  - **Host computes encode resolution** as: `min(host_native_res, joiner_viewer_res, config_ceiling)`, rounded to a clean H.264-friendly size (divisible by 2)
+  - **Joiner viewer resize** → sends a `ViewerResize` control message → host recomputes and reinitializes encoder at new resolution. This means the encode resolution tracks the viewer, not the source display.
+  - **H.264 profile selection**: if both sides have hardware encode/decode, use `High` profile (B-frames, 8x8 DCT — noticeably crisper). Fall back to `Main`, then `Constrained Baseline` only if hardware is absent.
+  - **Initial quality tier**: start at the best tier the network and hardware support, not always at the lowest. P2.5 (`QualityMonitor`) handles degradation; this task sets the right starting point.
+  - **Audio**: both peers advertise their mic sample rate and encoder capabilities; pick the best mutually supported bitrate (cap at 64 kbps mono for voice, allow 96 kbps stereo if system audio is shared).
+- **Deliverables**:
+  - Extended `Handshake` type with `viewer_size`, `hw_encoder`, `hw_decoder`, `config_caps` fields
+  - `negotiate_quality(host_caps, guest_caps) -> NegotiatedQuality` pure function (easy to test)
+  - `ViewerResize { width: u32, height: u32 }` control message → triggers encoder reconfig
+  - Host uses `NegotiatedQuality` to initialize encoder thread instead of hardcoded values
+  - `NegotiatedQuality` logged at session start so it's visible in traces
+- **Notes**: First real-device test (2026-04-01) showed "not crisp" video — root cause was Constrained Baseline profile + 4K→1080p downscale happening in the encoder rather than matching the viewer. Also audio artifacting at 32 kbps.
+- **Acceptance criteria**:
+  - `negotiate_quality` unit tests covering: Retina host + small viewer → encode at viewer size; both have HW → High profile; neither has HW → Baseline
+  - Resize viewer window → encoder reinitializes at new resolution within one keyframe interval
   - `just all` passes
 
 ---
 
-## Phase 5: Differentiation & Polish (Ongoing)
+## Phase 5: Multi-Party & Polish
 
-> Future features — not scoped in detail yet. Add tasks as Phase 1-4 complete.
+> **Goal**: Expand from 1:1 to small-group collaboration (mob programming, team reviews). This is the natural evolution after the core 1:1 experience is solid.
+> **Docs**: `docs/08-multi-party-architecture.md`
 
-### P5.1: Recording (Save Session to File)
+### P5.1: Multi-Party — Accept Multiple Guests (Star Topology)
 - **Status**: `[ ]`
-- **Description**: Record screen + audio to a local file during a session. Mux H.264 video + Opus audio into MP4/MKV.
+- **Description**: Host accepts 2-4 guests simultaneously. Screen/audio broadcast from host to all. Each guest gets a distinct cursor color. Star topology (host is hub).
+- **Docs**: `docs/08-multi-party-architecture.md`
+- **Bandwidth analysis** (the real constraint):
+  - 1080p30 H.264 ≈ 3-5 Mbps per guest (depending on content complexity)
+  - Audio ≈ 32 Kbps per guest (negligible)
+  - Cursors/reactions/drawing ≈ <1 Kbps (negligible)
+  - **2 guests**: 6-10 Mbps upload — works on any broadband
+  - **4 guests**: 12-20 Mbps upload — needs decent upload speed
+  - **5+ guests**: 20+ Mbps — needs fiber or SFU relay (P5.3)
+  - Encoding is NOT the bottleneck (host encodes once, shares via `tokio::sync::broadcast`)
+- **Deliverables**:
+  - `Transport::accept()` loop — accept multiple connections, spawn per-guest session tasks
+  - Screen: host encodes once, sends to all guests via `broadcast::channel<EncodedPacket>`
+  - Audio: host captures once, publishes to all guests via moq-lite (one broadcast, multiple subscribers)
+  - Cursors: each guest sends `CursorUpdate` with `peer_id` — host aggregates and re-broadcasts to all guests
+  - Reactions/drawing: host relays to all peers
+  - Control: only one guest can drive at a time, visible indicator of who has control
+  - Peer list: each peer gets `peer_id: u8`, assigned color, display name from config
+  - Configurable cap: default 4 guests max. Can increase if host has bandwidth.
+  - Per-connection congestion isolation: slow guest doesn't block others (each QUIC connection has independent congestion control)
+- **Architecture**: Hybrid star — host is the hub for screen/terminal/tunnels, all cursor/reaction datagrams relayed through host.
+- **Acceptance criteria**:
+  - 3 guests can connect and see the host's screen simultaneously
+  - Each guest has a distinct cursor color
+  - Only one guest has control at a time
+  - Slow guest doesn't degrade experience for other guests
+  - `just all` passes
 
-### P5.2: Multi-Party Sessions (3+ Peers)
+### P5.2: Multi-Party — Mesh Audio
 - **Status**: `[ ]`
-- **Description**: Extend protocol for N peers with a relay/mesh topology. Each peer gets a distinct cursor color.
+- **Depends on**: P5.1
+- **Description**: Upgrade audio from star (host→all) to mesh (everyone hears everyone). Each peer connects directly to every other peer for audio.
+- **Deliverables**:
+  - After initial star connection, guests discover each other via host relay
+  - Each peer pair establishes a direct iroh connection for audio (if NAT allows)
+  - Falls back to host relay for peers that can't connect directly
+  - Audio mixing: each peer receives N-1 audio streams, mixes locally
+  - Mute indicators per peer
+- **Acceptance criteria**:
+  - 3+ peers can all hear each other
+  - Direct connections used where possible (verify via logs)
+  - `just all` passes
 
-### P5.3: AI-Assisted Pairing
+### P5.3: SFU Relay for Large Groups (8+ Peers)
+- **Status**: `[ ]`
+- **Depends on**: P5.2
+- **Description**: Optional relay server that receives one copy of screen/audio from host and re-broadcasts to all guests. Eliminates the host-bandwidth bottleneck for large groups.
+- **When needed**: Beyond 5 peers, host upload bandwidth becomes the bottleneck (1080p30 ≈ 4 Mbps per guest → 5 guests = 20 Mbps). An SFU lets the host upload once (~4 Mbps) regardless of guest count.
+- **Architecture**: The SFU is just another iroh endpoint running a relay process. Host connects to it, publishes screen/audio. Guests connect to SFU instead of host for media. Control/cursors/reactions still go direct to host (low bandwidth).
+- **Acceptance criteria**:
+  - 8 guests can view host's screen via SFU
+  - Host upload bandwidth stays constant regardless of guest count
+  - Fallback to direct star topology if SFU unavailable
+
+### P5.4: AI-Assisted Pairing
 - **Status**: `[ ]`
 - **Description**: Shared LLM context in the pairing session. "Ask the AI about this code" as a first-class feature. Could use screen content + terminal history as context.
 
-### P5.4: Editor Integration (LSP-Aware Cursors)
+### P5.5: Editor Integration (LSP-Aware Cursors)
 - **Status**: `[ ]`
 - **Description**: Share editor state at the semantic level (LSP events, cursor position in file) alongside screen sharing.
 
-### P5.5: Rich Reactions — Custom Animated Stickers with Sound
+### P5.6: Recording (Save Session to File)
+- **Status**: `[ ]`
+- **Description**: Record screen + audio to a local file during a session. Mux H.264 video + Opus audio into MP4/MKV. Terminal output saved as asciicast (compatible with asciinema). Lower priority — focus on live collaboration first.
+
+### P5.7: Rich Reactions — Custom Animated Stickers with Sound
 - **Status**: `[ ]`
 - **Description**: Go beyond static emoji. Custom reactions that are short animated clips with audio — think Discord stickers meets Twitch alerts, but for pair programming.
 - **Format concept**: `.pwreact` — a lightweight reaction bundle:
@@ -738,3 +959,338 @@
   - Could support transparent video (VP9 alpha / AV1 alpha) for higher-quality animations if bundle size budget allows (~200KB)
   - Could support "reaction GIFs" — short looping clips from a URL, rendered with transparency
   - Sound reactions could be positional (play from the cursor location in stereo) for fun spatial feel
+
+---
+
+## Phase 6: Advanced Capture & Display Options
+
+> **Goal**: Power-user and niche capture/display features. Build only after the core feature set has GUI coverage and the 1:1 experience is polished. Each of these is self-contained but non-trivial.
+> **Prerequisites**: Phase 3.5 complete, P4.7 (config system) in place, GUI surfaces for core features exist.
+
+### P6.1: Region / Partial Screen Sharing
+- **Status**: `[ ]`
+- **Description**: Host selects a rectangular region of their display to share instead of the full screen. The capture pipeline crops pre-encode, so the guest never receives pixels outside the region. Useful for sharing a single editor pane while keeping the rest of the desktop private.
+- **UX**: A draggable/resizable overlay appears on the host's screen to define the crop region. Region persists for the session; host can adjust live. A "full screen" shortcut resets it.
+- **Implementation notes**: scap captures the full display; apply a crop rect before the frame enters the encode thread. The encode resolution becomes the region size, not the display size — feeds naturally into P4.7.1's negotiated resolution. Region coordinates need to account for Retina scale factor.
+- **Deliverables**:
+  - Region selection UI (overlay window on host)
+  - `CaptureRegion { x, y, width, height }` in `CaptureConfig`
+  - Crop applied in the encode thread before scaler, not in scap
+  - Region adjustable mid-session (triggers keyframe + `ViewerResize` control message)
+  - Config persistence: `capture.region` saved per-host-display by display UUID
+
+### P6.2: Window Sharing
+- **Status**: `[ ]`
+- **Description**: Host shares a single application window rather than a full display. The capture follows the window as it moves, resizes, or goes in/out of full-screen. Guest sees only that window, not the surrounding desktop.
+- **Implementation notes**: scap supports window-level capture via `Target::Window`. The complication is tracking window geometry changes — on macOS, use `CGWindowListCopyWindowInfo` to poll or `NSWorkspace` notifications to detect moves/resizes, then update the capture target or crop rect accordingly. Window minimisation or occlusion should pause the stream (send a "paused" control message) rather than sending garbage frames.
+- **Deliverables**:
+  - Window picker UI: list of visible windows with app icon + title
+  - Live tracking of window position/size changes
+  - Pause/resume stream on minimise/restore
+  - `CaptureTarget::Window(window_id)` variant in `CaptureConfig`
+
+### P6.3: Multi-Monitor — Host Display Selection
+- **Status**: `[ ]`
+- **Description**: When the host has multiple displays, let them choose which one to share. Switchable mid-session without disconnecting.
+- **Implementation notes**: scap exposes `Target::Display(display_id)`. Enumerate displays with `CGGetActiveDisplayList`. On switch, tear down the current capture thread and restart with the new display — this triggers a new keyframe group so the guest's decoder resets cleanly. The new display may have a different resolution, so P4.7.1's `ViewerResize` flow handles the encode resolution update.
+- **Deliverables**:
+  - Display enumeration (name, resolution, whether it's the main display)
+  - Display picker in host UI / menu bar
+  - Mid-session switch: clean teardown → restart → guest sees new display within one keyframe interval
+  - `CaptureTarget::Display(display_id)` variant in `CaptureConfig`
+
+### P6.4: Multi-Monitor Viewer — Span Across Guest Screens
+- **Status**: `[ ]`
+- **Description**: When the guest has multiple displays and the host is sharing a multi-monitor setup (or a very wide display), allow the guest's viewer to span across their own screens to use the full real estate. The viewer becomes a borderless window that can be dragged across display boundaries, with the OS compositor handling the spanning.
+- **Notes**: This is genuinely unusual — most screen share tools don't attempt this. The core challenge is that egui/wgpu windows are per-monitor; spanning requires either a single oversized window (works on macOS if you position it across the boundary) or multiple synchronised windows (harder). The simpler path: allow the viewer window to be positioned and resized freely across display boundaries and let the OS handle compositing. The trickier path (separate windows per guest display, each showing a different crop of the shared content) is only worth it if multi-monitor host sharing (P6.3 extended to share all displays simultaneously) is also implemented.
+- **Deliverables**:
+  - Viewer window can be freely resized across display boundaries (no artificial single-display constraint)
+  - Stretch goal: "span mode" that snaps the viewer to fill all guest displays automatically
+  - Stretch goal: host can share all displays simultaneously as one logical canvas; guest viewers map their screen layout to the host's layout
+
+### P6.5: Privacy Zones (Pre-Encode Redaction)
+- **Status**: `[ ]`
+- **Description**: Host defines rectangular regions that are blurred or blacked out before encoding. The redacted pixels are never transmitted — they're zeroed in the raw frame buffer before the encode thread sees them. Designed for scenarios where credentials, private messages, or confidential content are visible on screen.
+- **Notes**: Applied before the scaler/encoder in the capture pipeline, not as a renderer overlay. This is a security property — overlay redaction that happens post-encode is not safe. Regions should be configurable per-application (e.g. "always redact the rectangle where 1Password sits") using window geometry as an anchor.
+- **Deliverables**:
+  - `PrivacyZone { x, y, width, height, mode: Blur | BlackOut }` in `CaptureConfig`
+  - Applied in encode thread to raw frame buffer before encode
+  - UI for defining zones (drag to create, click to remove)
+  - Optional: auto-detect zones by window name (e.g. add any window titled "1Password" automatically)
+  - Zones persist in config by display UUID
+
+### P6.5.1: Extensible Privacy Detection — Plugin Architecture
+- **Status**: `[ ]`
+- **Depends on**: P6.5
+- **Description**: P6.5 handles static user-defined rectangles. This extends it with a detection layer: rules and plugins that automatically identify *what* to redact, without the user having to manually draw boxes. A separate project in its own right — capture here for design intent before implementation.
+
+---
+
+#### The Core Tension
+
+Automatic redaction requires *analysing* frames to decide what to hide. If that analysis happens outside the process, you are sending unredacted frames to a third party to decide what to redact — which is precisely the thing you're trying to prevent. This is the fundamental design constraint that shapes everything below.
+
+**Resolution**: Detection always runs on unredacted frames. The trust boundary must therefore be:
+- **Local-only by default** — detection runs in-process or in a sandboxed sidecar on the host machine. No frames leave the machine for detection.
+- **External services are opt-in and explicit** — user consciously chooses to send frames to an external service, understands the tradeoff. Suitable for enterprise deployments with a trusted internal service, not a default.
+
+---
+
+#### Detection Layers (in order of complexity)
+
+**Layer 1 — Window identity rules** (cheapest, no frame analysis needed)
+  - Match on OS window metadata: app bundle ID, window title, process name
+  - "WhatsApp begone": if a window matching `com.facebook.WhatsApp` or `WhatsApp` is visible within the capture region, redact its entire bounding rect
+  - Uses `CGWindowListCopyWindowInfo` (macOS) — no frame processing at all
+  - Rule format: `{ match: { bundle_id: "com.facebook.WhatsApp" }, action: Blackout, message: "WhatsApp begone — for your eyes only" }`
+  - Also handles: 1Password, banking apps, Slack DMs (title-based), terminal windows with known credential patterns
+
+**Layer 2 — Local frame analysis via Apple Vision / on-device ML** (medium cost, fully private)
+  - OCR the frame using `Vision.framework` (macOS) to extract text regions
+  - Pattern-match against PII signatures: credit card numbers (Luhn), SSNs, API key patterns, email addresses in form fields
+  - Face detection: optionally blur faces (useful for sharing a screen with video calls in the background)
+  - Apple Vision runs entirely on-device, no network, hardware-accelerated on Apple Silicon
+  - Performance budget: run at a fraction of capture FPS (every 10th frame is fine — redaction zones are stable for seconds at a time). Cache results between analysis frames.
+  - Output: list of `DetectedRegion { rect, category: CreditCard | SSN | ApiKey | Face | ... , confidence }` → applied as redaction zones
+
+**Layer 3 — WASM plugin interface** (extensible, sandboxed)
+  - A plugin receives a downsampled/low-res version of the frame (e.g. 480p) as raw bytes + window metadata
+  - Returns a list of regions to redact (coordinates in normalised 0.0-1.0 space)
+  - WASM sandbox: plugin cannot make network calls, cannot access filesystem, cannot see anything except the frame it's given
+  - Enables: community-built detectors, enterprise custom rules, specialised PII patterns for specific industries
+  - Plugin format: `.pwprivacy` bundle — WASM module + `manifest.toml` (name, description, version, permissions)
+  - Built-in plugins ship with pairwire: `pii-detector`, `window-classifier`, `face-blur`
+
+**Layer 4 — External HTTP service** (opt-in only, explicit user consent required)
+  - Plugin that POSTs frame data to a configurable endpoint, receives redaction regions back
+  - Gated behind an explicit config flag: `privacy.external_detection.enabled = true` + `privacy.external_detection.url`
+  - Consent dialog on first enable: "You are sending screen frames to [url]. These frames are unredacted. Are you sure?"
+  - Designed for: enterprise deployments with an internal detection service, specialist providers (DLP vendors, etc.)
+  - Frame sent is the full capture frame — the service sees everything. This is intentional and documented.
+
+---
+
+#### Personality Layer ("Opal-style quirk")
+
+Rules can carry a human-readable `message` that surfaces in the host UI when the rule fires. Not a warning — a character moment. Examples:
+  - `"WhatsApp begone — this is between you and your group chat 🫣"`
+  - `"1Password is doing its thing. Your secrets are safe."`
+  - `"Detected a credit card number. Redacted. You're welcome."`
+  - `"Face detected in background — blurred. They didn't ask to be on screen."`
+
+The message appears as a transient toast on the host's screen (not the guest's — the guest just sees the redaction). Optional, dismissable, configurable off. The goal is to make privacy feel intentional and even a bit delightful rather than a bureaucratic compliance checkbox.
+
+Rule names in config are also human-readable: `[[privacy.rules]]` entries have a `name` field. "WhatsApp Begone", "No PII in Forms", "Keep Faces Private". These show up in the host UI as toggleable named rules, not anonymous rectangles.
+
+---
+
+#### Architecture Sketch
+
+```
+CaptureThread → raw frame
+    │
+    ├─→ PrivacyEngine (async, runs every Nth frame)
+    │       ├─ WindowRuleEvaluator   (Layer 1 — sync, O(windows))
+    │       ├─ LocalMLDetector       (Layer 2 — async, Vision.framework)
+    │       ├─ WasmPluginRunner      (Layer 3 — sandboxed, parallel)
+    │       └─ ExternalServiceClient (Layer 4 — opt-in HTTP, async)
+    │       → emits: Vec<RedactionZone>  (cached, updated every Nth frame)
+    │
+    └─→ EncodeThread
+            applies RedactionZone list to raw frame buffer before encode
+            (same mechanism as P6.5 static zones)
+```
+
+The `PrivacyEngine` runs out-of-band from the encode thread. It analyses frames asynchronously and publishes an updated `Vec<RedactionZone>` via a `watch::Sender`. The encode thread reads the latest snapshot each frame — if detection lags by a frame or two, the zones from the previous analysis are applied (conservative: zones persist until explicitly cleared, not until re-confirmed).
+
+---
+
+#### What Makes This a Separate Project
+
+- WASM runtime integration (likely `wasmtime`) is a non-trivial dependency
+- Apple Vision framework bindings are not mature in the Rust ecosystem — likely needs an Objective-C/Swift bridge
+- The plugin distribution story (discovery, installation, trust, versioning) is a product in itself
+- External service protocol needs a security review before shipping
+
+**Recommended sequencing**: Ship P6.5 (static zones) + Layer 1 (window rules) first — covers 80% of real use cases with minimal complexity. Layer 2 (Vision OCR) is the highest-value next step. Layers 3-4 are post-1.0.
+
+- **Acceptance criteria** (for Layer 1 + 2 MVP):
+  - Window rule fires within one capture frame of the target window becoming visible
+  - OCR-based PII detection correctly redacts a visible credit card number in a form field (test with a fixture image)
+  - Detection runs without dropping encode FPS (budget: <5ms per analysis frame on Apple Silicon)
+  - `just all` passes
+
+### P6.6: Cursor-Follow / Auto-Pan Mode
+- **Status**: `[ ]`
+- **Description**: When the host has a large or high-DPI display and the guest's viewer is small, instead of showing the full screen scaled down (losing readability), the viewer crops to a region around the host's cursor and pans smoothly as the cursor moves. Guest sees a 1:1 or close-to-1:1 crop that follows the action.
+- **Notes**: This is viewer-side but requires host cooperation: the host's cursor position (already sent via `CursorUpdate` datagrams in P3.5.1) drives the pan on the guest side. The host encodes the full screen at full resolution (or at least a high resolution); the guest renders a crop of the decoded frame. No encode-side changes needed — this is purely a viewer render transform. The crop rect is computed from cursor position + viewer window size, with easing to avoid jarring jumps.
+- **Deliverables**:
+  - "Follow cursor" toggle in viewer UI
+  - Smooth pan with configurable easing (lerp toward cursor, not instant jump)
+  - Dead zone: don't pan if cursor is within the centre N% of the viewport
+  - Zoom level configurable (default: fit host resolution to viewer, i.e. same as current; 1:1 is the useful new mode)
+
+---
+
+## Phase W: Web Viewer ("Send a Link")
+
+> **Goal**: Anyone can watch a pairwire session from a browser with zero install. No native app, no account, no friction. Send a link, they're in.
+>
+> **Scope deliberately limited**: the web viewer is a **viewer + pointer**, not a full peer. It can watch, point, draw, react, and hear. It cannot drive (no keyboard/mouse injection), cannot access the terminal, and cannot use tunnels. This is a feature, not a limitation — it's the right UX for reviewers, stakeholders, and rubber ducks.
+>
+> **Can be built in isolation**: this phase has no dependencies on Phase 4-6 features. It can be started as soon as P3.5.1 (cursor) and P3.1/P3.2 (audio) are working. Good candidate for a focused side sprint.
+>
+> **Estimated effort**: 6-8 weeks (gateway bridge + web client)
+
+---
+
+### Architecture
+
+```
+Native host process
+    │
+    ├── iroh endpoint          ← existing, unchanged
+    │       ↕ iroh QUIC
+    │   Native guest (existing)
+    │
+    └── WebTransport bridge    ← new, spun up with --web flag
+            ↕ WebTransport (HTTP/3 over QUIC)
+        Browser guest (new web client)
+```
+
+The bridge is **not a relay** — it runs inside the host process (or as a sidecar spawned by it). It does not transcode video. It repackages already-encoded H.264 NAL units and Opus frames from the internal channels into the format the browser expects. Cursor/reaction/draw datagrams are forwarded as-is. The host encodes once regardless of how many web guests are watching.
+
+The hosted web app at `join.pairwire.app` is a static file server only — it serves the JS/WASM bundle. All session data flows directly between the browser and the host's bridge. No pairwire server sees session content.
+
+---
+
+### PW.1: WebTransport Bridge (Host Side)
+- **Status**: `[ ]`
+- **Depends on**: P1.10, P3.1
+- **Description**: An optional WebTransport server that runs inside the host process when `--web` is passed. Accepts browser connections, authenticates via session token, and bridges the internal media/datagram channels to WebTransport streams.
+- **Crate**: new `crates/web-bridge` — keeps the HTTP/3 dependency isolated from the rest of the workspace
+- **Deliverables**:
+  - `WebBridge` struct: starts a `wtransport` (or `h3`) server on a configurable local port (default: 9443)
+  - TLS: self-signed cert generated at startup, cert hash included in the web invite URL (browsers accept this via the `serverCertificateHashes` WebTransport option — no CA required)
+  - Session token auth: browser must present the token from the invite URL in the first datagram; reject anything else
+  - Bridges from internal channels:
+    - `broadcast::Receiver<EncodedPacket>` → WebTransport unidirectional stream (one stream per keyframe group, mirrors the native screen stream structure)
+    - `broadcast::Receiver<OpusFrame>` → WebTransport unidirectional stream
+    - `watch::Receiver<CursorUpdate>` → WebTransport datagram
+  - Accepts from browser:
+    - `CursorUpdate` datagrams → forwarded to host's existing cursor channel
+    - `DrawPoint` / `DrawStroke` datagrams → forwarded to drawing channel
+    - `Reaction` datagrams → forwarded to reaction channel
+  - `WebGuestConnected` / `WebGuestDisconnected` events emitted to session so host UI can show web guest count
+  - Max web guests: configurable (default: 4)
+- **Dependency note**: `wtransport` crate is the leading Rust WebTransport server implementation. Evaluate at task start — if immature, `quinn` with a WebTransport framing layer is the fallback.
+- **Acceptance criteria**:
+  - `cargo test -p web-bridge` passes without a browser (mock WebTransport client in tests)
+  - Bridge starts and stops cleanly with the session
+  - Token auth rejects connections with wrong/missing token
+  - `just all` passes
+
+### PW.2: Web Invite Link
+- **Status**: `[ ]`
+- **Depends on**: PW.1, P1.1
+- **Description**: When `--web` is enabled, generate a second invite URL alongside the existing `pairwire://` link. The web URL opens in any browser and loads the viewer.
+- **Deliverables**:
+  - Web invite URL format: `https://join.pairwire.app/s?host=<ip_or_relay>&port=9443&cert=<cert_hash_hex>&token=<session_token>`
+    - `host`: the host's public IP (attempt NAT traversal via iroh's relay infrastructure to discover) or relay fallback address
+    - `cert`: SHA-256 hash of the self-signed cert (enables `serverCertificateHashes` without a CA)
+    - `token`: same session token as the native invite
+  - Host terminal output shows both links:
+    ```
+    Native invite:  pairwire://0f02581240...?relay=...&token=...
+    Web invite:     https://join.pairwire.app/s?host=...&cert=...&token=...
+    ```
+  - QR code for the web invite (using a pure-Rust QR lib — `qrcode` crate) displayed in the menu bar popover
+  - `InviteLink` type extended with `Option<WebInvite>` — web invite is absent when `--web` not passed
+- **Acceptance criteria**:
+  - Web URL parses correctly in JS (`URL` constructor + `searchParams`)
+  - `cert` hash matches the self-signed cert served by PW.1
+  - QR code renders correctly in terminal (UTF-8 block characters) and menu bar
+
+### PW.3: Web Client — Video Decode + Render
+- **Status**: `[ ]`
+- **Depends on**: PW.1, PW.2
+- **Description**: The browser-side video pipeline. Receives H.264 NAL units over WebTransport, decodes via WebCodecs, renders to a `<canvas>`.
+- **Stack**: TypeScript + Vite. No framework — the UI is minimal enough that a framework adds more complexity than it removes. Compiled to a static bundle served from `join.pairwire.app`.
+- **Deliverables**:
+  - `SessionClient` class: opens WebTransport connection to the bridge using the invite URL params
+  - `VideoDecoder` (WebCodecs API): receives encoded chunks from the WebTransport stream, feeds to `VideoDecoder`, paints `VideoFrame` to canvas via `requestVideoFrameCallback`
+  - Keyframe detection: if the first chunk is a delta frame, buffer and discard until a keyframe arrives (same rule as native decoder)
+  - Canvas: fills the browser viewport, maintains aspect ratio, no scroll bars. Black bars on mismatch (letterbox/pillarbox). `window.addEventListener('resize', ...)` repaints layout.
+  - Loading state: "Connecting…" → "Waiting for first frame…" → viewer. Clean error states for connection failure, token rejection, session ended.
+  - Browser compatibility: Chrome/Edge (full support), Safari 17+ (WebCodecs H.264 supported), Firefox (WebCodecs behind flag — graceful degradation message)
+- **Acceptance criteria**:
+  - Video plays in Chrome within 3 seconds of opening the link on a LAN connection
+  - Resize browser window → canvas reflows, no distortion
+  - Close host → browser shows "Session ended" cleanly (no unhandled promise rejection)
+
+### PW.4: Web Client — Audio Playback
+- **Status**: `[ ]`
+- **Depends on**: PW.3
+- **Description**: Receive and play the host's audio in the browser via Web Audio API.
+- **Deliverables**:
+  - Receives Opus frames over a dedicated WebTransport stream
+  - Decodes via `AudioDecoder` (WebCodecs — supported in Chrome/Edge; polyfill via `libopus` WASM for Safari)
+  - Plays via `AudioContext` with a small jitter buffer (~60ms) matching the native decoder
+  - Mute button in the viewer UI
+  - Autoplay policy handling: Web Audio requires a user gesture before playback. Show a "Click to enable audio" overlay if the page loaded without a user interaction (direct link open). Dismiss on click, start audio.
+- **Acceptance criteria**:
+  - Host speaks, browser guest hears within ~200ms on LAN
+  - Mute/unmute works without reconnecting
+  - Autoplay overlay appears when needed, dismisses correctly
+
+### PW.5: Web Client — Cursor, Draw, Reactions
+- **Status**: `[ ]`
+- **Depends on**: PW.3
+- **Description**: The interactive layer for web guests. They can point, draw, and react — they just can't drive.
+- **Deliverables**:
+  - **Cursor send**: `mousemove` on canvas → normalise to 0.0–1.0 coordinates → `CursorUpdate` datagram → WebTransport. Throttled: only send when moved >2px, idle after 500ms.
+  - **Cursor receive**: host's cursor position (already in the captured video — free) and any other web/native guests' cursors rendered as coloured overlays on the canvas. Each web guest gets a colour derived from their session token hash.
+  - **Draw**: `mousedown` + `mousemove` + `mouseup` → `DrawPoint` datagrams in real-time + `DrawStroke` on mouse up. Hold `Shift` for laser pointer mode (fades after 2s). Rendered as canvas 2D overlay on top of the video canvas.
+  - **Reactions**: floating reaction picker (8 emoji, keyboard shortcuts 1–8) → `Reaction` datagram. Received reactions from all peers animate on the canvas overlay.
+  - **No control**: cursor is always `default` on the canvas (no pointer affordance). Clicks are not forwarded as input events. A small badge reads "View only" in the corner.
+- **Acceptance criteria**:
+  - Web guest moves mouse → native host sees the cursor overlay
+  - Web guest sends a reaction → all peers (native + web) see it animate
+  - Drawing appears on all peers simultaneously
+  - "View only" badge visible and cannot be dismissed
+
+### PW.6: Viewer UI Polish
+- **Status**: `[ ]`
+- **Depends on**: PW.3, PW.4, PW.5
+- **Description**: The web viewer should feel considered, not bolted together. Minimal surface, but everything that's there should be right.
+- **Deliverables**:
+  - Fullscreen button (`requestFullscreen()` on the canvas container)
+  - Connection quality indicator: colour dot (green/yellow/red) based on WebTransport stats (RTT, packet loss via `getStats()`)
+  - Guest count badge: "2 others watching" (received via a control datagram from the bridge)
+  - Dark background (#0a0a0a) with no chrome — just the screen, the overlays, and a thin control bar that auto-hides after 3s of no mouse movement
+  - Page title: "pairwire — live session" while connected, "pairwire — session ended" on disconnect
+  - Favicon: small coloured dot (green = connected, grey = disconnected)
+  - Mobile: pinch-to-zoom on the canvas (read-only pan/zoom, no input forwarded). Portrait orientation shows a "Rotate for best experience" hint.
+- **Acceptance criteria**:
+  - Fullscreen works on Chrome, Safari, Edge
+  - Control bar hides and reappears correctly
+  - Mobile: renders without horizontal scroll, pinch-to-zoom functional
+
+---
+
+### What This Phase Deliberately Excludes
+
+- **No keyboard/mouse injection from browser** — `WebGuestConnected` advertises `capabilities: [Screen, Audio, Cursor, Draw, Reactions]` only. The host will never open an input stream to a web guest.
+- **No terminal panel** — out of scope. The native client is the right tool for terminal access.
+- **No tunnel access** — web guests cannot request tunnels.
+- **No mic input** — receiving host audio is in scope (PW.4). Sending browser mic audio to the host is technically possible but out of scope for v1 (getUserMedia + Web Audio encoding is a project in itself, and voice chat already works natively).
+- **No persistent sessions** — the web invite link is valid for the lifetime of the host process. No session replay, no recording access.
+
+### P6.7: Virtual / Headless Display Sharing
+- **Status**: `[ ]`
+- **Description**: Host shares a virtual display (created via a virtual display driver) that they are not actively looking at. Useful for running a dedicated demo environment, a CI output display, or a secondary workspace that is shared continuously without disrupting the host's primary workflow.
+- **Notes**: On macOS, virtual displays can be created with `CGVirtualDisplay` (macOS 12.4+) or via third-party virtual display drivers. The capture pipeline doesn't care — it just gets a `display_id`. The tricky parts are: creating and managing the virtual display lifecycle, routing applications to it (no standard API; user must manually move windows), and handling the case where the virtual display has no physical backing (some APIs behave differently). Lower priority — niche use case but genuinely useful for "always-on" shared workspaces.
+- **Deliverables**:
+  - `pairwire host --virtual-display` flag: creates a virtual display, shares it, tears it down on exit
+  - Virtual display resolution configurable (default: match guest's viewer size from P4.7.1 negotiation)
+  - Graceful fallback if virtual display creation fails (log + fall back to primary display)

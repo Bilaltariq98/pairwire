@@ -17,6 +17,9 @@ Rust-native P2P pair programming tool. Terminal-first collaboration over QUIC (i
    - Capture/encode: `docs/04-screen-capture-encode-pipeline.md`
    - Architecture: `docs/05-concrete-architecture.md`
    - Competitive context: `docs/06-competitive-analysis.md`
+   - UX & interaction design: `docs/07-ux-design.md`
+   - Multi-party architecture: `docs/08-multi-party-architecture.md`
+   - Localhost tunneling spec: `docs/09-localhost-tunneling.md`
 
 ## Validation Commands
 
@@ -52,8 +55,12 @@ Run `just all` before considering any task complete.
 
 - iroh's `Endpoint` is a singleton — don't create multiple per process.
 - scap's capture callback runs on its own thread — don't block it. Send frames to a channel immediately.
+- **scap captures at native Retina resolution**, not logical resolution. On a Retina Mac, frames may be 3024×1964 instead of 1512×982. Never assume frame dimensions match config — defer scaler/encoder init to the first captured frame and use actual `raw.width`/`raw.height`.
+- **scap sends empty frames** (width=0, height=0, data=[]) when ScreenCaptureKit reports idle status. Always filter these before encoding.
 - FFmpeg encoder/decoder contexts are NOT Send. Keep them on their dedicated thread.
+- **H.264 decoders must receive a keyframe before processing delta frames.** Drop delta frames in the decode loop until the first keyframe arrives, or the decoder will produce garbage/errors.
 - moq-lite groups map 1:1 to QUIC streams. Each keyframe should start a new group.
+- **QUIC uni stream multiplexing**: moq-lite and raw screen streams both call `accept_uni()` on the same connection. They will steal each other's streams unless you use the `UniStreamRouter` with type tags (screen=`0x53`, tunnel=`0x4C`). See `crates/transport/src/stream_router.rs`.
 - QUIC datagrams have a max size (~1200 bytes). Cursor updates must stay under this.
 - `postcard` serialization is NOT self-describing. Both sides must agree on the exact type layout. Version your protocol types.
 
