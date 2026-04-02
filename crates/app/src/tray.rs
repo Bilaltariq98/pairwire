@@ -53,6 +53,7 @@ mod inner {
     pub struct TrayHandle {
         // Keep the TrayIcon alive — dropping it removes the icon.
         _icon: tray_icon::TrayIcon,
+        copy_item: MenuItem,
         copy_id: tray_icon::menu::MenuId,
         disconnect_id: tray_icon::menu::MenuId,
         quit_id: tray_icon::menu::MenuId,
@@ -106,6 +107,7 @@ mod inner {
 
             Ok(Self {
                 _icon: tray,
+                copy_item,
                 copy_id,
                 disconnect_id,
                 quit_id,
@@ -116,6 +118,7 @@ mod inner {
         /// Update the invite URL and re-enable the "Copy Invite Link" item.
         pub fn set_invite_url(&mut self, url: String) {
             self.invite_url = Some(url);
+            self.copy_item.set_enabled(true);
         }
 
         /// Poll for a pending menu event. Returns `None` if the queue is empty.
