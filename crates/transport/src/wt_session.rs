@@ -10,8 +10,6 @@ use bytes::Bytes;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use web_transport_trait as wt;
 
-use crate::stream_router::NonScreenReceiver;
-
 // ── Error ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -89,24 +87,11 @@ impl wt::SendStream for WtSendStream {
 
 pub struct WtRecvStream {
     inner: RecvStream,
-    /// A buffered byte from the stream router's tag read. Returned on the
-    /// first `read()` call before reading from the inner stream.
-    prefix: Option<u8>,
 }
 
 impl WtRecvStream {
     fn new(inner: RecvStream) -> Self {
-        Self {
-            inner,
-            prefix: None,
-        }
-    }
-
-    fn with_prefix(inner: RecvStream, prefix: u8) -> Self {
-        Self {
-            inner,
-            prefix: Some(prefix),
-        }
+        Self { inner }
     }
 }
 
@@ -114,15 +99,6 @@ impl wt::RecvStream for WtRecvStream {
     type Error = WtError;
 
     async fn read(&mut self, dst: &mut [u8]) -> Result<Option<usize>, WtError> {
-        if let Some(byte) = self.prefix.take() {
-            if !dst.is_empty() {
-                dst[0] = byte;
-                return Ok(Some(1));
-            }
-            // dst is empty — put the byte back
-            self.prefix = Some(byte);
-            return Ok(Some(0));
-        }
         self.inner.read(dst).await.map_err(WtError::from)
     }
 
@@ -149,36 +125,16 @@ impl wt::RecvStream for WtRecvStream {
 ///
 /// Used to feed moq-lite's Client/Server without going through web-transport-iroh,
 /// which is pinned to iroh 0.96.
-///
-/// When a `NonScreenReceiver` is provided (guest side), `accept_uni()` reads from
-/// the stream router instead of directly from the QUIC connection, ensuring moq-lite
-/// never accidentally steals screen streams.
 #[derive(Clone)]
 pub struct IrohWtSession {
     conn: Connection,
-    /// When set, `accept_uni` reads from this router instead of the raw connection.
-    non_screen_rx: Option<NonScreenReceiver>,
 }
 
 impl IrohWtSession {
-    /// Create a session that accepts uni streams directly from the connection.
-    /// Use this on the host side where there is no stream conflict.
+    /// Create a session backed by an iroh connection.
     #[must_use]
     pub fn new(conn: Connection) -> Self {
-        Self {
-            conn,
-            non_screen_rx: None,
-        }
-    }
-
-    /// Create a session that accepts uni streams via the stream router.
-    /// Use this on the guest side where screen and moq-lite streams must be separated.
-    #[must_use]
-    pub fn with_router(conn: Connection, router: NonScreenReceiver) -> Self {
-        Self {
-            conn,
-            non_screen_rx: Some(router),
-        }
+        Self { conn }
     }
 }
 
@@ -188,22 +144,11 @@ impl wt::Session for IrohWtSession {
     type Error = WtError;
 
     async fn accept_uni(&self) -> Result<WtRecvStream, WtError> {
-        if let Some(ref router) = self.non_screen_rx {
-            // Read from the stream router — gets only non-screen streams
-            // with the consumed tag byte prepended back.
-            let tagged = router
-                .recv()
-                .await
-                .ok_or_else(|| WtError("stream router closed".into()))?;
-            Ok(WtRecvStream::with_prefix(tagged.stream, tagged.tag))
-        } else {
-            // Direct mode — no router (host side).
-            self.conn
-                .accept_uni()
-                .await
-                .map(WtRecvStream::new)
-                .map_err(WtError::from)
-        }
+        self.conn
+            .accept_uni()
+            .await
+            .map(WtRecvStream::new)
+            .map_err(WtError::from)
     }
 
     async fn accept_bi(&self) -> Result<(WtSendStream, WtRecvStream), WtError> {
@@ -247,7 +192,6 @@ impl wt::Session for IrohWtSession {
         self.conn.max_datagram_size().unwrap_or(1200)
     }
 
-    /// Return the ALPN as the protocol string so moq-lite can negotiate the version.
     fn protocol(&self) -> Option<&str> {
         None // raw QUIC — moq-lite will negotiate via SETUP stream
     }

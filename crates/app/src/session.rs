@@ -5,6 +5,9 @@
 //!
 //! Encode/decode require the `encode` feature. Without it, the pipeline stubs out
 //! gracefully with a warning after the handshake completes.
+//!
+//! Media transport uses a single moq-lite session with hang framing. Both screen
+//! and audio are published as tracks in one broadcast, described by a hang catalog.
 
 use std::sync::Arc;
 
@@ -18,12 +21,12 @@ use pairwire_core::{
     config::{AudioConfig, CaptureConfig, VideoEncoder},
 };
 use pairwire_protocol::{Capability, CursorUpdate};
-#[cfg(feature = "encode")]
-use pairwire_transport::{CursorReceiver, ScreenSender};
 use pairwire_transport::{
-    CursorSender, MoqAudioPublisher, MoqAudioSubscriber, NegotiatedSession, ScreenReceiver,
-    Transport, guest_handshake, host_handshake, local_handshake, stream_router::UniStreamRouter,
+    AudioStreamConfig, CursorSender, MoqSessionSubscriber, NegotiatedSession, Transport,
+    guest_handshake, host_handshake, local_handshake,
 };
+#[cfg(feature = "encode")]
+use pairwire_transport::{CursorReceiver, MoqSessionPublisher, VideoStreamConfig};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -51,7 +54,6 @@ pub async fn run_host(
     println!("  Waiting for guest to connect…\n");
 
     if let Some(tx) = invite_tx {
-        // Ignore send error — receiver may have been dropped (e.g., no tray feature).
         let _ = tx.send(invite.to_string());
     }
 
@@ -86,22 +88,34 @@ pub async fn run_host(
         "handshake complete"
     );
 
-    // Start audio pipeline if both peers support it.
-    let audio_handles = if session.has_capability(&pairwire_protocol::Capability::Audio) {
-        let audio_config = AudioConfig::default();
-        let (audio_capture, audio_frame_rx) = start_audio_capture(audio_config.clone())?;
-        let (audio_encode, audio_pkt_rx) = AudioEncodeThread::start(audio_config, audio_frame_rx)
-            .context("failed to start audio encoder")?;
-        let audio_pub = MoqAudioPublisher::new(Arc::clone(&conn));
-        let audio_pub_handle = audio_pub.spawn(audio_pkt_rx);
-        info!("audio pipeline started (host)");
-        Some((audio_capture, audio_encode, audio_pub_handle))
-    } else {
-        warn!("no Audio capability — not sending audio");
-        None
-    };
+    // Audio capture + encode pipeline (feeds into unified moq session).
+    let has_audio = session.has_capability(&Capability::Audio);
+    let (audio_capture_handle, audio_encode_handle, _audio_pkt_rx, _audio_stream_config) =
+        if has_audio {
+            let audio_config = AudioConfig::default();
+            let (audio_capture, audio_frame_rx) = start_audio_capture(audio_config.clone())?;
+            let (audio_encode, pkt_rx) = AudioEncodeThread::start(audio_config, audio_frame_rx)
+                .context("failed to start audio encoder")?;
+            let stream_config = AudioStreamConfig {
+                sample_rate: 48_000,
+                channel_count: 1,
+                bitrate: 32_000,
+            };
+            info!("audio pipeline started (host)");
+            (
+                Some(audio_capture),
+                Some(audio_encode),
+                Some(pkt_rx),
+                Some(stream_config),
+            )
+        } else {
+            warn!("no Audio capability — not sending audio");
+            (None, None, None, None)
+        };
+    #[cfg(feature = "encode")]
+    let (audio_pkt_rx, audio_stream_config) = (_audio_pkt_rx, _audio_stream_config);
 
-    // Encode + send only when FFmpeg is available and codec was negotiated.
+    // Encode + unified moq publish (screen + audio in one session).
     #[cfg(feature = "encode")]
     {
         use pairwire_capture::EncodeThread;
@@ -109,19 +123,32 @@ pub async fn run_host(
         if session.video_codec.is_none() {
             warn!("no common video codec — not sending frames");
         } else {
-            let (encode_thread, packet_rx) =
-                EncodeThread::start(capture_config, frame_rx).context("failed to start encoder")?;
+            let (encode_thread, video_pkt_rx) =
+                EncodeThread::start(capture_config.clone(), frame_rx)
+                    .context("failed to start encoder")?;
+
+            let video_stream_config = VideoStreamConfig {
+                width: capture_config.width,
+                height: capture_config.height,
+                fps: f64::from(capture_config.fps),
+                bitrate: 5_000_000,
+            };
+
+            let publisher = MoqSessionPublisher::new(Arc::clone(&conn));
+            let pub_handle = publisher.spawn(
+                video_stream_config,
+                audio_stream_config,
+                video_pkt_rx,
+                audio_pkt_rx,
+            );
 
             let cursor_recv = CursorReceiver::new(Arc::clone(&conn));
             let (cursor_handle, _) = cursor_recv.spawn();
 
-            let screen_sender = ScreenSender::new(Arc::clone(&conn));
-            let sender_handle = screen_sender.spawn(packet_rx);
-
             conn.closed().await;
             info!("guest disconnected");
 
-            sender_handle.stop().await;
+            pub_handle.stop().await;
             cursor_handle.stop().await;
             encode_thread.stop();
         }
@@ -134,10 +161,11 @@ pub async fn run_host(
         info!("guest disconnected");
     }
 
-    if let Some((audio_capture, audio_encode, audio_pub_handle)) = audio_handles {
-        audio_pub_handle.stop().await;
-        audio_encode.stop();
-        audio_capture.stop();
+    if let Some(encode) = audio_encode_handle {
+        encode.stop();
+    }
+    if let Some(capture) = audio_capture_handle {
+        capture.stop();
     }
 
     capture_thread.stop();
@@ -177,41 +205,41 @@ pub async fn run_join(
         "handshake complete"
     );
 
-    // Start the uni-stream router that demuxes screen vs moq-lite streams.
-    // Screen streams are tagged with 0x53; everything else goes to moq-lite.
-    let (screen_router, non_screen_router) = UniStreamRouter::start(conn.raw_conn().clone());
-
+    // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
     #[cfg(feature = "encode")]
     let pkt_rx = _pkt_rx;
 
-    let screen_recv = ScreenReceiver::new(screen_router);
-    let recv_handle = screen_recv.spawn(pkt_tx);
+    // Audio decode + playback pipeline.
+    let has_audio = session.has_capability(&Capability::Audio);
+    let mut audio_pkt_tx = None;
+    let mut audio_decode_handle = None;
+    let mut audio_playback_handle = None;
 
-    // Keep cursor_update_tx alive for the duration of the session.
+    if has_audio {
+        let audio_config = AudioConfig::default();
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let (audio_decode, audio_frame_rx) = AudioDecodeThread::start(audio_config.clone(), rx)
+            .context("failed to start audio decoder")?;
+        let audio_playback = AudioPlaybackThread::start(audio_config, audio_frame_rx)
+            .context("failed to start audio playback")?;
+        audio_pkt_tx = Some(tx);
+        audio_decode_handle = Some(audio_decode);
+        audio_playback_handle = Some(audio_playback);
+        info!("audio pipeline started (guest)");
+    } else {
+        warn!("no Audio capability — not receiving audio");
+    }
+
+    // Unified moq subscriber — receives both screen and audio tracks.
+    let subscriber = MoqSessionSubscriber::new(Arc::clone(&conn));
+    let sub_handle = subscriber.spawn(pkt_tx, audio_pkt_tx);
+
+    // Cursor sender (datagrams, independent of moq).
     let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(64);
     let cursor_send = CursorSender::new(Arc::clone(&conn));
     let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
     let _cursor_update_tx = cursor_update_tx;
-
-    // Start audio receive pipeline if both peers support it.
-    let audio_handles = if session.has_capability(&pairwire_protocol::Capability::Audio) {
-        let audio_config = AudioConfig::default();
-        let (audio_pkt_tx, audio_pkt_rx) = tokio::sync::mpsc::channel(32);
-        let audio_sub =
-            MoqAudioSubscriber::with_router(Arc::clone(&conn), non_screen_router.clone());
-        let audio_sub_handle = audio_sub.spawn(audio_pkt_tx);
-        let (audio_decode, audio_frame_rx) =
-            AudioDecodeThread::start(audio_config.clone(), audio_pkt_rx)
-                .context("failed to start audio decoder")?;
-        let audio_playback = AudioPlaybackThread::start(audio_config, audio_frame_rx)
-            .context("failed to start audio playback")?;
-        info!("audio pipeline started (guest)");
-        Some((audio_sub_handle, audio_decode, audio_playback))
-    } else {
-        warn!("no Audio capability — not receiving audio");
-        None
-    };
 
     #[cfg(feature = "encode")]
     {
@@ -244,14 +272,15 @@ pub async fn run_join(
         info!("host disconnected");
     }
 
-    if let Some((audio_sub_handle, audio_decode, audio_playback)) = audio_handles {
-        audio_sub_handle.stop().await;
-        audio_decode.stop();
-        audio_playback.stop();
+    sub_handle.stop().await;
+    cursor_send_handle.stop().await;
+    if let Some(decode) = audio_decode_handle {
+        decode.stop();
+    }
+    if let Some(playback) = audio_playback_handle {
+        playback.stop();
     }
 
-    recv_handle.stop().await;
-    cursor_send_handle.stop().await;
     transport.close().await;
     Ok(())
 }
@@ -278,7 +307,6 @@ async fn perform_host_handshake(
         .await
         .context("handshake failed")?;
 
-    // _send/_recv kept for future heartbeat/control messages (P2.5)
     Ok(session)
 }
 
@@ -318,7 +346,6 @@ fn start_capture(
         match CaptureThread::start(config.clone()) {
             Ok(pair) => return Ok(pair),
             Err(e) => {
-                // Permission or hardware failure — fall through to fake source with a clear message.
                 tracing::warn!(
                     error = %e,
                     "real screen capture unavailable — using fake source. \
@@ -327,7 +354,6 @@ fn start_capture(
             }
         }
     }
-    // Fake source: always available, used when capture feature is off or permission denied.
     CaptureThread::start_fake(config).context("failed to start fake capture")
 }
 

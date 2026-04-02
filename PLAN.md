@@ -317,7 +317,7 @@
 - **Docs**: `docs/02-moq-lite-vs-moq-transport.md`
 
 ### P2.1.1: Adopt `hang` — Media Framing Layer
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P2.1, P3.1
 - **Description**: Replace the custom `ScreenFrameHeader` (manual 8-byte header) and manual audio framing with `hang` from moq-dev/moq. `hang` is the media layer that sits between moq-lite and the application — it provides a catalog track (advertising codec/resolution/bitrate metadata), WebCodecs-compatible frame types, and typed track naming. The original architecture doc (docs/05-concrete-architecture.md) listed `hang` as a required layer but it was skipped during initial integration. This task adds it.
 - **Why now**: Required before Phase W (web viewer). hang's frame format is WebCodecs-native — PW.3 can feed frames directly to the browser's `VideoDecoder` and `AudioDecoder` APIs without custom header parsing. Doing this before the web viewer saves a full refactor later.

@@ -8,7 +8,6 @@
 pub mod control;
 pub mod cursor;
 pub mod input;
-pub mod media;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_utils;
@@ -22,4 +21,3 @@ pub use control::{
 };
 pub use cursor::CursorUpdate;
 pub use input::{ClipboardFormat, ClipboardSync, KeyEvent, MouseClick, MouseScroll};
-pub use media::ScreenFrameHeader;

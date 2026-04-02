@@ -155,3 +155,9 @@ Each entry should include:
 - **Area**: protocol
 - **What**: `postcard` serialization format does not include type information. Both sides must have exactly the same type definition to deserialize correctly.
 - **Resolution**: Version all protocol types. Include a version field in the session handshake. Never change existing field order — only append new fields.
+
+### 2026-04-02 — hang adoption: unified moq-lite session replaces raw QUIC screen streams
+- **Area**: moq-lite, hang, transport
+- **What**: P2.1.1 merged screen and audio into ONE moq-lite session with hang framing. Previously, screen used raw QUIC streams (with a custom `ScreenFrameHeader` and `UniStreamRouter` to demux 0x53-tagged screen streams from moq-lite audio streams). This was fragile — two separate transport mechanisms competing for the same QUIC connection's uni streams.
+- **Resolution**: Single moq-lite session publishes both `video0` (priority 3) and `audio0` (priority 0) tracks in one broadcast, with a `catalog.json` track describing codec/resolution/bitrate metadata. `hang::container::OrderedProducer` handles group management (keyframe boundaries for video, per-packet groups for audio). `hang::container::OrderedConsumer` provides latency-aware frame reordering on the subscriber side. Deleted: `screen.rs`, `moq_screen.rs`, `moq_audio.rs`, `stream_router.rs`, `ScreenFrameHeader`.
+- **Key insight**: hang's `Catalog` auto-names tracks via `Video::create_track("")` → `"video0"`, `Audio::create_track("")` → `"audio0"`. The subscriber reads the catalog to discover track names dynamically — don't hardcode them. hang re-exports `BufList` at `hang::container::BufList`.

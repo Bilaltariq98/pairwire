@@ -7,7 +7,6 @@ use crate::control::{
 };
 use crate::cursor::CursorUpdate;
 use crate::input::{ClipboardFormat, ClipboardSync, KeyEvent, MouseClick, MouseScroll};
-use crate::media::ScreenFrameHeader;
 use postcard::{from_bytes, to_allocvec};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -100,10 +99,6 @@ pub fn make_control_handoff() -> ControlHandoff {
     }
 }
 
-pub fn make_screen_frame_header() -> ScreenFrameHeader {
-    ScreenFrameHeader::new_keyframe(1_000_000)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,7 +115,6 @@ mod tests {
         assert_round_trip(&make_mouse_scroll());
         assert_round_trip(&make_clipboard_sync());
         assert_round_trip(&make_control_handoff());
-        assert_round_trip(&make_screen_frame_header());
         assert_round_trip(&ControlMessage::Handshake(make_handshake()));
         assert_round_trip(&InputMessage::Key(make_key_event()));
     }
