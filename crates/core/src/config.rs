@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Top-level session configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfig {
     pub capture: CaptureConfig,
     pub audio: AudioConfig,
@@ -25,7 +25,7 @@ impl Default for SessionConfig {
 }
 
 /// Screen capture and encoding configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureConfig {
     pub fps: u32,
     pub width: u32,
@@ -64,7 +64,7 @@ pub enum VideoEncoder {
 }
 
 /// Audio capture and encoding configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub sample_rate: u32,
     pub channels: u8,
@@ -95,7 +95,6 @@ mod tests {
         let cfg = SessionConfig::default();
         let bytes = to_allocvec(&cfg).unwrap();
         let decoded: SessionConfig = from_bytes(&bytes).unwrap();
-        assert_eq!(decoded.capture.fps, cfg.capture.fps);
-        assert_eq!(decoded.audio.sample_rate, cfg.audio.sample_rate);
+        assert_eq!(decoded, cfg);
     }
 }

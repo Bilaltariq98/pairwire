@@ -9,12 +9,25 @@
 //! Stream priority is set via QUIC stream priority fields where supported.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use iroh::endpoint::{Connection, RecvStream, SendStream};
+use iroh::endpoint::{Connection, ConnectionError, RecvStream, SendStream};
 use pairwire_core::{Error, Result};
 use pairwire_protocol::CursorUpdate;
 use postcard::{from_bytes, to_allocvec};
 use serde::{Serialize, de::DeserializeOwned};
 use tracing::instrument;
+
+/// Check whether a connection error represents a clean close or reset
+/// (as opposed to an unexpected transport failure).
+fn is_connection_closed(err: &ConnectionError) -> bool {
+    matches!(
+        err,
+        ConnectionError::ApplicationClosed(_)
+            | ConnectionError::ConnectionClosed(_)
+            | ConnectionError::LocallyClosed
+            | ConnectionError::Reset
+            | ConnectionError::TimedOut
+    )
+}
 
 /// Maximum size for a length-prefixed message (4 MB).
 const MAX_MESSAGE_LEN: u32 = 4 * 1024 * 1024;
@@ -68,14 +81,8 @@ impl PairwireConnection {
     pub async fn accept_bi(&self) -> Result<Option<(SendStream, RecvStream)>> {
         match self.conn.accept_bi().await {
             Ok(pair) => Ok(Some(pair)),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("closed") || msg.contains("reset") {
-                    Ok(None)
-                } else {
-                    Err(Error::Transport(format!("accept_bi failed: {e}")))
-                }
-            }
+            Err(e) if is_connection_closed(&e) => Ok(None),
+            Err(e) => Err(Error::Transport(format!("accept_bi failed: {e}"))),
         }
     }
 
@@ -104,14 +111,8 @@ impl PairwireConnection {
     pub async fn accept_uni(&self) -> Result<Option<RecvStream>> {
         match self.conn.accept_uni().await {
             Ok(recv) => Ok(Some(recv)),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("closed") || msg.contains("reset") {
-                    Ok(None)
-                } else {
-                    Err(Error::Transport(format!("accept_uni failed: {e}")))
-                }
-            }
+            Err(e) if is_connection_closed(&e) => Ok(None),
+            Err(e) => Err(Error::Transport(format!("accept_uni failed: {e}"))),
         }
     }
 

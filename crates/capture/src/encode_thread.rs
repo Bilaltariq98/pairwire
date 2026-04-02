@@ -178,13 +178,13 @@ mod inner {
 
             // Create source frame at the actual capture resolution.
             let mut src = frame::Video::new(Pixel::BGRA, src_width, src_height);
-            fill_bgra_frame(&mut src, &raw.data, src_width, src_height);
+            fill_bgra_frame(&mut src, &raw.data, src_width, src_height)?;
 
             // Scale (and resize if needed) to the encoder's output resolution.
             let mut yuv = frame::Video::new(Pixel::YUV420P, config.width, config.height);
             scaler
                 .as_mut()
-                .unwrap()
+                .ok_or_else(|| Error::Encode("scaler not initialized".into()))?
                 .run(&src, &mut yuv)
                 .map_err(|e| Error::Encode(format!("scale: {e}")))?;
 
@@ -280,21 +280,43 @@ mod inner {
         Ok(enc)
     }
 
-    fn fill_bgra_frame(frame: &mut frame::Video, data: &[u8], width: u32, height: u32) {
+    fn fill_bgra_frame(
+        frame: &mut frame::Video,
+        data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> std::result::Result<(), Error> {
+        let row_bytes = width as usize * 4;
+        let expected_len = row_bytes * height as usize;
+        if data.len() < expected_len {
+            return Err(Error::Encode(format!(
+                "frame data too short: {} < {expected_len}",
+                data.len()
+            )));
+        }
         let stride = frame.stride(0);
         let dst = frame.data_mut(0);
-        let row_bytes = width as usize * 4;
+        if stride < row_bytes {
+            return Err(Error::Encode(format!(
+                "frame stride {stride} < row width {row_bytes}"
+            )));
+        }
         for row in 0..height as usize {
-            dst[row * stride..row * stride + row_bytes]
+            let dst_start = row * stride;
+            if dst_start + row_bytes > dst.len() {
+                return Err(Error::Encode(format!(
+                    "destination buffer overflow at row {row}"
+                )));
+            }
+            dst[dst_start..dst_start + row_bytes]
                 .copy_from_slice(&data[row * row_bytes..(row + 1) * row_bytes]);
         }
+        Ok(())
     }
 
     fn hash_frame(data: &[u8]) -> u64 {
         let mut h = DefaultHasher::new();
-        for chunk in data.chunks(64) {
-            chunk[0].hash(&mut h);
-        }
+        data.hash(&mut h);
         h.finish()
     }
 }

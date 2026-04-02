@@ -721,6 +721,70 @@
 
 ---
 
+## Phase 3.9: Hardening & Review Fixes
+
+> **Goal**: Address deferred code review findings that need design or cross-cutting changes.
+> **Ref**: `REVIEW.md` for full details on each finding.
+
+### P3.9.1: Peer Authentication (R-C4)
+- **Status**: `[ ]`
+- **Description**: Verify that the connecting peer's endpoint ID matches the one encoded in the invite link. Currently any peer can connect to any session.
+- **Deliverables**:
+  - `Transport::accept()` returns the peer ID for verification
+  - Handshake verifies `conn.remote_id()` matches expected endpoint from invite
+  - Reject mismatches with a clear error
+
+### P3.9.2: Structured Error Architecture (R-M2, R-A5)
+- **Status**: `[ ]`
+- **Description**: Replace string-wrapped error variants (`Transport(String)`, `Encode(String)`, etc.) with structured sub-enums. Enables retry logic, metrics, and user-facing diagnostics.
+- **Deliverables**:
+  - `TransportError`, `CodecError`, `ProtocolError` sub-enums with `From` impls
+  - `#[from]` for `postcard::Error`, `std::io::Error`, `moq_lite::Error`
+
+### P3.9.3: Config Validation (R-M1)
+- **Status**: `[ ]`
+- **Description**: `CaptureConfig` and `AudioConfig` allow invalid states (fps=0, width=0, channels=0). Add `validate()` or `TryFrom` with rejection of invalid values.
+- **Deliverables**:
+  - Reject `fps == 0`, `width == 0`, `height == 0`, `channels not in [1,2]`
+  - Call validation at session startup
+
+### P3.9.4: Audio Silence Markers (R-M6)
+- **Status**: `[ ]`
+- **Description**: Skipped silence frames increment the timestamp but send nothing, causing decoder/jitter buffer discontinuities. Send an explicit silence marker packet instead.
+- **Deliverables**:
+  - Silence marker packet (empty data, valid timestamp + duration)
+  - Jitter buffer handles silence markers without stuttering
+
+### P3.9.5: Audio RAII Guards (R-H4)
+- **Status**: `[ ]`
+- **Description**: Audio threads can leak if `run_host()`/`run_join()` return early. Implement `Drop` on audio handle structs or use scoped guards.
+
+### P3.9.6: Network Allocation Limits (R-H3)
+- **Status**: `[ ]`
+- **Description**: `recv_message` allocates up to 4MB per message from untrusted network data. Add per-connection concurrent allocation limits.
+
+### P3.9.7: Keepalive Handling in Decoder (R-H5)
+- **Status**: `[ ]`
+- **Description**: Decode thread doesn't check `is_keepalive` — empty data packets from the keepalive path could crash FFmpeg. Add guard in decode loop.
+
+### P3.9.8: Workspace Dependency Consistency (R-H7)
+- **Status**: `[ ]`
+- **Description**: Some crates use `path = "../..."` instead of `workspace = true`. Standardize all internal crate references.
+
+### P3.9.9: Frame Drop Counters (R-L2)
+- **Status**: `[ ]`
+- **Description**: `try_send` failures are only logged at `debug`. Add `AtomicU64` counters for dropped frames, exposed via diagnostics API or periodic `info!` logs.
+
+### P3.9.10: Minimize tokio Features (R-L8)
+- **Status**: `[ ]`
+- **Description**: Workspace uses `features = ["full"]` for tokio. Audit and enumerate only needed features to reduce compile time and binary size.
+
+### P3.9.11: Protocol Boundary Tests (R-L5)
+- **Status**: `[ ]`
+- **Description**: No adversarial/boundary tests for protocol types (MAX values, empty collections, truncated input). Add fuzzing and property-based tests.
+
+---
+
 ## Phase 4: Terminal Sharing + Localhost Tunneling
 
 > **Goal**: Share terminal sessions natively via PTY forwarding AND tunnel localhost ports over the existing P2P connection. Together these complete the "I can see your code, run your app, and use your services" story.

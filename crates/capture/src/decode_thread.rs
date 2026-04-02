@@ -165,7 +165,9 @@ mod inner {
                             info!(width = w, height = h, "decoder: first frame");
                         }
 
-                        let sc = scaler.as_mut().unwrap();
+                        let sc = scaler
+                            .as_mut()
+                            .ok_or_else(|| Error::Decode("scaler not initialized".into()))?;
                         let mut bgra = frame::Video::new(Pixel::BGRA, w, h);
                         sc.run(&decoded, &mut bgra)
                             .map_err(|e| Error::Decode(format!("scale: {e}")))?;

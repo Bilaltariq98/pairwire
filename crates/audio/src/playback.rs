@@ -104,7 +104,7 @@ fn playback_loop(
         .build_output_stream(
             &stream_config,
             move |output: &mut [f32], _| {
-                let mut buf = jitter_read.lock().unwrap();
+                let mut buf = jitter_read.lock().unwrap_or_else(|e| e.into_inner());
                 let available = buf.len().min(output.len());
                 output[..available].copy_from_slice(&buf[..available]);
                 buf.drain(..available);
@@ -134,7 +134,7 @@ fn playback_loop(
 
         match frame_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(frame) => {
-                let mut buf = jitter_write.lock().unwrap();
+                let mut buf = jitter_write.lock().unwrap_or_else(|e| e.into_inner());
                 // Drop oldest samples if buffer grows too large (> 4 frames).
                 if buf.len() > target_buf_samples * 2 {
                     let excess = buf.len() - target_buf_samples;

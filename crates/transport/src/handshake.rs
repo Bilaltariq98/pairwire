@@ -143,6 +143,28 @@ fn negotiate(local: Handshake, remote: Handshake) -> Result<NegotiatedSession> {
         });
     }
 
+    // Reject oversized vectors from malicious peers.
+    if remote.capabilities.len() > 16
+        || remote.video_codecs.len() > 8
+        || remote.audio_codecs.len() > 4
+    {
+        return Err(Error::Protocol(format!(
+            "handshake vectors too large: caps={}, video={}, audio={}",
+            remote.capabilities.len(),
+            remote.video_codecs.len(),
+            remote.audio_codecs.len()
+        )));
+    }
+
+    // Validate display dimensions (0 causes division-by-zero downstream).
+    if remote.display_width > 0 && remote.display_height == 0
+        || remote.display_width == 0 && remote.display_height > 0
+    {
+        return Err(Error::Protocol(
+            "invalid display dimensions: one dimension is 0".into(),
+        ));
+    }
+
     // Capability intersection: keep only what both sides advertise.
     let capabilities: Vec<Capability> = local
         .capabilities

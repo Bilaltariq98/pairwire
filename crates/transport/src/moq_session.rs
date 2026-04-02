@@ -35,6 +35,7 @@ use pairwire_capture::EncodedPacket;
 use pairwire_core::{Error, Result};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 
 use crate::connection::PairwireConnection;
@@ -227,26 +228,41 @@ async fn publish_session(
 
     info!("moq session publisher ready (video + audio)");
 
-    // Spawn feed tasks for each media track.
-    let video_task = tokio::spawn(feed_video(video_producer, video_rx));
+    // Spawn feed tasks with a shared cancellation token for graceful shutdown.
+    let cancel = CancellationToken::new();
+
+    let video_task = tokio::spawn(feed_video(video_producer, video_rx, cancel.child_token()));
     let audio_task = audio_producer.map(|ap| {
         let rx = audio_rx.expect("audio_rx required when audio_config is Some");
-        tokio::spawn(feed_audio(ap, rx))
+        tokio::spawn(feed_audio(ap, rx, cancel.child_token()))
     });
 
-    // Wait for stop signal.
+    // Wait for stop signal, then cancel feed tasks gracefully.
     let _ = stop_rx.await;
+    cancel.cancel();
 
-    video_task.abort();
+    let _ = video_task.await;
     if let Some(task) = audio_task {
-        task.abort();
+        let _ = task.await;
     }
 
     Ok(())
 }
 
-async fn feed_video(mut producer: OrderedProducer, mut video_rx: mpsc::Receiver<EncodedPacket>) {
-    while let Some(pkt) = video_rx.recv().await {
+async fn feed_video(
+    mut producer: OrderedProducer,
+    mut video_rx: mpsc::Receiver<EncodedPacket>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let pkt = tokio::select! {
+            biased;
+            () = cancel.cancelled() => break,
+            pkt = video_rx.recv() => match pkt {
+                Some(p) => p,
+                None => break,
+            },
+        };
         // Keepalives carry no video data — skip.
         if pkt.is_keepalive {
             debug!("keepalive, skipping");
@@ -284,8 +300,20 @@ async fn feed_video(mut producer: OrderedProducer, mut video_rx: mpsc::Receiver<
     info!("video feed ended");
 }
 
-async fn feed_audio(mut producer: OrderedProducer, mut audio_rx: mpsc::Receiver<OpusPacket>) {
-    while let Some(pkt) = audio_rx.recv().await {
+async fn feed_audio(
+    mut producer: OrderedProducer,
+    mut audio_rx: mpsc::Receiver<OpusPacket>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let pkt = tokio::select! {
+            biased;
+            () = cancel.cancelled() => break,
+            pkt = audio_rx.recv() => match pkt {
+                Some(p) => p,
+                None => break,
+            },
+        };
         // Each Opus packet is its own group (audio frames are independent).
         if let Err(e) = producer.keyframe() {
             warn!(error = %e, "audio keyframe error");
@@ -485,7 +513,7 @@ async fn drain_video(
         match consumer.read().await {
             Ok(Some(frame)) => {
                 let is_keyframe = frame.is_keyframe();
-                let timestamp_us = frame.timestamp.as_micros() as u64;
+                let timestamp_us = u64::try_from(frame.timestamp.as_micros()).unwrap_or(u64::MAX);
                 let mut payload = frame.payload;
                 let data = payload.copy_to_bytes(payload.remaining());
                 let pkt = EncodedPacket {
@@ -518,7 +546,7 @@ async fn drain_audio(mut consumer: OrderedConsumer, pkt_tx: mpsc::Sender<OpusPac
                 let data = payload.copy_to_bytes(payload.remaining());
                 let pkt = OpusPacket {
                     data,
-                    timestamp_us: frame.timestamp.as_micros() as u64,
+                    timestamp_us: u64::try_from(frame.timestamp.as_micros()).unwrap_or(u64::MAX),
                     duration_ms: 20, // standard Opus frame duration
                 };
                 if pkt_tx.send(pkt).await.is_err() {

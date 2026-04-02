@@ -5,12 +5,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Modifier key bitmask constants for `KeyEvent::modifiers`.
+pub const MOD_SHIFT: u8 = 0x01;
+pub const MOD_CTRL: u8 = 0x02;
+pub const MOD_ALT: u8 = 0x04;
+pub const MOD_META: u8 = 0x08;
+
 /// A keyboard key press or release event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyEvent {
     /// Platform-independent virtual key code.
     pub key_code: u32,
-    /// Modifier bitmask: bit 0=Shift, 1=Ctrl, 2=Alt, 3=Meta/Cmd.
+    /// Modifier bitmask (see `MOD_SHIFT`, `MOD_CTRL`, `MOD_ALT`, `MOD_META`).
     pub modifiers: u8,
     /// true = key down, false = key up.
     pub pressed: bool,

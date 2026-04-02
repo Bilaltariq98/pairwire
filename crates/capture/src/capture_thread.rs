@@ -215,7 +215,10 @@ fn video_frame_to_raw(frame: scap::frame::VideoFrame) -> Option<RawFrame> {
 
     let now_us = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "system clock before UNIX epoch, using 0");
+            std::time::Duration::ZERO
+        })
         .as_micros() as u64;
 
     match frame {
@@ -234,6 +237,13 @@ fn video_frame_to_raw(frame: scap::frame::VideoFrame) -> Option<RawFrame> {
         VideoFrame::BGR0(f) => {
             if f.width == 0 || f.height == 0 || f.data.is_empty() {
                 debug!("empty BGR0 frame (idle status), dropping");
+                return None;
+            }
+            if f.data.len() % 4 != 0 {
+                debug!(
+                    len = f.data.len(),
+                    "BGR0 data not aligned to 4 bytes, dropping"
+                );
                 return None;
             }
             let mut bgra = Vec::with_capacity(f.data.len());

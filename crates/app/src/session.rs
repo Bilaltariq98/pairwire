@@ -89,29 +89,8 @@ pub async fn run_host(
     );
 
     // Audio capture + encode pipeline (feeds into unified moq session).
-    let has_audio = session.has_capability(&Capability::Audio);
     let (audio_capture_handle, audio_encode_handle, _audio_pkt_rx, _audio_stream_config) =
-        if has_audio {
-            let audio_config = AudioConfig::default();
-            let (audio_capture, audio_frame_rx) = start_audio_capture(audio_config.clone())?;
-            let (audio_encode, pkt_rx) = AudioEncodeThread::start(audio_config, audio_frame_rx)
-                .context("failed to start audio encoder")?;
-            let stream_config = AudioStreamConfig {
-                sample_rate: 48_000,
-                channel_count: 1,
-                bitrate: 32_000,
-            };
-            info!("audio pipeline started (host)");
-            (
-                Some(audio_capture),
-                Some(audio_encode),
-                Some(pkt_rx),
-                Some(stream_config),
-            )
-        } else {
-            warn!("no Audio capability — not sending audio");
-            (None, None, None, None)
-        };
+        start_host_audio(&session)?;
     #[cfg(feature = "encode")]
     let (audio_pkt_rx, audio_stream_config) = (_audio_pkt_rx, _audio_stream_config);
 
@@ -332,6 +311,38 @@ async fn perform_guest_handshake(
         .context("handshake failed")?;
 
     Ok(session)
+}
+
+/// Build the host-side audio capture + encode pipeline if both peers support audio.
+#[allow(clippy::type_complexity)]
+fn start_host_audio(
+    session: &NegotiatedSession,
+) -> Result<(
+    Option<AudioCaptureThread>,
+    Option<AudioEncodeThread>,
+    Option<tokio::sync::mpsc::Receiver<pairwire_audio::OpusPacket>>,
+    Option<AudioStreamConfig>,
+)> {
+    if !session.has_capability(&Capability::Audio) {
+        warn!("no Audio capability — not sending audio");
+        return Ok((None, None, None, None));
+    }
+    let audio_config = AudioConfig::default();
+    let (audio_capture, audio_frame_rx) = start_audio_capture(audio_config.clone())?;
+    let (audio_encode, pkt_rx) = AudioEncodeThread::start(audio_config, audio_frame_rx)
+        .context("failed to start audio encoder")?;
+    let stream_config = AudioStreamConfig {
+        sample_rate: 48_000,
+        channel_count: 1,
+        bitrate: 32_000,
+    };
+    info!("audio pipeline started (host)");
+    Ok((
+        Some(audio_capture),
+        Some(audio_encode),
+        Some(pkt_rx),
+        Some(stream_config),
+    ))
 }
 
 /// Start screen capture — real (scap) when `capture` feature is enabled, fake otherwise.

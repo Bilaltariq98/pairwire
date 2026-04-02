@@ -68,12 +68,19 @@ pub struct ConnectionHealth {
     pub loss_per_mille: u16,
 }
 
+/// Loss percentage above which quality is fully degraded (fps + resolution drop).
+const LOSS_DEGRADED_PCT: f32 = 15.0;
+/// Loss percentage above which quality is reduced (resolution drop only).
+const LOSS_REDUCED_PCT: f32 = 5.0;
+/// RTT threshold (ms) above which quality is reduced.
+const RTT_REDUCED_MS: u32 = 200;
+
 impl ConnectionHealth {
     fn tier(&self) -> QualityTier {
         let loss_pct = f32::from(self.loss_per_mille) / 10.0;
-        if loss_pct > 15.0 {
+        if loss_pct > LOSS_DEGRADED_PCT {
             QualityTier::Degraded
-        } else if loss_pct > 5.0 || self.rtt_ms > 200 {
+        } else if loss_pct > LOSS_REDUCED_PCT || self.rtt_ms > RTT_REDUCED_MS {
             QualityTier::Reduced
         } else {
             QualityTier::Full

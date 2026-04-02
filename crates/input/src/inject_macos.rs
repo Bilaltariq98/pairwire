@@ -1,9 +1,9 @@
-//! macOS input injection via CGEvent.
+//! macOS input injection via `CGEvent`.
 //!
 //! Requires the Accessibility permission (System Settings → Privacy → Accessibility).
-//! Without it, CGEvent posting silently fails.
+//! Without it, `CGEvent` posting silently fails.
 //!
-//! Key code mapping: pairwire uses USB HID key codes (same as CGKeyCode on macOS).
+//! Key code mapping: pairwire uses USB HID key codes (same as `CGKeyCode` on macOS).
 //! Mouse coordinates are in global screen space (pixels from top-left).
 
 use core_graphics::{
@@ -39,7 +39,7 @@ pub fn inject(event: &InputMessage, permission: InputPermission) -> Result<()> {
 }
 
 fn event_source() -> Result<CGEventSource> {
-    CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| {
+    CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|()| {
         Error::PermissionDenied(
             "CGEventSource creation failed — check Accessibility permission".into(),
         )
@@ -48,11 +48,11 @@ fn event_source() -> Result<CGEventSource> {
 
 fn inject_key(e: &KeyEvent) -> Result<()> {
     let source = event_source()?;
-    let key_code = e.key_code as u16;
+    let key_code = u16::try_from(e.key_code).unwrap_or(u16::MAX);
     let key_down = e.pressed;
 
     let event = CGEvent::new_keyboard_event(source, key_code, key_down)
-        .map_err(|_| Error::PermissionDenied("CGEvent keyboard creation failed".into()))?;
+        .map_err(|()| Error::PermissionDenied("CGEvent keyboard creation failed".into()))?;
 
     // Apply modifier flags
     let mut flags = CGEventFlags::empty();
@@ -75,7 +75,7 @@ fn inject_key(e: &KeyEvent) -> Result<()> {
 
 fn inject_click(e: &MouseClick) -> Result<()> {
     let source = event_source()?;
-    let pos = CGPoint::new(e.x as f64, e.y as f64);
+    let pos = CGPoint::new(f64::from(e.x), f64::from(e.y));
 
     let (down_type, up_type, button) = match e.button {
         0 => (
@@ -97,7 +97,7 @@ fn inject_click(e: &MouseClick) -> Result<()> {
 
     let event_type = if e.pressed { down_type } else { up_type };
     let event = CGEvent::new_mouse_event(source, event_type, pos, button)
-        .map_err(|_| Error::PermissionDenied("CGEvent mouse creation failed".into()))?;
+        .map_err(|()| Error::PermissionDenied("CGEvent mouse creation failed".into()))?;
     event.post(CGEventTapLocation::HID);
     Ok(())
 }
@@ -105,11 +105,11 @@ fn inject_click(e: &MouseClick) -> Result<()> {
 fn inject_scroll(e: &MouseScroll) -> Result<()> {
     let source = event_source()?;
     // CGEvent scroll takes integer wheel deltas; our wire format is fixed-point *100.
-    let delta_y = (e.delta_y / 100) as i32;
-    let delta_x = (e.delta_x / 100) as i32;
+    let delta_y = i32::from(e.delta_y / 100);
+    let delta_x = i32::from(e.delta_x / 100);
 
     let event = CGEvent::new_scroll_event(source, ScrollEventUnit::PIXEL, 2, delta_y, delta_x, 0)
-        .map_err(|_| Error::PermissionDenied("CGEvent scroll creation failed".into()))?;
+        .map_err(|()| Error::PermissionDenied("CGEvent scroll creation failed".into()))?;
     event.post(CGEventTapLocation::HID);
     Ok(())
 }
