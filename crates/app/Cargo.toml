@@ -24,6 +24,7 @@ rand = "0.9"
 arboard = { workspace = true, optional = true }
 
 [features]
+default = ["tray"]
 # Enable the graphical viewer. Requires a display and GPU.
 gui = ["dep:egui", "dep:eframe"]
 # Enable the macOS menu bar / system tray icon.
