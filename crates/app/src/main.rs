@@ -94,6 +94,19 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
                 break;
             }
 
+            // On macOS, the tray icon requires the NSApplication run loop to
+            // process events. A plain sleep() doesn't pump the event queue,
+            // so the icon never renders. We use CFRunLoopRunInMode to process
+            // pending events with a short timeout.
+            #[cfg(target_os = "macos")]
+            {
+                use core_foundation::runloop::{CFRunLoopRunInMode, kCFRunLoopDefaultMode};
+                unsafe {
+                    // Process events for up to 50ms, returning immediately if none.
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false as u8);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 

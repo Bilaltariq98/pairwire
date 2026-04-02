@@ -4382,6 +4382,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "core-foundation 0.10.1",
  "eframe",
  "egui",
  "objc2-app-kit 0.3.2",
