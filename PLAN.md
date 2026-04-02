@@ -316,6 +316,27 @@
   - `just all` passes
 - **Docs**: `docs/02-moq-lite-vs-moq-transport.md`
 
+### P2.1.1: Adopt `hang` — Media Framing Layer
+- **Status**: `[ ]`
+- **Depends on**: P2.1, P3.1
+- **Description**: Replace the custom `ScreenFrameHeader` (manual 8-byte header) and manual audio framing with `hang` from moq-dev/moq. `hang` is the media layer that sits between moq-lite and the application — it provides a catalog track (advertising codec/resolution/bitrate metadata), WebCodecs-compatible frame types, and typed track naming. The original architecture doc (docs/05-concrete-architecture.md) listed `hang` as a required layer but it was skipped during initial integration. This task adds it.
+- **Why now**: Required before Phase W (web viewer). hang's frame format is WebCodecs-native — PW.3 can feed frames directly to the browser's `VideoDecoder` and `AudioDecoder` APIs without custom header parsing. Doing this before the web viewer saves a full refactor later.
+- **Deliverables**:
+  - Add `hang` dependency from moq-dev/moq workspace
+  - Replace `ScreenFrameHeader` (custom 8-byte timestamp+flags) with `hang::Frame` (timestamp + codec payload)
+  - Publish screen via `hang::BroadcastProducer` with a catalog track advertising codec, resolution, keyframe interval
+  - Subscribe via `hang::BroadcastConsumer` — read catalog, then consume frames
+  - Extend to audio tracks: `hang` track named `audio/host`, `audio/guest_N` (per-source, supports multi-party fan-out)
+  - Codec negotiation in handshake can be simplified: hang catalog replaces the manual codec field in `Handshake`
+- **Multi-party note**: Per-source audio tracks (`audio/host`, `audio/guest_1`, etc.) map directly to hang's broadcast model — each peer publishes their own named track. Multi-party audio fan-out (P5.1) becomes "subscribe to all audio/* tracks except your own" with no extra protocol design.
+- **Simulcast / on-demand note**: hang supports multiple quality tracks in one broadcast catalog (`screen/1080p`, `screen/720p`, `audio/hifi`, `audio/asr`). This is the foundation for on-demand simulcast and the Whisper ASR audio track idea.
+- **Acceptance criteria**:
+  - Screen and audio work end-to-end using hang framing (no regression from P2.1/P3.1)
+  - Catalog track is published and readable by subscribers
+  - `ScreenFrameHeader` type removed from codebase
+  - `just all` passes
+- **Docs**: `docs/02-moq-lite-vs-moq-transport.md` (hang layer section)
+
 ### P2.2: Session Handshake & Capability Negotiation
 - **Status**: `[x]`
 - **Depends on**: P1.2, P0.3
@@ -426,6 +447,7 @@
   - Opus encoding (20ms frames, 32kbps)
   - Published as moq-lite track (priority 0 — highest)
   - Voice activity detection — don't send silence
+- **Notes**: Currently uses raw moq-lite track. P2.1.1 (hang adoption) will rename this to `audio/host` and add catalog metadata. Track naming convention `audio/<peer_id>` is required for multi-party fan-out in P5.1.
 - **Acceptance criteria**:
   - Test with `FakeAudioSource`: Opus encode/decode round-trip produces same sample count
   - Manual test: speak into mic, hear output on peer
@@ -866,35 +888,54 @@
 
 > **Goal**: Expand from 1:1 to small-group collaboration (mob programming, team reviews). This is the natural evolution after the core 1:1 experience is solid.
 > **Docs**: `docs/08-multi-party-architecture.md`
+>
+> **Topology model** (2026-04-02):
+> - `n=2` (1:1): iroh P2P direct. Zero server cost. Free tier.
+> - `n≥3`: moq-relay. Server infrastructure required. Paid tier.
+>
+> QUIC is TLS 1.3 end-to-end — the relay forwards encrypted streams it cannot read. Privacy is preserved regardless. The relay is purely a routing/fan-out node.
+>
+> The 1:1 free tier is the acquisition funnel. Multi-party relay is the moat — not just because of server costs, but because relay infrastructure enables features that can't exist in P2P: session recording, live transcription (Whisper), replay, analytics, team management, admin controls. These are the differentiated product surface. The CDN-like relay network (global PoPs for low latency) is the infrastructure moat.
+>
+> **Session types:**
+> - **Direct session** (`pairwire://`): P2P invite, 1 guest max, free forever
+> - **Room session** (`pairwire-room://` or URL): relay-backed invite, N guests, paid tier
+>
+> When a host currently in a 1:1 P2P session wants to add a second guest, they generate a room invite — existing guest and new guest both reconnect to the relay. This is a deliberate session upgrade, not a transparent migration.
 
-### P5.1: Multi-Party — Accept Multiple Guests (Star Topology)
+### P5.1: Multi-Party — Room Sessions via moq-relay
 - **Status**: `[ ]`
-- **Description**: Host accepts 2-4 guests simultaneously. Screen/audio broadcast from host to all. Each guest gets a distinct cursor color. Star topology (host is hub).
+- **Depends on**: P2.1.1
+- **Description**: Introduce "room sessions" backed by moq-relay (moq-dev/moq binary). Host connects to relay and publishes screen/audio as hang broadcasts. Guests connect to the relay and subscribe. The relay handles fan-out — host upload is 1× bitrate regardless of guest count.
 - **Docs**: `docs/08-multi-party-architecture.md`
-- **Bandwidth analysis** (the real constraint):
-  - 1080p30 H.264 ≈ 3-5 Mbps per guest (depending on content complexity)
-  - Audio ≈ 32 Kbps per guest (negligible)
-  - Cursors/reactions/drawing ≈ <1 Kbps (negligible)
-  - **2 guests**: 6-10 Mbps upload — works on any broadband
-  - **4 guests**: 12-20 Mbps upload — needs decent upload speed
-  - **5+ guests**: 20+ Mbps — needs fiber or SFU relay (P5.3)
-  - Encoding is NOT the bottleneck (host encodes once, shares via `tokio::sync::broadcast`)
+- **Topology**:
+  ```
+  Host → moq-relay (pairwire-operated, CDN-like) → Guest A
+                                                  → Guest B
+                                                  → Guest C
+  Control/cursors/reactions → relay-forwarded datagrams (tiny, latency-sensitive)
+  ```
+- **Why relay from the start (not star)**:
+  - Host upload stays 1× (not N×) — removes the bandwidth bottleneck entirely
+  - Relay enables paid-tier features: recording, transcription, analytics — these attach to the relay, not the host
+  - moq-relay is a deployable binary from moq-dev/moq, not something to build
+  - hang adoption (P2.1.1) means the host already speaks the relay's protocol
+- **Session types introduced**:
+  - **Direct session**: 1:1 iroh P2P (existing). CLI: `pairwire host` / `pairwire join <invite>`.
+  - **Room session**: relay-backed, N guests. CLI: `pairwire room` / `pairwire join <room-invite>`. Invite URL points at relay, not host directly.
 - **Deliverables**:
-  - `Transport::accept()` loop — accept multiple connections, spawn per-guest session tasks
-  - Screen: host encodes once, sends to all guests via `broadcast::channel<EncodedPacket>`
-  - Audio: host captures once, publishes to all guests via moq-lite (one broadcast, multiple subscribers)
-  - Cursors: each guest sends `CursorUpdate` with `peer_id` — host aggregates and re-broadcasts to all guests
-  - Reactions/drawing: host relays to all peers
-  - Control: only one guest can drive at a time, visible indicator of who has control
-  - Peer list: each peer gets `peer_id: u8`, assigned color, display name from config
-  - Configurable cap: default 4 guests max. Can increase if host has bandwidth.
-  - Per-connection congestion isolation: slow guest doesn't block others (each QUIC connection has independent congestion control)
-- **Architecture**: Hybrid star — host is the hub for screen/terminal/tunnels, all cursor/reaction datagrams relayed through host.
+  - `RoomSession` — host connects to configured relay endpoint, publishes screen + audio via hang, opens control/datagram channels through relay
+  - Room invite format: `pairwire-room://<relay-host>/<room-id>?token=<jwt>` (relay authenticates via JWT)
+  - Peer list: each peer gets `peer_id: u8`, assigned color, display name
+  - Cursors/reactions/drawing forwarded via relay datagrams
+  - Control: one guest drives at a time
+  - Slow guest isolation: relay's per-subscriber flow control handles this (host is not affected)
+  - Default cap: 8 guests (relay-enforced via room config)
 - **Acceptance criteria**:
-  - 3 guests can connect and see the host's screen simultaneously
-  - Each guest has a distinct cursor color
+  - 3 guests connect to a room and see host's screen simultaneously
+  - Host upload stays ~constant as guests are added (verify with bandwidth monitor)
+  - Each guest has distinct cursor color
   - Only one guest has control at a time
-  - Slow guest doesn't degrade experience for other guests
   - `just all` passes
 
 ### P5.2: Multi-Party — Mesh Audio
@@ -912,16 +953,33 @@
   - Direct connections used where possible (verify via logs)
   - `just all` passes
 
-### P5.3: SFU Relay for Large Groups (8+ Peers)
+### P5.3: Relay Infrastructure — Deferred (Post-Launch)
 - **Status**: `[ ]`
-- **Depends on**: P5.2
-- **Description**: Optional relay server that receives one copy of screen/audio from host and re-broadcasts to all guests. Eliminates the host-bandwidth bottleneck for large groups.
-- **When needed**: Beyond 5 peers, host upload bandwidth becomes the bottleneck (1080p30 ≈ 4 Mbps per guest → 5 guests = 20 Mbps). An SFU lets the host upload once (~4 Mbps) regardless of guest count.
-- **Architecture**: The SFU is just another iroh endpoint running a relay process. Host connects to it, publishes screen/audio. Guests connect to SFU instead of host for media. Control/cursors/reactions still go direct to host (low bandwidth).
-- **Acceptance criteria**:
-  - 8 guests can view host's screen via SFU
-  - Host upload bandwidth stays constant regardless of guest count
-  - Fallback to direct star topology if SFU unavailable
+- **Depends on**: P5.1
+- **Description**: Design and build out the relay network that powers room sessions. **Deliberately deferred** — figure this out after the core product is built, packaged, and explored.
+- **What moq-relay actually supports (researched 2026-04-02)**:
+  - Clustering is **live and shipped** — `cdn.moq.dev` runs 3 nodes today (US-Central, EU-Central, Southeast Asia)
+  - **Not gossip.** Discovery via a root node using moq-lite pub/sub (the author calls it "dog-fooding"). Each leaf registers itself by publishing an empty broadcast at `internal/origins/<hostname>`. Other leaves discover peers by watching that prefix on the root.
+  - **Media is leaf-to-leaf**: root only handles the announcement directory. EU subscriber → discovers stream is on US leaf → EU leaf opens a direct QUIC connection to US leaf. Max 2 media hops. Root is never in the media path.
+  - **NxN full mesh** between leaf nodes. Recommended 3-5 nodes with current implementation.
+  - **Single root only** — root failure doesn't break existing sessions (media is leaf-to-leaf) but prevents new session discovery. Multi-root and tree topology are planned but unshipped (moq-dev/moq#927). Until that lands, keep the root on a reliable VM; a second node per region adds nothing without intra-region replication. Revisit when #927 ships — tree topology would allow regional sub-roots aggregating local leaves, which is when 2-nodes-per-region makes sense.
+  - JWT auth with a `cluster: bool` claim distinguishes relay-to-relay connections from client connections.
+  ```
+  Root (announcement directory only — a regular moq-relay with no upstream configured)
+  ├── Leaf US  ←→  Leaf EU  ←→  Leaf APAC    (full mesh, direct QUIC)
+       ↑                ↑
+    publisher         subscriber
+  Media: publisher → US leaf → EU leaf → subscriber  (2 hops max, root not involved)
+  Announcements: leaves publish to root, leaves watch root for peer discovery
+  ```
+- **What to think about when we get here**:
+  - Start with 3 nodes (US, EU, APAC) — matches the live cdn.moq.dev topology, already proven
+  - Room invites encode the leaf URL; client geo-selects nearest leaf at invite generation time
+  - Node failure mid-session: reconnect to same leaf (if recovered) or reroute via another leaf
+  - Paid-tier features at the relay layer: recording (tap hang tracks → object storage), live transcription (forward `audio/asr` simulcast track to Whisper worker), analytics, team room management
+  - Self-hosted path: moq-relay is open source; teams run their own node(s) pointed at by pairwire config
+- **Not blocked on anything in the codebase** — P5.1 client works against any moq-relay node. This task is infra + ops + paid-tier product decisions.
+- **Acceptance criteria**: TBD when we revisit post-launch.
 
 ### P5.4: AI-Assisted Pairing
 - **Status**: `[ ]`
@@ -1139,6 +1197,8 @@ The `PrivacyEngine` runs out-of-band from the encode thread. It analyses frames 
 > **Scope deliberately limited**: the web viewer is a **viewer + pointer**, not a full peer. It can watch, point, draw, react, and hear. It cannot drive (no keyboard/mouse injection), cannot access the terminal, and cannot use tunnels. This is a feature, not a limitation — it's the right UX for reviewers, stakeholders, and rubber ducks.
 >
 > **Can be built in isolation**: this phase has no dependencies on Phase 4-6 features. It can be started as soon as P3.5.1 (cursor) and P3.1/P3.2 (audio) are working. Good candidate for a focused side sprint.
+>
+> **Prerequisite**: P2.1.1 (hang adoption) must be complete before PW.3. hang's frame format is WebCodecs-native — PW.3's `VideoDecoder` and PW.4's `AudioDecoder` can consume hang frames directly without custom header parsing. Starting PW.3 before hang adoption means writing a custom parser you'll have to delete later.
 >
 > **Estimated effort**: 6-8 weeks (gateway bridge + web client)
 

@@ -185,3 +185,31 @@ Reasons:
 You could skip MoQ entirely and build custom streams on iroh/noq directly. This gives you maximum control but means reimplementing: track management, priority scheduling, group/frame semantics, relay forwarding logic.
 
 **Recommendation:** Start with moq-lite for screen/audio tracks, but use raw QUIC streams/datagrams via iroh for control messages (keyboard, mouse, cursor presence). This hybrid approach gives you MoQ's media intelligence where it matters and raw speed where you need it.
+
+---
+
+## Decision Record (2026-04-02)
+
+### hang adoption (P2.1.1) — required, deferred
+
+The initial integration (P2.1, P3.1) used raw moq-lite tracks with a custom `ScreenFrameHeader`. hang was deliberately deferred to move fast on the screen+audio proof of concept. The plan is to adopt hang before Phase W (web viewer).
+
+**What hang replaces:**
+- `ScreenFrameHeader` (custom 8-byte timestamp + flags) → `hang::Frame` (timestamp + codec payload)
+- Manual codec negotiation in `Handshake` → hang catalog track
+- Manual track naming → hang broadcast with typed track names (`screen`, `audio/host`, `audio/guest_N`)
+
+**What hang unlocks:**
+- **Phase W**: hang frames are WebCodecs-native. `VideoDecoder` and `AudioDecoder` in the browser can consume them directly. No custom parser in the web client.
+- **Multi-party audio**: Per-source track naming (`audio/host`, `audio/guest_1`, etc.) maps directly to hang's model. Guests subscribe to all `audio/*` tracks except their own — no extra protocol design.
+- **Simulcast**: Publish multiple quality tracks in one catalog (`screen/1080p`, `screen/720p`, `audio/hifi`, `audio/asr`). Subscribers pick what they need. Foundation for on-demand quality selection and Whisper ASR audio track.
+
+### moq-relay for multi-party (P5.3) — use the binary, don't build it
+
+`moq-relay` is a deployable binary from the moq-dev/moq repo. Once hang adoption is complete, the host is already publishing standard moq-lite/hang tracks. Pointing guests at a moq-relay instance is a connection URL change, not a protocol change.
+
+**Topology decision:**
+- 1-5 peers: iroh P2P star (host is hub, encode once, broadcast channel fan-out). No relay needed.
+- 6+ peers OR host has constrained upload: moq-relay SFU. Self-hosted or pairwire-operated.
+
+Control, cursors, reactions, and input always go direct to host regardless of which topology is used — they are low-bandwidth and latency-sensitive.
