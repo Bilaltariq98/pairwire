@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Sent by both peers immediately after connection to negotiate session parameters.
 ///
 /// Version mismatch (incompatible `version` field) causes immediate disconnect.
+/// Session token mismatch causes immediate disconnect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Handshake {
     /// Protocol version. Must match `PROTOCOL_VERSION` on both sides.
@@ -20,6 +21,9 @@ pub struct Handshake {
     pub video_codecs: Vec<VideoCodec>,
     /// Audio codecs supported, in preference order.
     pub audio_codecs: Vec<AudioCodec>,
+    /// Session token from the invite link. Host verifies this matches.
+    /// 16 bytes, matches `SessionId`.
+    pub session_token: [u8; 16],
 }
 
 /// A capability a peer may advertise.
@@ -128,6 +132,7 @@ mod tests {
             display_scale: 200,
             video_codecs: vec![VideoCodec::H264],
             audio_codecs: vec![AudioCodec::Opus],
+            session_token: [1; 16],
         };
         let bytes = to_allocvec(&hs).unwrap();
         let decoded: Handshake = postcard::from_bytes(&bytes).unwrap();

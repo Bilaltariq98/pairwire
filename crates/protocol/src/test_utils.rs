@@ -33,6 +33,7 @@ pub fn make_handshake() -> Handshake {
         display_scale: 100,
         video_codecs: vec![VideoCodec::H264],
         audio_codecs: vec![AudioCodec::Opus],
+        session_token: [0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     }
 }
 

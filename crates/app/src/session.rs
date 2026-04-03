@@ -51,7 +51,8 @@ pub async fn run_host(
         .await
         .context("failed to bind iroh endpoint")?;
 
-    let session_id = SessionId(rand::random());
+    let session_token: [u8; 16] = rand::random();
+    let session_id = SessionId(session_token);
     let invite = transport
         .invite_link(session_id)
         .await
@@ -88,7 +89,7 @@ pub async fn run_host(
     info!(peer = %conn.remote_id(), "guest connected");
 
     // Perform handshake before starting media.
-    let session = perform_host_handshake(&conn, &capture_config).await?;
+    let session = perform_host_handshake(&conn, &capture_config, session_token).await?;
     info!(
         capabilities = ?session.capabilities,
         video_codec = ?session.video_codec,
@@ -287,7 +288,7 @@ pub async fn run_join(
     info!(peer = %conn.remote_id(), "connected to host");
 
     // Perform handshake before starting media.
-    let session = perform_guest_handshake(&conn).await?;
+    let session = perform_guest_handshake(&conn, invite.session_id.0).await?;
     info!(
         capabilities = ?session.capabilities,
         video_codec = ?session.video_codec,
@@ -408,6 +409,7 @@ pub async fn run_join(
 async fn perform_host_handshake(
     conn: &pairwire_transport::PairwireConnection,
     config: &CaptureConfig,
+    session_token: [u8; 16],
 ) -> Result<NegotiatedSession> {
     let (send, recv) = conn
         .open_control_stream()
@@ -420,6 +422,7 @@ async fn perform_host_handshake(
         config.width as u16,
         config.height as u16,
         100, // scale factor — real value from display API in Phase 3
+        session_token,
     );
 
     let (_send, _recv, session) = host_handshake(send, recv, local)
@@ -432,6 +435,7 @@ async fn perform_host_handshake(
 /// Accept the control stream and perform the guest-side handshake.
 async fn perform_guest_handshake(
     conn: &pairwire_transport::PairwireConnection,
+    session_token: [u8; 16],
 ) -> Result<NegotiatedSession> {
     let (send, recv) = conn
         .accept_bi()
@@ -444,6 +448,7 @@ async fn perform_guest_handshake(
         0, // guest doesn't share a display
         0,
         0,
+        session_token,
     );
 
     let (_send, _recv, session) = guest_handshake(send, recv, local)

@@ -124,6 +124,7 @@ mod tests {
             display_scale: 0,
             video_codecs: vec![],
             audio_codecs: vec![],
+            session_token: [0; 16],
         };
         let bytes = to_allocvec(&hs).unwrap();
         let decoded: Handshake = from_bytes(&bytes).unwrap();
@@ -147,6 +148,7 @@ mod tests {
             display_scale: u16::MAX,
             video_codecs: vec![VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1],
             audio_codecs: vec![AudioCodec::Opus],
+            session_token: [0xFF; 16],
         };
         let bytes = to_allocvec(&hs).unwrap();
         let decoded: Handshake = from_bytes(&bytes).unwrap();
@@ -168,6 +170,7 @@ mod tests {
             display_scale: 100,
             video_codecs: vec![VideoCodec::H264],
             audio_codecs: vec![AudioCodec::Opus],
+            session_token: [0xAB; 16],
         };
         let bytes = to_allocvec(&hs).unwrap();
         assert!(from_bytes::<Handshake>(&bytes[..bytes.len() / 2]).is_err());
