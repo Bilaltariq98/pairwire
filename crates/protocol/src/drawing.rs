@@ -106,9 +106,7 @@ mod tests {
 
     #[test]
     fn draw_clear_round_trip() {
-        let clear = DrawClear {
-            peer_id: Some(1),
-        };
+        let clear = DrawClear { peer_id: Some(1) };
         let bytes = to_allocvec(&clear).unwrap();
         assert_eq!(clear, from_bytes(&bytes).unwrap());
 

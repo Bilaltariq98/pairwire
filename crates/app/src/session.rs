@@ -20,8 +20,8 @@ use pairwire_core::{
     SessionId,
     config::{AudioConfig, CaptureConfig, VideoEncoder},
 };
-use pairwire_protocol::{Capability, CursorUpdate};
 use pairwire_input::{InputReceiver, InputSender};
+use pairwire_protocol::{Capability, CursorUpdate};
 use pairwire_transport::{
     AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
     NegotiatedSession, TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake,
@@ -346,25 +346,24 @@ pub async fn run_join(
     });
 
     // Open input bidi stream (guest→host) before moq-lite starts.
-    let (input_tx, input_send_handle) =
-        if session.has_capability(&Capability::RemoteControl) {
-            match conn.open_control_stream().await {
-                Ok((input_send, _input_recv)) => {
-                    let (tx, rx) =
-                        tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
-                    let sender = InputSender::new(input_send);
-                    let handle = sender.spawn(rx);
-                    info!("input sender started");
-                    (Some(tx), Some(handle))
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to open input stream — remote control disabled");
-                    (None, None)
-                }
+    let (input_tx, input_send_handle) = if session.has_capability(&Capability::RemoteControl) {
+        match conn.open_control_stream().await {
+            Ok((input_send, _input_recv)) => {
+                let (tx, rx) =
+                    tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
+                let sender = InputSender::new(input_send);
+                let handle = sender.spawn(rx);
+                info!("input sender started");
+                (Some(tx), Some(handle))
             }
-        } else {
-            (None, None)
-        };
+            Err(e) => {
+                warn!(error = %e, "failed to open input stream — remote control disabled");
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
     // input_tx can be used by the viewer to send keyboard/mouse events
     let _ = &input_tx;
 
