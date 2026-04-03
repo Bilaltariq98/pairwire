@@ -12,8 +12,8 @@ path = "src/main.rs"
 pairwire-core.workspace = true
 pairwire-protocol.workspace = true
 pairwire-transport.workspace = true
-pairwire-capture = { path = "../capture" }
-pairwire-audio = { path = "../audio" }
+pairwire-capture.workspace = true
+pairwire-audio.workspace = true
 pairwire-input.workspace = true
 pairwire-terminal.workspace = true
 anyhow.workspace = true
