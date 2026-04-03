@@ -68,6 +68,12 @@ impl AudioPlaybackThread {
     }
 }
 
+impl Drop for AudioPlaybackThread {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(feature = "capture")]
 #[allow(clippy::needless_pass_by_value)] // args are consumed by the dedicated OS thread
 fn playback_loop(

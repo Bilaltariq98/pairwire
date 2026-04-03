@@ -71,6 +71,12 @@ impl AudioDecodeThread {
     }
 }
 
+impl Drop for AudioDecodeThread {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)] // args are consumed by the dedicated OS thread
 fn decode_loop(
     config: AudioConfig,

@@ -194,5 +194,11 @@ impl AudioCaptureThread {
     }
 }
 
+impl Drop for AudioCaptureThread {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Marker type for the fake audio source (used in tests).
 pub struct FakeAudioSource;
