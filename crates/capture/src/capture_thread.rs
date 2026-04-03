@@ -16,9 +16,9 @@ use std::{
 };
 
 use pairwire_core::{Error, Result, config::CaptureConfig, diagnostics::DropCounter};
+use tracing::info;
 #[cfg(feature = "capture")]
 use tracing::{debug, warn};
-use tracing::info;
 
 use crate::frame::RawFrame;
 
@@ -96,7 +96,10 @@ impl CaptureThread {
                                 if tx.try_send(raw).is_err() {
                                     let n = drops.increment();
                                     if n.is_power_of_two() || n.is_multiple_of(100) {
-                                        info!(total_drops = n, "capture channel full, dropping frame");
+                                        info!(
+                                            total_drops = n,
+                                            "capture channel full, dropping frame"
+                                        );
                                     }
                                 }
                             }

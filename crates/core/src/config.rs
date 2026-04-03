@@ -56,7 +56,9 @@ impl CaptureConfig {
     /// Returns an error describing the first invalid field found.
     pub fn validate(&self) -> crate::Result<()> {
         if self.fps == 0 {
-            return Err(crate::Error::InvalidConfig("CaptureConfig: fps must be > 0".into()));
+            return Err(crate::Error::InvalidConfig(
+                "CaptureConfig: fps must be > 0".into(),
+            ));
         }
         if self.fps > 240 {
             return Err(crate::Error::InvalidConfig(
@@ -186,37 +188,55 @@ mod tests {
 
     #[test]
     fn capture_rejects_zero_fps() {
-        let cfg = CaptureConfig { fps: 0, ..Default::default() };
+        let cfg = CaptureConfig {
+            fps: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn capture_rejects_excessive_fps() {
-        let cfg = CaptureConfig { fps: 241, ..Default::default() };
+        let cfg = CaptureConfig {
+            fps: 241,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn capture_rejects_zero_width() {
-        let cfg = CaptureConfig { width: 0, ..Default::default() };
+        let cfg = CaptureConfig {
+            width: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn capture_rejects_zero_height() {
-        let cfg = CaptureConfig { height: 0, ..Default::default() };
+        let cfg = CaptureConfig {
+            height: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn capture_rejects_odd_width() {
-        let cfg = CaptureConfig { width: 1921, ..Default::default() };
+        let cfg = CaptureConfig {
+            width: 1921,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn capture_rejects_odd_height() {
-        let cfg = CaptureConfig { height: 1081, ..Default::default() };
+        let cfg = CaptureConfig {
+            height: 1081,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
@@ -240,44 +260,65 @@ mod tests {
 
     #[test]
     fn audio_rejects_zero_sample_rate() {
-        let cfg = AudioConfig { sample_rate: 0, ..Default::default() };
+        let cfg = AudioConfig {
+            sample_rate: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn audio_rejects_zero_channels() {
-        let cfg = AudioConfig { channels: 0, ..Default::default() };
+        let cfg = AudioConfig {
+            channels: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn audio_rejects_three_channels() {
-        let cfg = AudioConfig { channels: 3, ..Default::default() };
+        let cfg = AudioConfig {
+            channels: 3,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn audio_accepts_stereo() {
-        let cfg = AudioConfig { channels: 2, ..Default::default() };
+        let cfg = AudioConfig {
+            channels: 2,
+            ..Default::default()
+        };
         cfg.validate().unwrap();
     }
 
     #[test]
     fn audio_rejects_invalid_frame_duration() {
-        let cfg = AudioConfig { frame_duration_ms: 15, ..Default::default() };
+        let cfg = AudioConfig {
+            frame_duration_ms: 15,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn audio_rejects_zero_bitrate() {
-        let cfg = AudioConfig { bitrate: 0, ..Default::default() };
+        let cfg = AudioConfig {
+            bitrate: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn audio_accepts_all_valid_durations() {
         for &dur in &AudioConfig::VALID_FRAME_DURATIONS {
-            let cfg = AudioConfig { frame_duration_ms: dur, ..Default::default() };
+            let cfg = AudioConfig {
+                frame_duration_ms: dur,
+                ..Default::default()
+            };
             cfg.validate().unwrap();
         }
     }

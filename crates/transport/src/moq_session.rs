@@ -526,7 +526,10 @@ async fn drain_video(
                 if pkt_tx.try_send(pkt).is_err() {
                     let n = drops.increment();
                     if n.is_power_of_two() || n.is_multiple_of(100) {
-                        info!(total_drops = n, "decoder channel full, dropping video frame");
+                        info!(
+                            total_drops = n,
+                            "decoder channel full, dropping video frame"
+                        );
                     }
                 }
             }
