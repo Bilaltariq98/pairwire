@@ -272,4 +272,52 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("1MB"));
     }
+
+    #[tokio::test]
+    async fn apply_clipboard_accepts_exactly_max_size() {
+        // Exactly at the limit should be accepted (error only from clipboard API, not size check).
+        let sync = ClipboardSync {
+            format: ClipboardFormat::PlainText,
+            data: vec![b'a'; MAX_CLIPBOARD_BYTES],
+        };
+        // This may fail due to clipboard access in CI, but should NOT fail with "1MB" error.
+        let result = apply_clipboard(sync).await;
+        if let Err(ref e) = result {
+            assert!(
+                !e.to_string().contains("1MB"),
+                "should not reject at-limit payload"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_format_all_variants_serialize() {
+        use postcard::{from_bytes, to_allocvec};
+        for format in [
+            ClipboardFormat::PlainText,
+            ClipboardFormat::Html,
+            ClipboardFormat::Image,
+            ClipboardFormat::FilePaths,
+        ] {
+            let sync = ClipboardSync {
+                format: format.clone(),
+                data: b"test".to_vec(),
+            };
+            let bytes = to_allocvec(&sync).unwrap();
+            let decoded: ClipboardSync = from_bytes(&bytes).unwrap();
+            assert_eq!(sync.format, decoded.format);
+        }
+    }
+
+    #[test]
+    fn clipboard_empty_data_round_trip() {
+        use postcard::{from_bytes, to_allocvec};
+        let sync = ClipboardSync {
+            format: ClipboardFormat::PlainText,
+            data: vec![],
+        };
+        let bytes = to_allocvec(&sync).unwrap();
+        let decoded: ClipboardSync = from_bytes(&bytes).unwrap();
+        assert_eq!(sync, decoded);
+    }
 }

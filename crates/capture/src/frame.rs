@@ -58,4 +58,37 @@ mod tests {
         assert_eq!(RawFrame::expected_len(1920, 1080), 1920 * 1080 * 4);
         assert_eq!(RawFrame::expected_len(1280, 720), 1280 * 720 * 4);
     }
+
+    #[test]
+    fn raw_frame_expected_len_zero() {
+        assert_eq!(RawFrame::expected_len(0, 0), 0);
+        assert_eq!(RawFrame::expected_len(100, 0), 0);
+        assert_eq!(RawFrame::expected_len(0, 100), 0);
+    }
+
+    #[test]
+    fn encoded_packet_keepalive() {
+        let pkt = EncodedPacket {
+            data: Bytes::new(),
+            timestamp_us: 1000,
+            is_keyframe: false,
+            is_keepalive: true,
+        };
+        assert!(pkt.is_keepalive);
+        assert!(pkt.data.is_empty());
+    }
+
+    #[test]
+    fn decoded_frame_data_size() {
+        let frame = DecodedFrame {
+            data: Bytes::from(vec![0u8; 1920 * 1080 * 4]),
+            width: 1920,
+            height: 1080,
+            timestamp_us: 0,
+        };
+        assert_eq!(
+            frame.data.len(),
+            RawFrame::expected_len(frame.width, frame.height)
+        );
+    }
 }

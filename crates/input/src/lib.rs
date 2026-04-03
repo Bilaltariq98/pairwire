@@ -53,3 +53,20 @@ pub enum InputPermission {
     /// Only keyboard events are injected.
     KeyboardOnly,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_permission_default_is_denied() {
+        assert_eq!(InputPermission::default(), InputPermission::Denied);
+    }
+
+    #[test]
+    fn input_permission_copy_eq() {
+        let a = InputPermission::FullControl;
+        let b = a; // Copy
+        assert_eq!(a, b);
+    }
+}
