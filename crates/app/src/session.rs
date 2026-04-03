@@ -73,6 +73,9 @@ pub async fn run_host(
         preferred_encoder: VideoEncoder::H264Software,
         ..Default::default()
     };
+    capture_config
+        .validate()
+        .context("invalid capture config")?;
 
     // Use real screen capture when the `capture` feature is enabled,
     // falling back to the fake source otherwise.
