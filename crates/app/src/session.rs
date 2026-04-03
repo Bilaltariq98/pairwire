@@ -246,9 +246,12 @@ pub async fn run_host(
         if session.video_codec.is_none() {
             warn!("no common video codec — not sending frames");
         } else {
-            let (encode_thread, video_pkt_rx) =
-                EncodeThread::start(capture_config.clone(), frame_rx)
-                    .context("failed to start encoder")?;
+            let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
+                capture_config.clone(),
+                frame_rx,
+                Some(quality_rx),
+            )
+            .context("failed to start encoder")?;
 
             let video_stream_config = VideoStreamConfig {
                 width: capture_config.width,
