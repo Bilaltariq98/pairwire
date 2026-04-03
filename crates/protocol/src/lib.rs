@@ -12,6 +12,9 @@ pub mod input;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_utils;
 
+#[cfg(test)]
+mod boundary_tests;
+
 /// Current protocol version. Increment when making breaking wire format changes.
 pub const PROTOCOL_VERSION: u16 = 1;
 
