@@ -108,14 +108,24 @@ pub async fn run_host(
     let cursor_send = CursorSender::new(Arc::clone(&conn));
     let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(1);
     let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
+    let cursor_frame_width = u16::try_from(capture_config.width).unwrap_or(u16::MAX);
+    let cursor_frame_height = u16::try_from(capture_config.height).unwrap_or(u16::MAX);
     let cursor_poll_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(16));
         let mut last_sent = None;
 
         loop {
             interval.tick().await;
-            match pairwire_input::current_cursor_position() {
-                Ok((x, y)) => {
+            match pairwire_input::current_cursor_state() {
+                Ok(((x, y), (display_width, display_height))) => {
+                    let (x, y) = scale_cursor_to_frame(
+                        x,
+                        y,
+                        display_width,
+                        display_height,
+                        cursor_frame_width,
+                        cursor_frame_height,
+                    );
                     let update = CursorUpdate {
                         peer_id: 0,
                         x,
@@ -503,6 +513,31 @@ fn start_guest_audio_sender(
     Ok((Some(audio_capture), Some(audio_encode), Some(send_task)))
 }
 
+fn scale_cursor_to_frame(
+    x: u16,
+    y: u16,
+    display_width: u16,
+    display_height: u16,
+    frame_width: u16,
+    frame_height: u16,
+) -> (u16, u16) {
+    if display_width == 0 || display_height == 0 || frame_width == 0 || frame_height == 0 {
+        return (x, y);
+    }
+
+    let scaled_x = ((u32::from(x).saturating_mul(u32::from(frame_width)))
+        / u32::from(display_width))
+    .min(u32::from(frame_width.saturating_sub(1)));
+    let scaled_y = ((u32::from(y).saturating_mul(u32::from(frame_height)))
+        / u32::from(display_height))
+    .min(u32::from(frame_height.saturating_sub(1)));
+
+    (
+        u16::try_from(scaled_x).unwrap_or(frame_width.saturating_sub(1)),
+        u16::try_from(scaled_y).unwrap_or(frame_height.saturating_sub(1)),
+    )
+}
+
 /// Start screen capture — real (scap) when `capture` feature is enabled, fake otherwise.
 fn start_capture(
     config: CaptureConfig,
@@ -572,5 +607,26 @@ fn guest_capabilities() -> Vec<Capability> {
     #[cfg(not(feature = "audio"))]
     {
         vec![Capability::Screen, Capability::RemoteControl]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scale_cursor_to_frame;
+
+    #[test]
+    fn scale_cursor_maps_into_frame_space() {
+        assert_eq!(
+            scale_cursor_to_frame(1280, 720, 2560, 1440, 1920, 1080),
+            (960, 540)
+        );
+    }
+
+    #[test]
+    fn scale_cursor_clamps_to_frame_bounds() {
+        assert_eq!(
+            scale_cursor_to_frame(u16::MAX, u16::MAX, 2560, 1440, 1920, 1080),
+            (1919, 1079)
+        );
     }
 }
