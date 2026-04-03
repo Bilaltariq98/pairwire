@@ -138,10 +138,7 @@ fn negotiate(local: Handshake, remote: Handshake) -> Result<NegotiatedSession> {
     // Verify session token — both peers must present the same token from the invite.
     if local.session_token != remote.session_token {
         warn!("session token mismatch — rejecting peer");
-        return Err(Error::PeerAuthFailed {
-            expected: hex::encode(local.session_token),
-            actual: hex::encode(remote.session_token),
-        });
+        return Err(Error::PeerAuthFailed);
     }
 
     if remote.version != PROTOCOL_VERSION {
@@ -299,7 +296,7 @@ mod tests {
         let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
         remote.session_token = [0xBB; 16]; // different token
         let err = negotiate(local, remote).unwrap_err();
-        assert!(matches!(err, Error::PeerAuthFailed { .. }));
+        assert!(matches!(err, Error::PeerAuthFailed));
     }
 
     #[test]

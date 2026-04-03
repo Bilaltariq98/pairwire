@@ -42,8 +42,8 @@ pub enum Error {
     #[error("version mismatch: local={local}, remote={remote}")]
     VersionMismatch { local: u16, remote: u16 },
 
-    #[error("peer authentication failed: expected {expected}, got {actual}")]
-    PeerAuthFailed { expected: String, actual: String },
+    #[error("peer authentication failed: session token mismatch")]
+    PeerAuthFailed,
 
     #[error("config validation: {0}")]
     InvalidConfig(String),

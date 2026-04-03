@@ -76,6 +76,9 @@ pub async fn run_host(
     capture_config
         .validate()
         .context("invalid capture config")?;
+    AudioConfig::default()
+        .validate()
+        .context("invalid audio config")?;
 
     // Use real screen capture when the `capture` feature is enabled,
     // falling back to the fake source otherwise.
@@ -210,12 +213,15 @@ pub async fn run_host(
         guest_audio_playback_handle = Some(guest_audio_playback);
         let task = tokio::spawn(async move {
             let mut guest_audio_chan_rx = guest_audio_chan_rx;
+            let mut timestamp_us: u64 = 0;
+            const FRAME_DURATION_US: u64 = 20_000; // 20ms Opus frames
             while let Some(data) = guest_audio_chan_rx.recv().await {
                 let packet = pairwire_audio::OpusPacket {
                     data,
-                    timestamp_us: 0,
+                    timestamp_us,
                     duration_ms: 20,
                 };
+                timestamp_us = timestamp_us.wrapping_add(FRAME_DURATION_US);
                 if guest_audio_decode_tx.send(packet).await.is_err() {
                     break;
                 }
