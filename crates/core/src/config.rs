@@ -13,6 +13,15 @@ pub struct SessionConfig {
     pub allow_remote_control: bool,
 }
 
+impl SessionConfig {
+    /// Validates all sub-configs. Call at session startup.
+    pub fn validate(&self) -> crate::Result<()> {
+        self.capture.validate()?;
+        self.audio.validate()?;
+        Ok(())
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -39,6 +48,43 @@ pub struct CaptureConfig {
     /// Keeps the receiver's inactivity timer alive without sending real video data.
     /// Set to 0 to disable keepalives (not recommended).
     pub keepalive_after_frames: u32,
+}
+
+impl CaptureConfig {
+    /// Validates that all fields have sane values.
+    ///
+    /// Returns an error describing the first invalid field found.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.fps == 0 {
+            return Err(crate::Error::Protocol("CaptureConfig: fps must be > 0".into()));
+        }
+        if self.fps > 240 {
+            return Err(crate::Error::Protocol(
+                "CaptureConfig: fps must be <= 240".into(),
+            ));
+        }
+        if self.width == 0 {
+            return Err(crate::Error::Protocol(
+                "CaptureConfig: width must be > 0".into(),
+            ));
+        }
+        if self.height == 0 {
+            return Err(crate::Error::Protocol(
+                "CaptureConfig: height must be > 0".into(),
+            ));
+        }
+        if self.width % 2 != 0 {
+            return Err(crate::Error::Protocol(
+                "CaptureConfig: width must be divisible by 2 for H.264".into(),
+            ));
+        }
+        if self.height % 2 != 0 {
+            return Err(crate::Error::Protocol(
+                "CaptureConfig: height must be divisible by 2 for H.264".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for CaptureConfig {
@@ -74,6 +120,39 @@ pub struct AudioConfig {
     pub bitrate: u32,
 }
 
+impl AudioConfig {
+    /// Valid Opus frame durations in milliseconds.
+    const VALID_FRAME_DURATIONS: [u32; 6] = [3, 5, 10, 20, 40, 60];
+
+    /// Validates that all fields have sane values.
+    ///
+    /// Returns an error describing the first invalid field found.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.sample_rate == 0 {
+            return Err(crate::Error::Protocol(
+                "AudioConfig: sample_rate must be > 0".into(),
+            ));
+        }
+        if self.channels == 0 || self.channels > 2 {
+            return Err(crate::Error::Protocol(
+                "AudioConfig: channels must be 1 (mono) or 2 (stereo)".into(),
+            ));
+        }
+        if !Self::VALID_FRAME_DURATIONS.contains(&self.frame_duration_ms) {
+            return Err(crate::Error::Protocol(format!(
+                "AudioConfig: frame_duration_ms must be one of {:?}",
+                Self::VALID_FRAME_DURATIONS
+            )));
+        }
+        if self.bitrate == 0 {
+            return Err(crate::Error::Protocol(
+                "AudioConfig: bitrate must be > 0".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
@@ -96,5 +175,131 @@ mod tests {
         let bytes = to_allocvec(&cfg).unwrap();
         let decoded: SessionConfig = from_bytes(&bytes).unwrap();
         assert_eq!(decoded, cfg);
+    }
+
+    // --- CaptureConfig validation ---
+
+    #[test]
+    fn capture_default_is_valid() {
+        CaptureConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn capture_rejects_zero_fps() {
+        let cfg = CaptureConfig { fps: 0, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn capture_rejects_excessive_fps() {
+        let cfg = CaptureConfig { fps: 241, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn capture_rejects_zero_width() {
+        let cfg = CaptureConfig { width: 0, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn capture_rejects_zero_height() {
+        let cfg = CaptureConfig { height: 0, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn capture_rejects_odd_width() {
+        let cfg = CaptureConfig { width: 1921, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn capture_rejects_odd_height() {
+        let cfg = CaptureConfig { height: 1081, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn capture_accepts_valid_custom() {
+        let cfg = CaptureConfig {
+            fps: 60,
+            width: 1280,
+            height: 720,
+            ..Default::default()
+        };
+        cfg.validate().unwrap();
+    }
+
+    // --- AudioConfig validation ---
+
+    #[test]
+    fn audio_default_is_valid() {
+        AudioConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn audio_rejects_zero_sample_rate() {
+        let cfg = AudioConfig { sample_rate: 0, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn audio_rejects_zero_channels() {
+        let cfg = AudioConfig { channels: 0, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn audio_rejects_three_channels() {
+        let cfg = AudioConfig { channels: 3, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn audio_accepts_stereo() {
+        let cfg = AudioConfig { channels: 2, ..Default::default() };
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn audio_rejects_invalid_frame_duration() {
+        let cfg = AudioConfig { frame_duration_ms: 15, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn audio_rejects_zero_bitrate() {
+        let cfg = AudioConfig { bitrate: 0, ..Default::default() };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn audio_accepts_all_valid_durations() {
+        for &dur in &AudioConfig::VALID_FRAME_DURATIONS {
+            let cfg = AudioConfig { frame_duration_ms: dur, ..Default::default() };
+            cfg.validate().unwrap();
+        }
+    }
+
+    // --- SessionConfig validation delegates ---
+
+    #[test]
+    fn session_config_default_is_valid() {
+        SessionConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn session_config_catches_bad_capture() {
+        let mut cfg = SessionConfig::default();
+        cfg.capture.fps = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn session_config_catches_bad_audio() {
+        let mut cfg = SessionConfig::default();
+        cfg.audio.channels = 0;
+        assert!(cfg.validate().is_err());
     }
 }
