@@ -123,6 +123,13 @@ mod inner {
                 Err(_) => break,
             };
 
+            // Keepalive packets have empty data — skip them so we don't
+            // feed a zero-length buffer to FFmpeg (which can crash or error).
+            if pkt.is_keepalive {
+                debug!("skipping keepalive packet in decoder");
+                continue;
+            }
+
             // Wait for a keyframe before feeding anything to the decoder.
             if waiting_for_keyframe {
                 if !pkt.is_keyframe {
