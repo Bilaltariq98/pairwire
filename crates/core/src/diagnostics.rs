@@ -78,4 +78,28 @@ mod tests {
         let c = DropCounter::new("capture_drops");
         assert_eq!(c.name(), "capture_drops");
     }
+
+    #[test]
+    fn concurrent_increments() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let c = Arc::new(DropCounter::new("concurrent"));
+        let mut handles = Vec::new();
+
+        for _ in 0..8 {
+            let c = Arc::clone(&c);
+            handles.push(thread::spawn(move || {
+                for _ in 0..1000 {
+                    c.increment();
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(c.get(), 8000);
+    }
 }

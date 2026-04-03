@@ -485,9 +485,8 @@ mod tests {
 
     #[test]
     fn control_request_round_trip() {
-        let msg = ControlMessage::ControlRequest(crate::control::ControlRequest {
-            peer_id: u16::MAX,
-        });
+        let msg =
+            ControlMessage::ControlRequest(crate::control::ControlRequest { peer_id: u16::MAX });
         let bytes = to_allocvec(&msg).unwrap();
         let decoded: ControlMessage = from_bytes(&bytes).unwrap();
         assert_eq!(msg, decoded);

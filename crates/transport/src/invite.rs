@@ -147,4 +147,40 @@ mod tests {
         assert_eq!(parsed.session_id, link.session_id);
         assert_eq!(parsed.endpoint_id(), link.endpoint_id());
     }
+
+    #[test]
+    fn invite_link_rejects_missing_scheme() {
+        let result = "https://example.com".parse::<InviteLink>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invite_link_rejects_missing_query() {
+        let result = "pairwire://abc123".parse::<InviteLink>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invite_link_rejects_short_token() {
+        let result = "pairwire://abc123?token=abcd".parse::<InviteLink>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invite_link_rejects_invalid_hex_token() {
+        let result =
+            "pairwire://abc123?token=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".parse::<InviteLink>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invite_link_all_ones_session_id() {
+        let key = SecretKey::generate(&mut rand::rng());
+        let endpoint_addr = EndpointAddr::new(key.public());
+        let link = InviteLink::new(endpoint_addr, SessionId([0xFF; 16]));
+        let s = link.to_string();
+        assert!(s.contains("ffffffffffffffffffffffffffffffff"));
+        let parsed: InviteLink = s.parse().unwrap();
+        assert_eq!(parsed.session_id, link.session_id);
+    }
 }

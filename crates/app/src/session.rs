@@ -692,4 +692,44 @@ mod tests {
             (1919, 1079)
         );
     }
+
+    #[test]
+    fn scale_cursor_origin() {
+        assert_eq!(scale_cursor_to_frame(0, 0, 2560, 1440, 1920, 1080), (0, 0));
+    }
+
+    #[test]
+    fn scale_cursor_zero_display_returns_identity() {
+        // Zero display dimensions should return input as-is (no division by zero).
+        assert_eq!(
+            scale_cursor_to_frame(100, 200, 0, 0, 1920, 1080),
+            (100, 200)
+        );
+    }
+
+    #[test]
+    fn scale_cursor_zero_frame_returns_identity() {
+        assert_eq!(
+            scale_cursor_to_frame(100, 200, 2560, 1440, 0, 0),
+            (100, 200)
+        );
+    }
+
+    #[test]
+    fn scale_cursor_same_dimensions() {
+        // Same display and frame size — should be identity.
+        assert_eq!(
+            scale_cursor_to_frame(500, 300, 1920, 1080, 1920, 1080),
+            (500, 300)
+        );
+    }
+
+    #[test]
+    fn scale_cursor_retina_downscale() {
+        // Retina: display 3024x1964, frame 1512x982 (2x downscale)
+        assert_eq!(
+            scale_cursor_to_frame(1512, 982, 3024, 1964, 1512, 982),
+            (756, 491)
+        );
+    }
 }
