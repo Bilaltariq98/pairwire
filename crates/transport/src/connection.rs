@@ -28,7 +28,12 @@ fn is_connection_closed(err: &ConnectionError) -> bool {
 }
 
 /// Maximum size for a length-prefixed message (4 MB).
-const MAX_MESSAGE_LEN: u32 = 4 * 1024 * 1024;
+/// Maximum allowed message size for length-prefixed protocol messages.
+///
+/// 2MB accommodates clipboard payloads (capped at 1MB in `ClipboardSync`)
+/// plus serialization overhead, while preventing unbounded allocation
+/// from malicious peers (reduced from previous 4MB).
+const MAX_MESSAGE_LEN: u32 = 2 * 1024 * 1024;
 
 /// A pairwire connection to a remote peer.
 ///
