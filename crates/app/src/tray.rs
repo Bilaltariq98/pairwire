@@ -136,15 +136,12 @@ mod inner {
                         debug!("tray: Disconnect");
                         Some(TrayAction::Disconnect)
                     } else if id == &self.copy_id {
-                        match &self.invite_url {
-                            Some(url) => {
-                                debug!("tray: CopyInvite");
-                                Some(TrayAction::CopyInvite(url.clone()))
-                            }
-                            None => {
-                                warn!("tray: CopyInvite clicked but no invite URL set");
-                                None
-                            }
+                        if let Some(url) = &self.invite_url {
+                            debug!("tray: CopyInvite");
+                            Some(TrayAction::CopyInvite(url.clone()))
+                        } else {
+                            warn!("tray: CopyInvite clicked but no invite URL set");
+                            None
                         }
                     } else {
                         None
@@ -162,6 +159,7 @@ mod inner {
         let mut buf = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
             for x in 0..w {
+                #[allow(clippy::cast_possible_wrap)]
                 let dist_sq = (x as i32 - cx as i32).pow(2) + (y as i32 - cy as i32).pow(2);
                 if dist_sq <= 9 {
                     // White dot

@@ -23,10 +23,13 @@ pub fn current_cursor_state() -> Result<((u16, u16), (u16, u16))> {
     let location = event.location();
     let bounds = CGDisplay::main().bounds();
 
-    let x = location.x.clamp(0.0, f64::from(u16::MAX)) as u16;
-    let y = location.y.clamp(0.0, f64::from(u16::MAX)) as u16;
-    let width = bounds.size.width.clamp(0.0, f64::from(u16::MAX)) as u16;
-    let height = bounds.size.height.clamp(0.0, f64::from(u16::MAX)) as u16;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let (x, y, width, height) = (
+        location.x.clamp(0.0, f64::from(u16::MAX)) as u16,
+        location.y.clamp(0.0, f64::from(u16::MAX)) as u16,
+        bounds.size.width.clamp(0.0, f64::from(u16::MAX)) as u16,
+        bounds.size.height.clamp(0.0, f64::from(u16::MAX)) as u16,
+    );
 
     Ok(((x, y), (width, height)))
 }

@@ -212,9 +212,9 @@ pub async fn run_host(
         guest_audio_decode_handle = Some(guest_audio_decode);
         guest_audio_playback_handle = Some(guest_audio_playback);
         let task = tokio::spawn(async move {
+            const FRAME_DURATION_US: u64 = 20_000; // 20ms Opus frames
             let mut guest_audio_chan_rx = guest_audio_chan_rx;
             let mut timestamp_us: u64 = 0;
-            const FRAME_DURATION_US: u64 = 20_000; // 20ms Opus frames
             while let Some(data) = guest_audio_chan_rx.recv().await {
                 let packet = pairwire_audio::OpusPacket {
                     data,
@@ -322,11 +322,11 @@ pub async fn run_host(
 /// Run as guest: connect to host, handshake, receive and decode frames, forward to viewer.
 ///
 /// `viewer_input_rx` receives input events from the viewer UI (keyboard/mouse).
-/// These are forwarded to the host via the InputSender when remote control is active.
+/// These are forwarded to the host via the `InputSender` when remote control is active.
 pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
-    _cursor_tx: watch::Sender<Option<CursorUpdate>>,
+    cursor_tx: watch::Sender<Option<CursorUpdate>>,
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
@@ -367,7 +367,7 @@ pub async fn run_join(
     );
 
     let (cursor_recv_handle, mut cursor_watch_rx) = CursorReceiver::spawn(cursor_chan_rx);
-    let cursor_watch_tx = _cursor_tx.clone();
+    let cursor_watch_tx = cursor_tx.clone();
     let cursor_forward_task = tokio::spawn(async move {
         loop {
             if cursor_watch_rx.changed().await.is_err() {
