@@ -140,9 +140,14 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     let (cursor_tx, cursor_rx) =
         tokio::sync::watch::channel::<Option<pairwire_protocol::CursorUpdate>>(None);
     let (conn_tx, conn_rx) = tokio::sync::watch::channel(ConnectionState::Connected);
+    // Input channel: viewer sends InputMessage events, session forwards to host.
+    // Uses broadcast so each reconnect attempt can subscribe independently.
+    let (input_tx, _) =
+        tokio::sync::broadcast::channel::<pairwire_protocol::input::InputMessage>(32);
+    let input_tx_for_session = input_tx.clone();
 
     #[cfg(not(feature = "gui"))]
-    let _ = (&frame_rx, &cursor_rx, &conn_rx);
+    let _ = (&frame_rx, &cursor_rx, &conn_rx, &input_tx);
 
     let no_gui = args.no_gui;
 
@@ -153,7 +158,21 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
             let frame_tx = frame_tx.clone();
             let cursor_tx = cursor_tx.clone();
             let args = args.clone();
-            async move { session::run_join(args, frame_tx, cursor_tx).await }
+            // Each reconnect gets a fresh broadcast subscriber → mpsc bridge.
+            let mut broadcast_rx = input_tx_for_session.subscribe();
+            async move {
+                let (bridge_tx, bridge_rx) =
+                    tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
+                // Forward broadcast → mpsc for this session's lifetime.
+                tokio::spawn(async move {
+                    while let Ok(msg) = broadcast_rx.recv().await {
+                        if bridge_tx.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                session::run_join(args, frame_tx, cursor_tx, bridge_rx).await
+            }
         })
         .await
     });
@@ -169,7 +188,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     } else {
         #[cfg(feature = "gui")]
         {
-            viewer::run_viewer(frame_rx, cursor_rx, conn_rx, "pairwire")?;
+            viewer::run_viewer(frame_rx, cursor_rx, conn_rx, input_tx, "pairwire")?;
         }
         #[cfg(not(feature = "gui"))]
         {

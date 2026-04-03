@@ -314,10 +314,14 @@ pub async fn run_host(
 }
 
 /// Run as guest: connect to host, handshake, receive and decode frames, forward to viewer.
+///
+/// `viewer_input_rx` receives input events from the viewer UI (keyboard/mouse).
+/// These are forwarded to the host via the InputSender when remote control is active.
 pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
     _cursor_tx: watch::Sender<Option<CursorUpdate>>,
+    mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
     let _ = &frame_tx;
@@ -368,26 +372,37 @@ pub async fn run_join(
     });
 
     // Open input bidi stream (guest→host) before moq-lite starts.
-    let (input_tx, input_send_handle) = if session.has_capability(&Capability::RemoteControl) {
-        match conn.open_control_stream().await {
-            Ok((input_send, _input_recv)) => {
-                let (tx, rx) =
-                    tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
-                let sender = InputSender::new(input_send);
-                let handle = sender.spawn(rx);
-                info!("input sender started");
-                (Some(tx), Some(handle))
+    // Forward events from the viewer's input channel to the InputSender.
+    let (input_send_handle, input_forward_task) =
+        if session.has_capability(&Capability::RemoteControl) {
+            match conn.open_control_stream().await {
+                Ok((input_send, _input_recv)) => {
+                    let (tx, rx) =
+                        tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
+                    let sender = InputSender::new(input_send);
+                    let handle = sender.spawn(rx);
+                    // Forward viewer input events to the InputSender channel.
+                    let forward = tokio::spawn(async move {
+                        while let Some(msg) = viewer_input_rx.recv().await {
+                            if tx.send(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    info!("input sender started");
+                    (Some(handle), Some(forward))
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "failed to open input stream — remote control disabled"
+                    );
+                    (None, None)
+                }
             }
-            Err(e) => {
-                warn!(error = %e, "failed to open input stream — remote control disabled");
-                (None, None)
-            }
-        }
-    } else {
-        (None, None)
-    };
-    // input_tx can be used by the viewer to send keyboard/mouse events
-    let _ = &input_tx;
+        } else {
+            (None, None)
+        };
 
     // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
@@ -458,6 +473,10 @@ pub async fn run_join(
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
     cursor_recv_handle.stop().await;
+    if let Some(task) = input_forward_task {
+        task.abort();
+        let _ = task.await;
+    }
     if let Some(handle) = input_send_handle {
         handle.stop().await;
     }
