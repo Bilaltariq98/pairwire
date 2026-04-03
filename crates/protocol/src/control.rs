@@ -69,11 +69,46 @@ pub struct ControlHandoff {
     pub granted: bool,
 }
 
+/// Current control state for input forwarding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ControlState {
+    /// Host has active control (default).
+    HostActive,
+    /// Guest has requested control, awaiting host decision.
+    GuestRequested,
+    /// Guest has active control — input events are forwarded.
+    GuestActive,
+}
+
+/// Guest requests to take keyboard/mouse control.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlRequest {
+    pub peer_id: u16,
+}
+
+/// Host grants control to a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlGrant {
+    pub peer_id: u16,
+}
+
+/// Host revokes control (e.g., host moved their mouse).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlRevoke {
+    pub peer_id: u16,
+}
+
 /// Session management messages sent on the control stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlMessage {
     Handshake(Handshake),
     ControlHandoff(ControlHandoff),
+    /// Guest requests control takeover.
+    ControlRequest(ControlRequest),
+    /// Host grants control to a peer.
+    ControlGrant(ControlGrant),
+    /// Host revokes control from a peer.
+    ControlRevoke(ControlRevoke),
     /// Peer is disconnecting cleanly.
     Goodbye {
         reason: String,
@@ -83,6 +118,8 @@ pub enum ControlMessage {
         screen: bool,
         audio: bool,
     },
+    /// Clear drawing annotations.
+    DrawClear(crate::drawing::DrawClear),
 }
 
 /// Diagnostic heartbeat sent periodically on the control stream.

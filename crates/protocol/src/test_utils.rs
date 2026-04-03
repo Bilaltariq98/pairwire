@@ -3,10 +3,13 @@
 //! Provides factory functions for every message type and a generic round-trip assertion.
 
 use crate::control::{
-    AudioCodec, Capability, ControlHandoff, Handshake, Heartbeat, Permissions, VideoCodec,
+    AudioCodec, Capability, ControlHandoff, ControlRequest, Handshake, Heartbeat, Permissions,
+    VideoCodec,
 };
 use crate::cursor::CursorUpdate;
+use crate::drawing::{DrawMode, DrawPoint, DrawStroke};
 use crate::input::{ClipboardFormat, ClipboardSync, KeyEvent, MouseClick, MouseScroll};
+use crate::reaction::Reaction;
 use postcard::{from_bytes, to_allocvec};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -100,6 +103,36 @@ pub fn make_control_handoff() -> ControlHandoff {
     }
 }
 
+pub fn make_draw_point() -> DrawPoint {
+    DrawPoint {
+        peer_id: 1,
+        x: 500,
+        y: 300,
+    }
+}
+
+pub fn make_draw_stroke() -> DrawStroke {
+    DrawStroke {
+        peer_id: 0,
+        color: [255, 80, 80],
+        points: vec![(100, 200), (150, 250), (200, 300)],
+        mode: DrawMode::Laser,
+    }
+}
+
+pub fn make_reaction() -> Reaction {
+    Reaction {
+        peer_id: 0,
+        emoji_id: 3,
+        x: 960,
+        y: 540,
+    }
+}
+
+pub fn make_control_request() -> ControlRequest {
+    ControlRequest { peer_id: 1 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,7 +149,12 @@ mod tests {
         assert_round_trip(&make_mouse_scroll());
         assert_round_trip(&make_clipboard_sync());
         assert_round_trip(&make_control_handoff());
+        assert_round_trip(&make_draw_point());
+        assert_round_trip(&make_draw_stroke());
+        assert_round_trip(&make_reaction());
+        assert_round_trip(&make_control_request());
         assert_round_trip(&ControlMessage::Handshake(make_handshake()));
+        assert_round_trip(&ControlMessage::ControlRequest(make_control_request()));
         assert_round_trip(&InputMessage::Key(make_key_event()));
     }
 }
