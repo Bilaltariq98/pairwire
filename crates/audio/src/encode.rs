@@ -256,4 +256,61 @@ mod tests {
         let n = decoder.decode_float(&encoded, &mut decoded, false).unwrap();
         assert_eq!(n, OPUS_FRAME_SAMPLES);
     }
+
+    #[test]
+    fn silence_detection_threshold() {
+        // Silence (all zeros) should be below SILENCE_THRESHOLD.
+        let silence = vec![0.0f32; OPUS_FRAME_SAMPLES];
+        assert!(rms(&silence) < SILENCE_THRESHOLD);
+
+        // A very quiet signal (0.001 amplitude) is still below.
+        let quiet: Vec<f32> = (0..OPUS_FRAME_SAMPLES)
+            .map(|i| (i as f32 * 0.01).sin() * 0.001)
+            .collect();
+        assert!(rms(&quiet) < SILENCE_THRESHOLD);
+
+        // A normal voice signal (0.1 amplitude) is above.
+        let voice: Vec<f32> = (0..OPUS_FRAME_SAMPLES)
+            .map(|i| (i as f32 * 0.01).sin() * 0.1)
+            .collect();
+        assert!(rms(&voice) > SILENCE_THRESHOLD);
+    }
+
+    #[test]
+    fn silence_marker_has_correct_fields() {
+        let marker = OpusPacket::silence(42_000, 20);
+        assert!(marker.is_silence());
+        assert!(marker.data.is_empty());
+        assert_eq!(marker.timestamp_us, 42_000);
+        assert_eq!(marker.duration_ms, 20);
+    }
+
+    #[test]
+    fn rms_empty_is_zero() {
+        assert_eq!(rms(&[]), 0.0);
+    }
+
+    #[test]
+    fn normalize_same_channels_is_clone() {
+        let frame = AudioFrame {
+            samples: vec![0.1, 0.2, 0.3],
+            sample_rate: 48_000,
+            channels: 1,
+            timestamp_us: 0,
+        };
+        let out = normalize_frame(&frame, 1);
+        assert_eq!(out, frame.samples);
+    }
+
+    #[test]
+    fn mono_to_stereo_duplicates() {
+        let frame = AudioFrame {
+            samples: vec![0.5, -0.5],
+            sample_rate: 48_000,
+            channels: 1,
+            timestamp_us: 0,
+        };
+        let stereo = normalize_frame(&frame, 2);
+        assert_eq!(stereo, vec![0.5, 0.5, -0.5, -0.5]);
+    }
 }
