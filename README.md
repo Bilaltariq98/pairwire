@@ -4,15 +4,18 @@ P2P screen sharing and pair programming over QUIC. No server required — peers 
 
 ## Status
 
-Phase 3 complete. Screen sharing, H.264 encode/decode, audio pipeline, session reconnection, and macOS menu bar are all working. Terminal sharing (Phase 4) is in progress.
+Phase 3.5 in progress. Screen sharing, bidirectional audio, remote control input, quality adaptation, and session reconnection are all working. Drawing/annotations and terminal sharing are next.
 
 ## Features
 
 - **P2P connectivity** — direct connection via iroh QUIC; relay fallback when NAT traversal fails
 - **Screen sharing** — H.264 encode/decode via FFmpeg (hardware-accelerated on Apple Silicon)
-- **Audio** — Opus encode/decode via cpal; voice activity detection skips silence
-- **Session reconnection** — automatic exponential-backoff retry with UI overlay
+- **Bidirectional audio** — Opus encode/decode; host mic to guest + guest mic to host; voice activity detection skips silence
+- **Remote control** — guest keyboard/mouse forwarded to host via QUIC; host injects via CGEvent (macOS); permission-gated with `--allow-remote-control`
+- **Quality adaptation** — monitors RTT/loss and dynamically reduces fps when network degrades; auto-recovers
 - **Remote cursor** — host cursor position shown as overlay on guest viewer
+- **Session reconnection** — automatic exponential-backoff retry with UI overlay
+- **Session authentication** — invite link session token verified in handshake; rejects unauthorized peers
 - **macOS menu bar** — Copy Invite Link, Disconnect, Quit (optional feature)
 
 ## Requirements
@@ -26,8 +29,9 @@ Phase 3 complete. Screen sharing, H.264 encode/decode, audio pipeline, session r
 
 Grant these before running with real capture/audio:
 
-- **System Settings → Privacy & Security → Screen Recording** — required for `--features capture`
-- **System Settings → Privacy & Security → Microphone** — required for `--features audio`
+- **System Settings > Privacy & Security > Screen Recording** — required for `--features capture`
+- **System Settings > Privacy & Security > Microphone** — required for `--features audio`
+- **System Settings > Privacy & Security > Accessibility** — required for `--allow-remote-control` (CGEvent injection)
 
 ## Building
 
@@ -63,9 +67,10 @@ Prints an invite link:
 
 Options:
 ```
---fps N       Target capture frame rate (default: 30)
---width W     Capture width in pixels (default: 1920)
---height H    Capture height in pixels (default: 1080)
+--fps N                   Target capture frame rate (default: 30)
+--width W                 Capture width in pixels (default: 1920)
+--height H                Capture height in pixels (default: 1080)
+--allow-remote-control    Auto-grant keyboard/mouse injection to guest
 ```
 
 ### Guest (view remote screen)
@@ -81,6 +86,10 @@ Options:
 
 The guest does not need `--features capture` (they receive, not capture).
 
+### Remote control
+
+When the host starts with `--allow-remote-control`, the guest can click in the viewer window and type — keystrokes and mouse events are injected on the host via macOS CGEvent. Without the flag, all input events are silently dropped.
+
 ## Feature flags
 
 | Flag | Enables | Requires |
@@ -91,7 +100,7 @@ The guest does not need `--features capture` (they receive, not capture).
 | `gui` | egui viewer window | Display + GPU |
 | `tray` | macOS menu bar icon | macOS only; GTK on Linux |
 
-Features are additive — combine as needed. Without `encode`, the handshake completes but no video is sent. Without `capture`, the host sends a synthetic blue test pattern instead of your real screen.
+Features are additive — combine as needed. Without `encode`, the handshake completes but no video is sent. Without `capture`, the host sends a synthetic blue test pattern instead of your real screen. Without `audio`, both sides use a fake 440Hz sine wave.
 
 ## Development
 
@@ -103,47 +112,44 @@ just fmt      # cargo fmt --all
 just all      # all of the above
 ```
 
-## Testing and packaging
-
-See [`docs/manual-test-plan.md`](docs/manual-test-plan.md) for:
-- macOS Screen Recording and Microphone permission setup
-- Step-by-step test matrix (T1–T8) covering headless, video, audio, reconnection, and tray
-- Log reference — what each log line means
-- Release binary packaging for macOS (universal), Linux, and Windows
-- `.app` bundle creation for macOS permission management
-
-## Known gaps (next up)
-
-- **Real mic capture** — audio pipeline is wired but host calls the fake 440Hz sine source; real cpal capture not yet connected in `session.rs`
-- **Remote control** — input injection crate exists (macOS CGEvent) but not wired into the session
-- **Clipboard sync** — implemented in `crates/input`, not wired into session
-- **Terminal sharing** — Phase 4; PTY forwarding over QUIC (the differentiating feature)
+See [SMOKE_TEST.md](SMOKE_TEST.md) for a manual test checklist covering screen sharing, remote control, audio, and quality adaptation.
 
 ## Architecture
 
 ```
 crates/
-├── core/        Shared types, config, error enum
-├── protocol/    Wire protocol (postcard serialization)
-├── transport/   iroh QUIC + moq-lite media tracks
+├── core/        Shared types, config, error enum, diagnostics
+├── protocol/    Wire protocol (postcard serialization) — cursor, input, drawing, reactions
+├── transport/   iroh QUIC + moq-lite media tracks + datagram router + quality monitor
 ├── capture/     Screen capture (scap) + H.264 encode/decode (FFmpeg)
 ├── audio/       Mic capture + Opus encode/decode + speaker playback (cpal)
-├── input/       Keyboard/mouse injection + clipboard sync
+├── input/       Keyboard/mouse injection + clipboard sync + cursor polling
 ├── terminal/    PTY sharing (Phase 4)
 └── app/         Binary entry point + egui viewer + session orchestration
 ```
 
 **Thread model:** single process, multi-threaded. Capture, encode, decode, and audio each run on dedicated OS threads. tokio runtime handles all networking. UI runs on the main thread.
 
-**Transport:** iroh QUIC for connectivity. moq-lite tracks for screen (priority 3) and audio (priority 0). Raw QUIC streams for control and input. QUIC datagrams for cursor position (60Hz, unreliable).
+**Transport:** iroh QUIC for connectivity. moq-lite tracks for screen (priority 3) and host audio (priority 0). Bidi QUIC streams for control handshake and input forwarding. QUIC datagrams for cursor position (60Hz) and guest audio (Opus packets).
 
 ## Protocol
 
 | Data | Transport | Priority |
 |---|---|---|
-| Audio | moq-lite track | 0 (highest) |
-| Control / input | Reliable QUIC stream | 1 |
-| Cursor position | QUIC datagram | unreliable |
+| Host audio | moq-lite track | 0 (highest) |
+| Guest audio | QUIC datagram (TAG_GUEST_AUDIO) | unreliable |
+| Control / handshake | Reliable QUIC bidi stream | 1 |
+| Input forwarding | Reliable QUIC bidi stream | 1 |
+| Cursor position | QUIC datagram (TAG_CURSOR) | unreliable |
 | Screen frames | moq-lite track | 3 (lowest) |
 
-Invite links encode the iroh `EndpointAddr` (public key + relay URL) and a session token. No central server is involved in the connection after the initial relay-assisted hole punch.
+Invite links encode the iroh `EndpointAddr` (public key + relay URL) and a 16-byte session token. Both peers present the token during handshake — mismatches are rejected. No central server is involved after the initial relay-assisted hole punch.
+
+## Known gaps (next up)
+
+- **Coordinate mapping** — viewer input coordinates are approximate; exact letterbox-aware mapping is in progress
+- **Clipboard sync** — implemented in `crates/input`, not wired into session yet
+- **Drawing & annotations** — protocol types defined, transport not yet wired
+- **Reactions** — protocol types defined, transport not yet wired
+- **Mute/unmute** — no way to toggle mic or remote audio mid-session
+- **Terminal sharing** — Phase 4; PTY forwarding over QUIC
