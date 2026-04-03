@@ -205,3 +205,9 @@ Each entry should include:
   ```
   On the host side, publish-before-accept works because `origin.consume()` (inside `with_publish()`) replays existing broadcasts via `consume_initial()`.
 - **Key insight**: Do not refactor this sequence. It's fragile. Any change to the order of origin.clone() / connect() / origin.consume() breaks it silently (no error, just hangs forever).
+
+### 2026-04-03 — Bidi streams are safe alongside moq-lite; uni streams are not
+- **Area**: transport, moq-lite, input
+- **What**: moq-lite internally calls `accept_uni()` on the connection. Any other code that also calls `accept_uni()` races with it and steals streams non-deterministically. However, moq-lite does NOT call `accept_bi()`. Bidirectional streams are a separate accept path and safe to use.
+- **Resolution**: Use bidi streams (`open_control_stream()` / `accept_bi()`) for the input forwarding channel. Open it after the handshake but before moq-lite starts, to ensure reliable stream establishment.
+- **Key insight**: The safe primitives alongside moq-lite are: (1) datagrams (moq-lite never reads them), (2) bidi streams (moq-lite never accepts them), (3) the control bidi opened before moq-lite starts. Do NOT open or accept uni streams outside moq-lite.
