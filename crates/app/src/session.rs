@@ -24,8 +24,8 @@ use pairwire_input::{InputReceiver, InputSender};
 use pairwire_protocol::{Capability, CursorUpdate};
 use pairwire_transport::{
     AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
-    NegotiatedSession, TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake,
-    host_handshake, local_handshake,
+    NegotiatedSession, QualityMonitor, TAG_GUEST_AUDIO, Transport, datagram_router,
+    guest_handshake, host_handshake, local_handshake,
 };
 #[cfg(feature = "encode")]
 use pairwire_transport::{MoqSessionPublisher, VideoStreamConfig};
@@ -231,6 +231,15 @@ pub async fn run_host(
         }))
     };
 
+    // Quality monitor — polls connection health and emits adapted configs.
+    let quality_monitor = QualityMonitor::new(
+        Arc::new(conn.raw_conn().clone()),
+        capture_config.clone(),
+    );
+    let (quality_handle, _quality_rx) = quality_monitor.spawn();
+    #[cfg(feature = "encode")]
+    let quality_rx = _quality_rx;
+
     // Encode + unified moq publish (screen + audio in one session).
     #[cfg(feature = "encode")]
     {
@@ -275,6 +284,7 @@ pub async fn run_host(
 
     cursor_poll_task.abort();
     let _ = cursor_poll_task.await;
+    quality_handle.stop().await;
     router.stop().await;
     cursor_send_handle.stop().await;
     if let Some(handle) = input_recv_handle {
