@@ -26,6 +26,8 @@ mod inner {
         fps: f32,
         /// Cached texture dimensions for coordinate mapping.
         tex_size: Option<(f32, f32)>,
+        /// Cached display rect and size from last render (for input coordinate mapping).
+        display_rect: Option<(egui::Rect, Vec2)>,
     }
 
     impl ViewerApp {
@@ -45,28 +47,8 @@ mod inner {
                 last_fps_time: std::time::Instant::now(),
                 fps: 0.0,
                 tex_size: None,
+                display_rect: None,
             }
-        }
-
-        /// Map a position in screen-space to host display coordinates.
-        fn map_to_host(
-            &self,
-            pos: egui::Pos2,
-            rect: egui::Rect,
-            display_size: Vec2,
-        ) -> Option<(u16, u16)> {
-            let (tex_w, tex_h) = self.tex_size?;
-            if display_size.x == 0.0 || display_size.y == 0.0 {
-                return None;
-            }
-            let rel_x = (pos.x - rect.min.x) / display_size.x;
-            let rel_y = (pos.y - rect.min.y) / display_size.y;
-            if !(0.0..=1.0).contains(&rel_x) || !(0.0..=1.0).contains(&rel_y) {
-                return None;
-            }
-            let host_x = (rel_x * tex_w).min(tex_w - 1.0).max(0.0) as u16;
-            let host_y = (rel_y * tex_h).min(tex_h - 1.0).max(0.0) as u16;
-            Some((host_x, host_y))
         }
 
         fn send_input(&self, msg: InputMessage) {
@@ -128,6 +110,7 @@ mod inner {
                         let offset = (available - display_size) * 0.5;
                         let rect =
                             egui::Rect::from_min_size(ui.min_rect().min + offset, display_size);
+                        self.display_rect = Some((rect, display_size));
 
                         ui.painter().image(
                             tex.id(),
@@ -299,24 +282,21 @@ mod inner {
             });
         }
 
-        /// Map pointer position to host display coordinates.
+        /// Map pointer position to host display coordinates using the cached display rect.
         /// Returns None if the pointer is outside the screen texture area.
         fn map_pointer_to_host(&self, pos: egui::Pos2) -> Option<(u16, u16)> {
             let (tex_w, tex_h) = self.tex_size?;
-            let tex = self.texture.as_ref()?;
-            let tex_size = tex.size_vec2();
-
-            // We need to reconstruct the display rect from the texture.
-            // This is approximate — in update() we compute the exact rect.
-            // For correct mapping we'd cache the rect, but this is close enough
-            // for the initial implementation.
-            // TODO: cache display_rect from update() for exact mapping.
-            let _ = (tex_w, tex_h, tex_size);
-
-            // For now, treat the whole window as the display area.
-            // Coordinates are relative to texture dimensions.
-            let host_x = pos.x.max(0.0).min(tex_w - 1.0) as u16;
-            let host_y = pos.y.max(0.0).min(tex_h - 1.0) as u16;
+            let (rect, display_size) = self.display_rect?;
+            if display_size.x == 0.0 || display_size.y == 0.0 {
+                return None;
+            }
+            let rel_x = (pos.x - rect.min.x) / display_size.x;
+            let rel_y = (pos.y - rect.min.y) / display_size.y;
+            if !(0.0..=1.0).contains(&rel_x) || !(0.0..=1.0).contains(&rel_y) {
+                return None;
+            }
+            let host_x = (rel_x * tex_w).min(tex_w - 1.0).max(0.0) as u16;
+            let host_y = (rel_y * tex_h).min(tex_h - 1.0).max(0.0) as u16;
             Some((host_x, host_y))
         }
     }
