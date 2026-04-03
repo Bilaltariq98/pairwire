@@ -957,6 +957,39 @@
   - Resize viewer window → encoder reinitializes at new resolution within one keyframe interval
   - `just all` passes
 
+### P4.8: Audio Controls — Mute/Unmute & Per-Capability Opt-In
+- **Status**: `[ ]`
+- **Depends on**: P3.2.1
+- **Description**: Add runtime audio controls missing from the current implementation. Guest audio sending is on by default with no way to mute.
+- **Deliverables**:
+  - **Mute/unmute toggle**: `watch::Sender<bool>` checked by audio capture thread each frame. Muted → send silence markers instead of capturing.
+  - **CLI flags**: `--no-mic` / `--mute` to start with mic disabled. `--no-audio` to disable audio entirely.
+  - **Per-capability opt-in**: Wire `SetSharing { screen, audio }` control message so peers can toggle audio mid-session without restarting.
+  - **Permission model**: Match remote control pattern — `--allow-audio` equivalent, or always-on with mute UI.
+  - **Tray/UI integration**: Mute toggle in system tray menu and viewer status bar.
+- **Acceptance criteria**:
+  - `--mute` starts session with mic silenced
+  - Mute toggle during session takes effect within 1 frame (20ms)
+  - `SetSharing` message toggles remote audio within 100ms
+  - `just all` passes
+
+### P4.9: Symmetric Session Architecture (Design Note)
+- **Status**: `[ ]`
+- **Description**: Unify `run_host`/`run_join` into a single `run_session` that takes a role config. Both peers run the full pipeline and dynamically enable/disable screen sharing. This enables "call mode" where both sides have audio, neither is sharing screen initially, and either can start sharing.
+- **Design outline**:
+  - `SessionRole { share_screen: bool, share_audio: bool, accept_control: bool }`
+  - Both sides run capture+encode+publish (gated by `share_screen`)
+  - Both sides run subscribe+decode+display (gated by remote `share_screen`)
+  - `SetSharing` control messages toggle mid-session
+  - "Call mode" = `{ share_screen: false, share_audio: true, accept_control: false }`
+  - Protocol already supports this (capabilities are per-peer, moq-lite tracks are per-source)
+- **Notes**: Significant refactor of session.rs. The current asymmetric design (host=publisher, guest=subscriber) is baked into the session code. Consider this a Phase 5 item — do after multi-party architecture is designed, as symmetric sessions and multi-party have overlapping concerns.
+- **Acceptance criteria**:
+  - Single `run_session` entry point replaces `run_host` + `run_join`
+  - Either peer can toggle screen sharing mid-session
+  - "Call mode" works (audio-only, no screen, either can start sharing)
+  - `just all` passes
+
 ---
 
 ## Phase 5: Multi-Party & Polish
