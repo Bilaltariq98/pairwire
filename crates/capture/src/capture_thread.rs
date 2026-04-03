@@ -15,10 +15,10 @@ use std::{
     thread,
 };
 
-use pairwire_core::{Error, Result, config::CaptureConfig};
+use pairwire_core::{Error, Result, config::CaptureConfig, diagnostics::DropCounter};
 #[cfg(feature = "capture")]
-use tracing::warn;
-use tracing::{debug, info};
+use tracing::{debug, warn};
+use tracing::info;
 
 use crate::frame::RawFrame;
 
@@ -86,13 +86,18 @@ impl CaptureThread {
                 capturer.start_capture();
                 info!("capture thread started");
 
+                let drops = DropCounter::new("capture_frame_drops");
+
                 while !stop_flag_thread.load(Ordering::Relaxed) {
                     match capturer.get_next_frame() {
                         Ok(Frame::Video(vf)) => {
                             if let Some(raw) = video_frame_to_raw(vf) {
                                 // try_send: drop frame if encode thread is behind
                                 if tx.try_send(raw).is_err() {
-                                    debug!("capture channel full, dropping frame");
+                                    let n = drops.increment();
+                                    if n.is_power_of_two() || n % 100 == 0 {
+                                        info!(total_drops = n, "capture channel full, dropping frame");
+                                    }
                                 }
                             }
                         }
@@ -104,6 +109,10 @@ impl CaptureThread {
                     }
                 }
 
+                let total = drops.get();
+                if total > 0 {
+                    info!(total_drops = total, "capture thread total dropped frames");
+                }
                 capturer.stop_capture();
                 info!("capture thread stopped");
             })
@@ -139,6 +148,7 @@ impl CaptureThread {
             .name("pairwire-fake-capture".into())
             .spawn(move || {
                 let mut source = FakeFrameSource::new(config.width, config.height);
+                let drops = DropCounter::new("fake_capture_frame_drops");
                 info!(
                     width = config.width,
                     height = config.height,
@@ -155,11 +165,18 @@ impl CaptureThread {
                         timestamp_us,
                     };
                     if tx.try_send(frame).is_err() {
-                        debug!("fake capture channel full, dropping frame");
+                        let n = drops.increment();
+                        if n.is_power_of_two() || n % 100 == 0 {
+                            info!(total_drops = n, "fake capture channel full, dropping frame");
+                        }
                     }
                     thread::sleep(frame_interval);
                 }
 
+                let total = drops.get();
+                if total > 0 {
+                    info!(total_drops = total, "fake capture total dropped frames");
+                }
                 info!("fake capture thread stopped");
             })
             .map_err(|e| Error::Capture(format!("failed to spawn fake capture thread: {e}")))?;

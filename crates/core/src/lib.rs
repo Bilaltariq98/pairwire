@@ -4,6 +4,7 @@
 //! no platform-specific code, no heavy dependencies.
 
 pub mod config;
+pub mod diagnostics;
 pub mod error;
 pub mod types;
 
