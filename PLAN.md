@@ -604,7 +604,7 @@
   - `just all` passes
 
 ### P3.5.2: Control Takeover
-- **Status**: `[ ]`
+- **Status**: `[~]`
 - **Depends on**: P3.5.1, P2.3
 - **Description**: Guest can take keyboard/mouse control by clicking in the viewer. Host reclaims by moving their real mouse. Like Tuple's "click to drive" model.
 - **Code locations**:

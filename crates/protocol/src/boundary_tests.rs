@@ -429,6 +429,94 @@ mod tests {
         assert!(from_bytes::<VideoCodec>(&[0xFF]).is_err());
     }
 
+    // === Drawing boundary ===
+
+    #[test]
+    fn draw_point_max_values_round_trip() {
+        let pt = crate::drawing::DrawPoint {
+            peer_id: u8::MAX,
+            x: u16::MAX,
+            y: u16::MAX,
+        };
+        let bytes = to_allocvec(&pt).unwrap();
+        let decoded: crate::drawing::DrawPoint = from_bytes(&bytes).unwrap();
+        assert_eq!(pt, decoded);
+    }
+
+    #[test]
+    fn draw_point_empty_input_fails() {
+        assert!(from_bytes::<crate::drawing::DrawPoint>(&[]).is_err());
+    }
+
+    #[test]
+    fn draw_stroke_large_points_round_trip() {
+        let stroke = crate::drawing::DrawStroke {
+            peer_id: 0,
+            color: [255, 255, 255],
+            points: (0..1000).map(|i| (i, i * 2)).collect(),
+            mode: crate::drawing::DrawMode::Persistent,
+        };
+        let bytes = to_allocvec(&stroke).unwrap();
+        let decoded: crate::drawing::DrawStroke = from_bytes(&bytes).unwrap();
+        assert_eq!(stroke, decoded);
+    }
+
+    // === Reaction boundary ===
+
+    #[test]
+    fn reaction_max_values_round_trip() {
+        let r = crate::reaction::Reaction {
+            peer_id: u8::MAX,
+            emoji_id: u8::MAX,
+            x: u16::MAX,
+            y: u16::MAX,
+        };
+        let bytes = to_allocvec(&r).unwrap();
+        let decoded: crate::reaction::Reaction = from_bytes(&bytes).unwrap();
+        assert_eq!(r, decoded);
+    }
+
+    #[test]
+    fn reaction_empty_input_fails() {
+        assert!(from_bytes::<crate::reaction::Reaction>(&[]).is_err());
+    }
+
+    // === ControlRequest/Grant/Revoke boundary ===
+
+    #[test]
+    fn control_request_round_trip() {
+        let msg = ControlMessage::ControlRequest(crate::control::ControlRequest {
+            peer_id: u16::MAX,
+        });
+        let bytes = to_allocvec(&msg).unwrap();
+        let decoded: ControlMessage = from_bytes(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn control_grant_round_trip() {
+        let msg = ControlMessage::ControlGrant(crate::control::ControlGrant { peer_id: 42 });
+        let bytes = to_allocvec(&msg).unwrap();
+        let decoded: ControlMessage = from_bytes(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn control_revoke_round_trip() {
+        let msg = ControlMessage::ControlRevoke(crate::control::ControlRevoke { peer_id: 1 });
+        let bytes = to_allocvec(&msg).unwrap();
+        let decoded: ControlMessage = from_bytes(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn draw_clear_via_control_message_round_trip() {
+        let msg = ControlMessage::DrawClear(crate::drawing::DrawClear { peer_id: Some(0) });
+        let bytes = to_allocvec(&msg).unwrap();
+        let decoded: ControlMessage = from_bytes(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
     // === Garbage data ===
 
     #[test]
@@ -441,5 +529,7 @@ mod tests {
         let _ = from_bytes::<KeyEvent>(&garbage);
         let _ = from_bytes::<ControlMessage>(&garbage);
         let _ = from_bytes::<InputMessage>(&garbage);
+        let _ = from_bytes::<crate::drawing::DrawPoint>(&garbage);
+        let _ = from_bytes::<crate::reaction::Reaction>(&garbage);
     }
 }
