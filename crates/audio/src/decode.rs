@@ -111,6 +111,20 @@ fn decode_loop(
             break;
         };
 
+        // Silence markers: output zero samples to keep timestamp in sync.
+        if pkt.is_silence() {
+            let frame = AudioFrame {
+                samples: vec![0.0f32; frame_samples],
+                sample_rate: OPUS_SAMPLE_RATE,
+                channels: config.channels,
+                timestamp_us: pkt.timestamp_us,
+            };
+            if frame_tx.send(frame).is_err() {
+                break;
+            }
+            continue;
+        }
+
         let mut pcm = vec![0.0f32; frame_samples];
         let n = decoder
             .decode_float(&pkt.data, &mut pcm, false)

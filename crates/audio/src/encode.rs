@@ -135,11 +135,15 @@ fn encode_loop(
         while sample_buf.len() >= frame_len {
             let chunk: Vec<f32> = sample_buf.drain(..frame_len).collect();
 
-            // Voice activity detection — skip silence.
+            // Voice activity detection — send silence marker instead of encoding.
             let rms = rms(&chunk);
             if rms < SILENCE_THRESHOLD {
-                debug!(rms, "silence, skipping frame");
+                debug!(rms, "silence, sending marker");
+                let marker = OpusPacket::silence(timestamp_us, 20);
                 timestamp_us += frame_us;
+                if pkt_tx.blocking_send(marker).is_err() {
+                    return Ok(());
+                }
                 continue;
             }
 
