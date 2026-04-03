@@ -21,6 +21,7 @@ use pairwire_core::{
     config::{AudioConfig, CaptureConfig, VideoEncoder},
 };
 use pairwire_protocol::{Capability, CursorUpdate};
+use pairwire_input::{InputReceiver, InputSender};
 use pairwire_transport::{
     AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
     NegotiatedSession, TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake,
@@ -95,6 +96,28 @@ pub async fn run_host(
         video_codec = ?session.video_codec,
         "handshake complete"
     );
+
+    // Accept the input bidi stream opened by the guest (before moq-lite starts).
+    let input_recv_handle = if session.has_capability(&Capability::RemoteControl) {
+        match conn.accept_bi().await {
+            Ok(Some((_input_send, input_recv))) => {
+                let receiver = InputReceiver::new(input_recv);
+                let handle = receiver.spawn();
+                info!("input receiver started — permission: Denied (awaiting ControlGrant)");
+                Some(handle)
+            }
+            Ok(None) => {
+                warn!("connection closed before input stream");
+                None
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to accept input stream");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
     let (guest_audio_chan_tx, guest_audio_chan_rx) = tokio::sync::mpsc::channel(64);
@@ -243,6 +266,9 @@ pub async fn run_host(
     let _ = cursor_poll_task.await;
     router.stop().await;
     cursor_send_handle.stop().await;
+    if let Some(handle) = input_recv_handle {
+        handle.stop().await;
+    }
     if let Some(task) = guest_audio_forward_task {
         task.abort();
         let _ = task.await;
@@ -319,6 +345,29 @@ pub async fn run_join(
         }
     });
 
+    // Open input bidi stream (guest→host) before moq-lite starts.
+    let (input_tx, input_send_handle) =
+        if session.has_capability(&Capability::RemoteControl) {
+            match conn.open_control_stream().await {
+                Ok((input_send, _input_recv)) => {
+                    let (tx, rx) =
+                        tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
+                    let sender = InputSender::new(input_send);
+                    let handle = sender.spawn(rx);
+                    info!("input sender started");
+                    (Some(tx), Some(handle))
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to open input stream — remote control disabled");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+    // input_tx can be used by the viewer to send keyboard/mouse events
+    let _ = &input_tx;
+
     // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
     #[cfg(feature = "encode")]
@@ -388,6 +437,9 @@ pub async fn run_join(
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
     cursor_recv_handle.stop().await;
+    if let Some(handle) = input_send_handle {
+        handle.stop().await;
+    }
     if let Some(task) = guest_audio_send_task {
         task.abort();
         let _ = task.await;
