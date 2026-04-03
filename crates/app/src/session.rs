@@ -101,12 +101,20 @@ pub async fn run_host(
     );
 
     // Accept the input bidi stream opened by the guest (before moq-lite starts).
+    // Auto-grant FullControl when allow_remote_control is true (default: false).
     let input_recv_handle = if session.has_capability(&Capability::RemoteControl) {
         match conn.accept_bi().await {
             Ok(Some((_input_send, input_recv))) => {
                 let receiver = InputReceiver::new(input_recv);
                 let handle = receiver.spawn();
-                info!("input receiver started — permission: Denied (awaiting ControlGrant)");
+                if args.allow_remote_control {
+                    handle.set_permission(pairwire_input::InputPermission::FullControl);
+                    info!("input receiver started — permission: FullControl (auto-granted)");
+                } else {
+                    info!(
+                        "input receiver started — permission: Denied (use --allow-remote-control to enable)"
+                    );
+                }
                 Some(handle)
             }
             Ok(None) => {

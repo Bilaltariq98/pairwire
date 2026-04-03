@@ -20,6 +20,8 @@ pub struct HostArgs {
     pub fps: u32,
     pub width: u32,
     pub height: u32,
+    /// Whether to auto-grant remote control permission to the guest.
+    pub allow_remote_control: bool,
 }
 
 impl Default for HostArgs {
@@ -28,6 +30,7 @@ impl Default for HostArgs {
             fps: 30,
             width: 1920,
             height: 1080,
+            allow_remote_control: false,
         }
     }
 }
@@ -60,6 +63,9 @@ pub fn parse_args() -> anyhow::Result<Command> {
                     "--height" => {
                         i += 1;
                         a.height = parse_u32(&args, i, "--height")?;
+                    }
+                    "--allow-remote-control" => {
+                        a.allow_remote_control = true;
                     }
                     flag => anyhow::bail!("unknown flag: {flag}"),
                 }
@@ -120,6 +126,9 @@ mod tests {
                             i += 1;
                             a.height = parse_u32(&args, i, "--height")?;
                         }
+                        "--allow-remote-control" => {
+                            a.allow_remote_control = true;
+                        }
                         flag => anyhow::bail!("unknown flag: {flag}"),
                     }
                     i += 1;
@@ -158,6 +167,16 @@ mod tests {
         assert_eq!(a.fps, 60);
         assert_eq!(a.width, 2560);
         assert_eq!(a.height, 1440);
+        assert!(!a.allow_remote_control);
+    }
+
+    #[test]
+    fn parse_host_allow_remote_control() {
+        let cmd = parse(&["host", "--allow-remote-control"]).unwrap();
+        let Command::Host(a) = cmd else {
+            panic!("expected Host")
+        };
+        assert!(a.allow_remote_control);
     }
 
     #[test]
