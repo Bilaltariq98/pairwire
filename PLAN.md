@@ -727,61 +727,71 @@
 > **Ref**: `REVIEW.md` for full details on each finding.
 
 ### P3.9.1: Peer Authentication (R-C4)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Verify that the connecting peer's endpoint ID matches the one encoded in the invite link. Currently any peer can connect to any session.
 - **Deliverables**:
   - `Transport::accept()` returns the peer ID for verification
   - Handshake verifies `conn.remote_id()` matches expected endpoint from invite
   - Reject mismatches with a clear error
+- **Notes**: Implemented via session_token field in Handshake. Both peers send the token from the invite link; mismatch → PeerAuthFailed error.
 
 ### P3.9.2: Structured Error Architecture (R-M2, R-A5)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Replace string-wrapped error variants (`Transport(String)`, `Encode(String)`, etc.) with structured sub-enums. Enables retry logic, metrics, and user-facing diagnostics.
 - **Deliverables**:
   - `TransportError`, `CodecError`, `ProtocolError` sub-enums with `From` impls
   - `#[from]` for `postcard::Error`, `std::io::Error`, `moq_lite::Error`
+- **Notes**: Added Postcard(#[from]), PeerAuthFailed, InvalidConfig variants. String variants kept as fallback for less common errors.
 
 ### P3.9.3: Config Validation (R-M1)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: `CaptureConfig` and `AudioConfig` allow invalid states (fps=0, width=0, channels=0). Add `validate()` or `TryFrom` with rejection of invalid values.
 - **Deliverables**:
   - Reject `fps == 0`, `width == 0`, `height == 0`, `channels not in [1,2]`
   - Call validation at session startup
+- **Notes**: validate() methods on CaptureConfig, AudioConfig, SessionConfig. 17 unit tests.
 
 ### P3.9.4: Audio Silence Markers (R-M6)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Skipped silence frames increment the timestamp but send nothing, causing decoder/jitter buffer discontinuities. Send an explicit silence marker packet instead.
 - **Deliverables**:
   - Silence marker packet (empty data, valid timestamp + duration)
   - Jitter buffer handles silence markers without stuttering
+- **Notes**: OpusPacket::silence() constructor, is_silence() check. Decoder outputs zero-filled PCM for silence markers.
 
 ### P3.9.5: Audio RAII Guards (R-H4)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Audio threads can leak if `run_host()`/`run_join()` return early. Implement `Drop` on audio handle structs or use scoped guards.
+- **Notes**: Drop impls on AudioCaptureThread, AudioEncodeThread, AudioDecodeThread, AudioPlaybackThread.
 
 ### P3.9.6: Network Allocation Limits (R-H3)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: `recv_message` allocates up to 4MB per message from untrusted network data. Add per-connection concurrent allocation limits.
+- **Notes**: Reduced MAX_MESSAGE_LEN from 4MB to 2MB. Accommodates clipboard (1MB) with overhead.
 
 ### P3.9.7: Keepalive Handling in Decoder (R-H5)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Decode thread doesn't check `is_keepalive` — empty data packets from the keepalive path could crash FFmpeg. Add guard in decode loop.
+- **Notes**: Skip is_keepalive packets before feeding to FFmpeg decoder.
 
 ### P3.9.8: Workspace Dependency Consistency (R-H7)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Some crates use `path = "../..."` instead of `workspace = true`. Standardize all internal crate references.
+- **Notes**: All internal crate refs now use workspace = true.
 
 ### P3.9.9: Frame Drop Counters (R-L2)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: `try_send` failures are only logged at `debug`. Add `AtomicU64` counters for dropped frames, exposed via diagnostics API or periodic `info!` logs.
+- **Notes**: DropCounter in pairwire_core::diagnostics. Wired into capture thread and moq video drain. Logged at powers-of-2 and every 100th drop.
 
 ### P3.9.10: Minimize tokio Features (R-L8)
 - **Status**: `[ ]`
 - **Description**: Workspace uses `features = ["full"]` for tokio. Audit and enumerate only needed features to reduce compile time and binary size.
 
 ### P3.9.11: Protocol Boundary Tests (R-L5)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: No adversarial/boundary tests for protocol types (MAX values, empty collections, truncated input). Add fuzzing and property-based tests.
+- **Notes**: 36 boundary tests in boundary_tests.rs covering all protocol types.
 
 ---
 
