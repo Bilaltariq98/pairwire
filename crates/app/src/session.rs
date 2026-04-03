@@ -103,6 +103,8 @@ pub async fn run_host(
         DatagramChannels {
             cursor_tx: cursor_chan_tx,
             guest_audio_tx: Some(guest_audio_chan_tx),
+            draw_point_tx: None,
+            reaction_tx: None,
         },
     );
 
@@ -301,6 +303,8 @@ pub async fn run_join(
         DatagramChannels {
             cursor_tx: cursor_chan_tx,
             guest_audio_tx: None,
+            draw_point_tx: None,
+            reaction_tx: None,
         },
     );
 

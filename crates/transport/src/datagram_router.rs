@@ -9,11 +9,17 @@ use tracing::{debug, info};
 pub const TAG_CURSOR: u8 = 0x43;
 /// Tag byte for guest-to-host audio datagrams.
 pub const TAG_GUEST_AUDIO: u8 = 0x47;
+/// Tag byte for drawing point datagrams (real-time preview).
+pub const TAG_DRAW_POINT: u8 = 0x44;
+/// Tag byte for reaction datagrams.
+pub const TAG_REACTION: u8 = 0x52;
 
 /// Channels that receive routed datagram payloads.
 pub struct DatagramChannels {
     pub cursor_tx: mpsc::Sender<Bytes>,
     pub guest_audio_tx: Option<mpsc::Sender<Bytes>>,
+    pub draw_point_tx: Option<mpsc::Sender<Bytes>>,
+    pub reaction_tx: Option<mpsc::Sender<Bytes>>,
 }
 
 /// Handle to the running datagram router task.
@@ -56,6 +62,16 @@ pub fn start(conn: Connection, channels: DatagramChannels) -> DatagramRouterHand
                 }
                 TAG_GUEST_AUDIO => {
                     if let Some(tx) = channels.guest_audio_tx.as_ref() {
+                        let _ = tx.try_send(payload);
+                    }
+                }
+                TAG_DRAW_POINT => {
+                    if let Some(tx) = channels.draw_point_tx.as_ref() {
+                        let _ = tx.try_send(payload);
+                    }
+                }
+                TAG_REACTION => {
+                    if let Some(tx) = channels.reaction_tx.as_ref() {
                         let _ = tx.try_send(payload);
                     }
                 }

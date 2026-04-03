@@ -12,7 +12,10 @@ pub mod wt_session;
 
 pub use connection::PairwireConnection;
 pub use cursor::{CursorReceiver, CursorReceiverHandle, CursorSender, CursorSenderHandle};
-pub use datagram_router::{DatagramChannels, DatagramRouterHandle, TAG_CURSOR, TAG_GUEST_AUDIO};
+pub use datagram_router::{
+    DatagramChannels, DatagramRouterHandle, TAG_CURSOR, TAG_DRAW_POINT, TAG_GUEST_AUDIO,
+    TAG_REACTION,
+};
 pub use handshake::{NegotiatedSession, guest_handshake, host_handshake, local_handshake};
 pub use invite::InviteLink;
 pub use moq_session::{
