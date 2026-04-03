@@ -468,7 +468,7 @@
   - `just all` passes
 
 ### P3.2.1: Bidirectional Audio (Guest Mic → Host)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P3.1, P3.2
 - **Description**: P3.1 and P3.2 implement one-directional audio (host mic → guest speakers). For real pair programming both peers need to speak and hear each other. The guest/joiner must also capture their microphone and publish it as a moq-lite audio track; the host receives and plays it.
 - **Deliverables**:
@@ -476,7 +476,7 @@
   - Wire host-side audio decode + playback of the guest's track in `run_host()`
   - Both peers publish and subscribe to each other's audio track (two separate moq-lite tracks: one per direction)
   - Ensure volume/mute controls apply to the correct track on each side
-- **Notes**: Current state — host mic → guest speakers works (verified in first real-device test, 2026-04-01). Guest mic → host is entirely absent from the session wiring.
+- **Notes**: Implemented via tagged datagrams (TAG_GUEST_AUDIO). Guest captures mic → Opus encode → datagram send → host datagram router → decode → playback. Uses datagrams to avoid moq-lite bidirectional contention.
 - **Acceptance criteria**:
   - Guest speaks, host hears them
   - Both directions work simultaneously without echo (echo cancellation is stretch — AEC is a separate concern)
@@ -703,7 +703,7 @@
   - `just all` passes
 
 ### P3.5.6: Wire Quality Adaptation
-- **Status**: `[ ]`
+- **Status**: `[~]` (monitor spawned; encoder reconfig via watch channel is deferred)
 - **Depends on**: P2.5
 - **Description**: Wire `QualityMonitor` into host session and connect to encode thread.
 - **Code locations**:

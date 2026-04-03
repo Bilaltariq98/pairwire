@@ -308,4 +308,76 @@ mod tests {
         let remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
         assert!(negotiate(local, remote).is_ok());
     }
+
+    #[test]
+    fn negotiate_no_common_caps() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let remote = make_hs(vec![Capability::Audio], vec![VideoCodec::H264]);
+        let session = negotiate(local, remote).unwrap();
+        assert!(session.capabilities.is_empty());
+    }
+
+    #[test]
+    fn negotiate_empty_caps_succeeds() {
+        let local = make_hs(vec![], vec![VideoCodec::H264]);
+        let remote = make_hs(vec![], vec![VideoCodec::H264]);
+        let session = negotiate(local, remote).unwrap();
+        assert!(session.capabilities.is_empty());
+        assert_eq!(session.video_codec, Some(VideoCodec::H264));
+    }
+
+    #[test]
+    fn negotiate_rejects_oversized_caps() {
+        let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        remote.capabilities = vec![Capability::Screen; 17]; // > 16
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_err());
+    }
+
+    #[test]
+    fn negotiate_rejects_oversized_video_codecs() {
+        let mut remote = make_hs(vec![], vec![VideoCodec::H264]);
+        remote.video_codecs = vec![VideoCodec::H264; 9]; // > 8
+        let local = make_hs(vec![], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_err());
+    }
+
+    #[test]
+    fn negotiate_rejects_inconsistent_display_dims() {
+        let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        remote.display_width = 1920;
+        remote.display_height = 0; // inconsistent: one is 0, other isn't
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_err());
+    }
+
+    #[test]
+    fn negotiate_allows_zero_display_dims() {
+        // Guest sends 0,0 — valid (guest doesn't share a display)
+        let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        remote.display_width = 0;
+        remote.display_height = 0;
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_ok());
+    }
+
+    #[test]
+    fn negotiate_preserves_remote_handshake() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let remote = make_hs(
+            vec![Capability::Screen, Capability::Audio],
+            vec![VideoCodec::H264],
+        );
+        let session = negotiate(local, remote).unwrap();
+        assert_eq!(session.remote.capabilities.len(), 2);
+    }
+
+    #[test]
+    fn has_capability_returns_false_for_missing() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let session = negotiate(local, remote).unwrap();
+        assert!(session.has_capability(&Capability::Screen));
+        assert!(!session.has_capability(&Capability::Audio));
+    }
 }

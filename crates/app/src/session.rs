@@ -232,10 +232,8 @@ pub async fn run_host(
     };
 
     // Quality monitor — polls connection health and emits adapted configs.
-    let quality_monitor = QualityMonitor::new(
-        Arc::new(conn.raw_conn().clone()),
-        capture_config.clone(),
-    );
+    let quality_monitor =
+        QualityMonitor::new(Arc::new(conn.raw_conn().clone()), capture_config.clone());
     let (quality_handle, _quality_rx) = quality_monitor.spawn();
     #[cfg(feature = "encode")]
     let quality_rx = _quality_rx;
