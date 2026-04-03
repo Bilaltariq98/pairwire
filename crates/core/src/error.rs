@@ -30,6 +30,9 @@ pub enum Error {
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    #[error("serialization error: {0}")]
+    Postcard(#[from] postcard::Error),
+
     #[error("connection closed")]
     ConnectionClosed,
 
@@ -38,6 +41,12 @@ pub enum Error {
 
     #[error("version mismatch: local={local}, remote={remote}")]
     VersionMismatch { local: u16, remote: u16 },
+
+    #[error("peer authentication failed: expected {expected}, got {actual}")]
+    PeerAuthFailed { expected: String, actual: String },
+
+    #[error("config validation: {0}")]
+    InvalidConfig(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

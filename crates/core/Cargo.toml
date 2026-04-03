@@ -9,6 +9,7 @@ thiserror.workspace = true
 serde.workspace = true
 bytes.workspace = true
 tracing.workspace = true
+postcard.workspace = true
 hex = "0.4"
 
 [features]

@@ -50,7 +50,7 @@ impl CursorSender {
                     break;
                 };
                 let result = to_allocvec(&update)
-                    .map_err(|e| Error::Serialization(format!("cursor serialize: {e}")))
+                    .map_err(Error::from)
                     .and_then(|payload| {
                         datagram_router::send_tagged(conn.raw_conn(), TAG_CURSOR, &payload)
                             .map_err(Error::Transport)

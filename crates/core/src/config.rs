@@ -56,30 +56,30 @@ impl CaptureConfig {
     /// Returns an error describing the first invalid field found.
     pub fn validate(&self) -> crate::Result<()> {
         if self.fps == 0 {
-            return Err(crate::Error::Protocol("CaptureConfig: fps must be > 0".into()));
+            return Err(crate::Error::InvalidConfig("CaptureConfig: fps must be > 0".into()));
         }
         if self.fps > 240 {
-            return Err(crate::Error::Protocol(
+            return Err(crate::Error::InvalidConfig(
                 "CaptureConfig: fps must be <= 240".into(),
             ));
         }
         if self.width == 0 {
-            return Err(crate::Error::Protocol(
+            return Err(crate::Error::InvalidConfig(
                 "CaptureConfig: width must be > 0".into(),
             ));
         }
         if self.height == 0 {
-            return Err(crate::Error::Protocol(
+            return Err(crate::Error::InvalidConfig(
                 "CaptureConfig: height must be > 0".into(),
             ));
         }
-        if self.width % 2 != 0 {
-            return Err(crate::Error::Protocol(
+        if !self.width.is_multiple_of(2) {
+            return Err(crate::Error::InvalidConfig(
                 "CaptureConfig: width must be divisible by 2 for H.264".into(),
             ));
         }
-        if self.height % 2 != 0 {
-            return Err(crate::Error::Protocol(
+        if !self.height.is_multiple_of(2) {
+            return Err(crate::Error::InvalidConfig(
                 "CaptureConfig: height must be divisible by 2 for H.264".into(),
             ));
         }
@@ -129,23 +129,23 @@ impl AudioConfig {
     /// Returns an error describing the first invalid field found.
     pub fn validate(&self) -> crate::Result<()> {
         if self.sample_rate == 0 {
-            return Err(crate::Error::Protocol(
+            return Err(crate::Error::InvalidConfig(
                 "AudioConfig: sample_rate must be > 0".into(),
             ));
         }
         if self.channels == 0 || self.channels > 2 {
-            return Err(crate::Error::Protocol(
+            return Err(crate::Error::InvalidConfig(
                 "AudioConfig: channels must be 1 (mono) or 2 (stereo)".into(),
             ));
         }
         if !Self::VALID_FRAME_DURATIONS.contains(&self.frame_duration_ms) {
-            return Err(crate::Error::Protocol(format!(
+            return Err(crate::Error::InvalidConfig(format!(
                 "AudioConfig: frame_duration_ms must be one of {:?}",
                 Self::VALID_FRAME_DURATIONS
             )));
         }
         if self.bitrate == 0 {
-            return Err(crate::Error::Protocol(
+            return Err(crate::Error::InvalidConfig(
                 "AudioConfig: bitrate must be > 0".into(),
             ));
         }

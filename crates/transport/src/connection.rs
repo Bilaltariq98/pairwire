@@ -161,8 +161,7 @@ impl PairwireConnection {
 /// or the stream write fails.
 #[instrument(skip(stream, msg))]
 pub async fn send_message<T: Serialize>(stream: &mut SendStream, msg: &T) -> Result<()> {
-    let payload =
-        to_allocvec(msg).map_err(|e| Error::Serialization(format!("serialize failed: {e}")))?;
+    let payload = to_allocvec(msg)?;
 
     if payload.len() > MAX_MESSAGE_LEN as usize {
         return Err(Error::Protocol(format!(
@@ -215,7 +214,7 @@ pub async fn recv_message<T: DeserializeOwned>(stream: &mut RecvStream) -> Resul
         .await
         .map_err(|e| Error::Transport(format!("read payload failed: {e}")))?;
 
-    from_bytes(&payload).map_err(|e| Error::Serialization(format!("deserialize failed: {e}")))
+    Ok(from_bytes(&payload)?)
 }
 
 #[cfg(test)]
