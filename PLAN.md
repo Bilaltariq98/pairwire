@@ -604,7 +604,7 @@
   - `just all` passes
 
 ### P3.5.2: Control Takeover
-- **Status**: `[~]` (session wiring done; viewer capture + coordinate mapping remaining)
+- **Status**: `[~]` (session wiring + viewer input capture done; exact coordinate mapping TODO)
 - **Depends on**: P3.5.1, P2.3
 - **Description**: Guest can take keyboard/mouse control by clicking in the viewer. Host reclaims by moving their real mouse. Like Tuple's "click to drive" model.
 - **Code locations**:
@@ -703,7 +703,8 @@
   - `just all` passes
 
 ### P3.5.6: Wire Quality Adaptation
-- **Status**: `[~]` (monitor spawned; encoder reconfig via watch channel is deferred)
+- **Status**: `[x]`
+- **Notes**: QualityMonitor spawned and connected to encoder via watch channel. Encoder adapts fps by frame-skipping (e.g., 30→15 = skip every other frame). Resolution changes logged but not yet applied (would require encoder reinitialization).
 - **Depends on**: P2.5
 - **Description**: Wire `QualityMonitor` into host session and connect to encode thread.
 - **Code locations**:
