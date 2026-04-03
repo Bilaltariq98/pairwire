@@ -959,6 +959,7 @@
   - `just all` passes
 
 ### P4.8: Audio Controls — Mute/Unmute & Per-Capability Opt-In
+> **Priority**: Do this right after Phase 3.5 completion. Essential for real-world use — without mute, audio feedback makes 2-machine testing painful.
 - **Status**: `[ ]`
 - **Depends on**: P3.2.1
 - **Description**: Add runtime audio controls missing from the current implementation. Guest audio sending is on by default with no way to mute.
@@ -990,6 +991,72 @@
   - Either peer can toggle screen sharing mid-session
   - "Call mode" works (audio-only, no screen, either can start sharing)
   - `just all` passes
+
+### P4.10: Quality Controls — Viewer Badge & Manual Override
+- **Status**: `[ ]`
+- **Depends on**: P3.5.6
+- **Description**: Surface the quality adaptation state to the user and allow manual override.
+- **Deliverables**:
+  - **Viewer badge**: green/yellow/red dot in viewer status bar showing current quality tier (Full/Reduced/Degraded)
+  - **Manual override**: CLI flag `--max-fps N` / `--max-resolution WxH` to cap quality ceiling
+  - **Tray integration**: "Connection Quality: Good/Fair/Poor" in tray menu
+- **Acceptance criteria**:
+  - Viewer badge updates within 2 seconds of tier change
+  - Manual override caps are respected by QualityMonitor
+  - `just all` passes
+
+---
+
+## Phase 4.5: Packaging & Distribution
+
+> **Goal**: Make pairwire installable by non-developers. Proper app bundles solve the macOS permissions problem (Screen Recording, Accessibility, Microphone must be granted to a specific app, not Terminal.app). Also enables distribution to designers, PMs, and other collaborators.
+>
+> **Priority**: Do this after Phase 3.5 + P4.8 (audio controls) are feature-complete. A polished .app with a working pair programming experience is more valuable than terminal sharing with a rough CLI.
+
+### P4.5.1: macOS .app Bundle
+- **Status**: `[ ]`
+- **Description**: Create a proper macOS application bundle that can be drag-installed to /Applications.
+- **Deliverables**:
+  - `Info.plist` with correct bundle ID, permissions declarations (`NSScreenCaptureUsageDescription`, `NSMicrophoneUsageDescription`, `NSAccessibilityUsageDescription`)
+  - App icon (`.icns`)
+  - Universal binary (arm64 + x86_64) via `cargo build --target aarch64-apple-darwin --target x86_64-apple-darwin` + `lipo`
+  - DMG or ZIP distribution for drag-to-install
+  - Code signing with developer certificate (or ad-hoc for testing)
+  - Menu bar icon works from the .app context (not Terminal)
+- **Notes**: The .app bundle solves the permissions UX — users grant permissions once to "pairwire.app" instead of re-granting every time they switch terminals. Also enables Gatekeeper-signed distribution.
+- **Acceptance criteria**:
+  - Double-click .app → host mode starts with tray icon
+  - macOS permission dialogs appear on first launch
+  - `pairwire join` works from CLI alongside the .app
+
+### P4.5.2: Windows Installer
+- **Status**: `[ ]`
+- **Description**: Windows `.exe` with bundled FFmpeg DLLs or MSI installer.
+- **Deliverables**:
+  - Portable `.exe` with FFmpeg DLLs alongside (simplest)
+  - OR: MSI/NSIS installer that adds to PATH
+  - System tray integration on Windows
+- **Notes**: FFmpeg on Windows is the main complexity — vcpkg build or pre-built DLLs.
+
+### P4.5.3: Linux Package
+- **Status**: `[ ]`
+- **Description**: AppImage or `.deb` for easy installation on Linux.
+- **Deliverables**:
+  - AppImage (portable, no install needed)
+  - OR: `.deb` package for Debian/Ubuntu
+  - Desktop file + icon for application launcher integration
+- **Notes**: PipeWire screen capture on Wayland requires specific portal permissions.
+
+### P4.5.4: Opinionated GUI Mode
+- **Status**: `[ ]`
+- **Description**: Default launch (double-click / no args) opens a "start session" GUI instead of requiring CLI arguments. The CLI remains fully functional for power users.
+- **Design**:
+  - No args → opens a small window: "Host a Session" / "Join a Session" buttons
+  - Host: one click → starts sharing, shows invite link with "Copy" button
+  - Join: paste invite link, click "Connect"
+  - Settings accessible from the window (fps, resolution, audio, permissions)
+  - CLI `pairwire host` / `pairwire join <url>` still works exactly as before
+- **Notes**: Could use egui for consistency, or native platform dialogs for a more polished feel. tao+wry (webview) is another option — see project memory on UI strategy.
 
 ---
 
