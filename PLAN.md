@@ -785,8 +785,9 @@
 - **Notes**: DropCounter in pairwire_core::diagnostics. Wired into capture thread and moq video drain. Logged at powers-of-2 and every 100th drop.
 
 ### P3.9.10: Minimize tokio Features (R-L8)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Workspace uses `features = ["full"]` for tokio. Audit and enumerate only needed features to reduce compile time and binary size.
+- **Notes**: Replaced with rt, rt-multi-thread, sync, time, macros. Dropped net, io-util, signal, fs.
 
 ### P3.9.11: Protocol Boundary Tests (R-L5)
 - **Status**: `[x]`
