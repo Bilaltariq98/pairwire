@@ -174,3 +174,29 @@ Each entry should include:
 - **What**: The `tray-icon` crate creates an `NSStatusItem` with an `NSMenu`. The icon renders correctly when using `NSApplication::setActivationPolicy(Accessory)`, but clicking it does nothing. `CFRunLoopRunInMode()` processes Core Foundation timer/source events but does NOT dispatch AppKit events — NSMenu popups require `[NSApp sendEvent:]`.
 - **Resolution**: Replace `CFRunLoopRunInMode` with the standard Cocoa event pump: `NSApplication::nextEventMatchingMask_untilDate_inMode_dequeue()` + `NSApplication::sendEvent()` in a loop. This processes all AppKit events (menu clicks, mouse events, popups) correctly. Drop the `core-foundation` dependency; use `objc2-app-kit` (NSApplication, NSEvent) and `objc2-foundation` (NSDate, NSString) instead.
 - **Key insight**: For CLI binaries that need a macOS tray icon without a full windowed app, the three requirements are: (1) `setActivationPolicy(Accessory)` before creating the icon, (2) create the icon on the main thread, (3) pump NSApplication events (not just CFRunLoop) on the main thread.
+
+### 2026-04-03 — moq-lite NEVER reads datagrams — verified in source
+- **Area**: moq-lite, QUIC, transport architecture
+- **What**: Investigated moq-lite 0.15.5 source to understand which QUIC primitives it uses. The `web_transport_trait::Session` has `recv_datagram()` but moq-lite never calls it. All media (Frames, Groups, Tracks) flows through unidirectional streams only. The datagram methods are pure pass-through for interface completeness.
+- **Resolution**: QUIC datagrams are a completely safe side-channel that moq-lite will never interfere with. However, if multiple tasks call `conn.read_datagram()` they steal datagrams from each other non-deterministically. A single DatagramRouter that reads ALL datagrams and dispatches by tag byte is the correct pattern.
+- **Key insight**: The transport architecture should be: (1) moq-lite owns all streams, (2) ONE datagram router owns all datagrams, (3) nothing else touches the raw connection primitives.
+
+### 2026-04-03 — Bidirectional moq-lite (with_origin / with_publish+with_consume) is fragile
+- **Area**: moq-lite, transport
+- **What**: Attempted multiple approaches to get guest→host audio over moq-lite alongside host→guest screen+audio. `Server::with_origin()` caused the host to see its own broadcast announcement and try to subscribe to itself. `Server::with_publish().with_consume()` + `Client::with_publish().with_consume()` caused the guest to get stuck — the moq-lite session internally opens control streams for both Publisher and Subscriber roles, and the two sides' Publishers/Subscribers fight over stream accept calls.
+- **Resolution**: Keep moq-lite **strictly unidirectional** (Server publishes, Client consumes). Use tagged QUIC datagrams for the reverse direction (guest→host audio). This avoids all stream contention. See `tasks/datagram-router.md` for the implementation plan.
+- **Key insight**: moq-lite is designed for a relay topology (publisher→relay→subscriber). P2P bidirectional use is not its sweet spot. For 1:1 P2P, use moq-lite for the primary media direction and datagrams for low-bandwidth reverse channels.
+
+### 2026-04-03 — OriginConsumer timing is critical and subtle
+- **Area**: moq-lite, transport
+- **What**: The guest gets stuck on "Connecting..." if the `OriginConsumer` is created at the wrong time relative to `Client::connect()`. The working pattern (proven multiple times): create origin, clone it into `with_consume(origin.clone())`, call `connect()`, THEN call `origin.consume()` to get the consumer. Creating the consumer BEFORE connect means it's registered on shared nodes before the Subscriber task starts inserting remote broadcasts. Creating it at the wrong time causes it to miss the host's announcement.
+- **Resolution**: The exact working sequence is:
+  ```rust
+  let origin = OriginProducer::new();
+  let _session = Client::new()
+      .with_consume(origin.clone())  // clone, don't move
+      .connect(wt).await?;
+  let mut origin_rx = origin.consume();  // AFTER connect
+  ```
+  On the host side, publish-before-accept works because `origin.consume()` (inside `with_publish()`) replays existing broadcasts via `consume_initial()`.
+- **Key insight**: Do not refactor this sequence. It's fragile. Any change to the order of origin.clone() / connect() / origin.consume() breaks it silently (no error, just hangs forever).
