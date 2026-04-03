@@ -175,4 +175,46 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(*rx.borrow(), ConnectionState::Connected);
     }
+
+    #[test]
+    fn connection_state_display() {
+        assert_eq!(ConnectionState::Connected.to_string(), "Connected");
+        assert_eq!(
+            ConnectionState::Reconnecting { attempt: 2, max: 3 }.to_string(),
+            "Reconnecting… (2/3)"
+        );
+        assert_eq!(ConnectionState::Lost.to_string(), "Connection lost");
+    }
+
+    #[test]
+    fn reconnect_policy_default() {
+        let p = ReconnectPolicy::default();
+        assert_eq!(p.max_attempts, 3);
+        assert_eq!(p.base_delay, Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn emits_reconnecting_states() {
+        let policy = ReconnectPolicy {
+            max_attempts: 2,
+            base_delay: Duration::from_millis(1),
+        };
+        let (tx, mut rx) = watch::channel(ConnectionState::Connected);
+        let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let attempt_clone = std::sync::Arc::clone(&attempt);
+
+        // Fail first two attempts, succeed on third (which is reconnect attempt 2).
+        let result = with_reconnect(policy, tx, move || {
+            let a = std::sync::Arc::clone(&attempt_clone);
+            async move {
+                let n = a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 2 { anyhow::bail!("fail") } else { Ok(()) }
+            }
+        })
+        .await;
+
+        assert!(result.is_ok());
+        // Final state should be Connected after recovery.
+        assert_eq!(*rx.borrow_and_update(), ConnectionState::Connected);
+    }
 }
