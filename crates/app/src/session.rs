@@ -22,15 +22,22 @@ use pairwire_core::{
 };
 use pairwire_protocol::{Capability, CursorUpdate};
 use pairwire_transport::{
-    AudioStreamConfig, CursorSender, MoqSessionSubscriber, NegotiatedSession, Transport,
-    guest_handshake, host_handshake, local_handshake,
+    AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
+    NegotiatedSession, TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake,
+    host_handshake, local_handshake,
 };
 #[cfg(feature = "encode")]
-use pairwire_transport::{CursorReceiver, MoqSessionPublisher, VideoStreamConfig};
+use pairwire_transport::{MoqSessionPublisher, VideoStreamConfig};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::cli::{HostArgs, JoinArgs};
+
+type GuestAudioSenderParts = (
+    Option<AudioCaptureThread>,
+    Option<AudioEncodeThread>,
+    Option<tokio::task::JoinHandle<()>>,
+);
 
 /// Run as host: capture screen, accept one connection, handshake, stream frames.
 ///
@@ -88,11 +95,94 @@ pub async fn run_host(
         "handshake complete"
     );
 
+    let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
+    let (guest_audio_chan_tx, guest_audio_chan_rx) = tokio::sync::mpsc::channel(64);
+    let router = datagram_router::start(
+        conn.raw_conn().clone(),
+        DatagramChannels {
+            cursor_tx: cursor_chan_tx,
+            guest_audio_tx: Some(guest_audio_chan_tx),
+        },
+    );
+
+    let cursor_send = CursorSender::new(Arc::clone(&conn));
+    let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(1);
+    let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
+    let cursor_poll_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(16));
+        let mut last_sent = None;
+
+        loop {
+            interval.tick().await;
+            match pairwire_input::current_cursor_position() {
+                Ok((x, y)) => {
+                    let update = CursorUpdate {
+                        peer_id: 0,
+                        x,
+                        y,
+                        visible: true,
+                        click_animation: 0,
+                    };
+
+                    if last_sent.as_ref() == Some(&update) {
+                        continue;
+                    }
+
+                    last_sent = Some(update.clone());
+                    if cursor_update_tx.send(update).await.is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "host cursor polling stopped");
+                    break;
+                }
+            }
+        }
+    });
+
+    let (_host_cursor_handle, _host_cursor_watch) = CursorReceiver::spawn(cursor_chan_rx);
+
     // Audio capture + encode pipeline (feeds into unified moq session).
     let (audio_capture_handle, audio_encode_handle, _audio_pkt_rx, _audio_stream_config) =
         start_host_audio(&session)?;
     #[cfg(feature = "encode")]
     let (audio_pkt_rx, audio_stream_config) = (_audio_pkt_rx, _audio_stream_config);
+
+    let mut guest_audio_decode_handle = None;
+    let mut guest_audio_playback_handle = None;
+    let guest_audio_forward_task = if session.has_capability(&Capability::Audio) {
+        let audio_config = AudioConfig::default();
+        let (guest_audio_decode_tx, guest_audio_decode_rx) = tokio::sync::mpsc::channel(64);
+        let (guest_audio_decode, guest_audio_frame_rx) =
+            AudioDecodeThread::start(audio_config.clone(), guest_audio_decode_rx)
+                .context("failed to start guest audio decoder")?;
+        let guest_audio_playback = AudioPlaybackThread::start(audio_config, guest_audio_frame_rx)
+            .context("failed to start guest audio playback")?;
+        guest_audio_decode_handle = Some(guest_audio_decode);
+        guest_audio_playback_handle = Some(guest_audio_playback);
+        let task = tokio::spawn(async move {
+            let mut guest_audio_chan_rx = guest_audio_chan_rx;
+            while let Some(data) = guest_audio_chan_rx.recv().await {
+                let packet = pairwire_audio::OpusPacket {
+                    data,
+                    timestamp_us: 0,
+                    duration_ms: 20,
+                };
+                if guest_audio_decode_tx.send(packet).await.is_err() {
+                    break;
+                }
+            }
+        });
+        info!("guest audio pipeline started (host)");
+        Some(task)
+    } else {
+        warn!("no Audio capability — not receiving guest audio");
+        Some(tokio::spawn(async move {
+            let mut guest_audio_chan_rx = guest_audio_chan_rx;
+            while guest_audio_chan_rx.recv().await.is_some() {}
+        }))
+    };
 
     // Encode + unified moq publish (screen + audio in one session).
     #[cfg(feature = "encode")]
@@ -121,14 +211,10 @@ pub async fn run_host(
                 audio_pkt_rx,
             );
 
-            let cursor_recv = CursorReceiver::new(Arc::clone(&conn));
-            let (cursor_handle, _) = cursor_recv.spawn();
-
             conn.closed().await;
             info!("guest disconnected");
 
             pub_handle.stop().await;
-            cursor_handle.stop().await;
             encode_thread.stop();
         }
     }
@@ -140,6 +226,20 @@ pub async fn run_host(
         info!("guest disconnected");
     }
 
+    cursor_poll_task.abort();
+    let _ = cursor_poll_task.await;
+    router.stop().await;
+    cursor_send_handle.stop().await;
+    if let Some(task) = guest_audio_forward_task {
+        task.abort();
+        let _ = task.await;
+    }
+    if let Some(decode) = guest_audio_decode_handle {
+        decode.stop();
+    }
+    if let Some(playback) = guest_audio_playback_handle {
+        playback.stop();
+    }
     if let Some(encode) = audio_encode_handle {
         encode.stop();
     }
@@ -184,6 +284,26 @@ pub async fn run_join(
         "handshake complete"
     );
 
+    let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
+    let router = datagram_router::start(
+        conn.raw_conn().clone(),
+        DatagramChannels {
+            cursor_tx: cursor_chan_tx,
+            guest_audio_tx: None,
+        },
+    );
+
+    let (cursor_recv_handle, mut cursor_watch_rx) = CursorReceiver::spawn(cursor_chan_rx);
+    let cursor_watch_tx = _cursor_tx.clone();
+    let cursor_forward_task = tokio::spawn(async move {
+        loop {
+            if cursor_watch_rx.changed().await.is_err() {
+                break;
+            }
+            let _ = cursor_watch_tx.send(cursor_watch_rx.borrow().clone());
+        }
+    });
+
     // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
     #[cfg(feature = "encode")]
@@ -214,11 +334,8 @@ pub async fn run_join(
     let subscriber = MoqSessionSubscriber::new(Arc::clone(&conn));
     let sub_handle = subscriber.spawn(pkt_tx, audio_pkt_tx);
 
-    // Cursor sender (datagrams, independent of moq).
-    let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(64);
-    let cursor_send = CursorSender::new(Arc::clone(&conn));
-    let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
-    let _cursor_update_tx = cursor_update_tx;
+    let (guest_audio_capture_handle, guest_audio_encode_handle, guest_audio_send_task) =
+        start_guest_audio_sender(&session, Arc::clone(&conn))?;
 
     #[cfg(feature = "encode")]
     {
@@ -252,7 +369,20 @@ pub async fn run_join(
     }
 
     sub_handle.stop().await;
-    cursor_send_handle.stop().await;
+    router.stop().await;
+    cursor_forward_task.abort();
+    let _ = cursor_forward_task.await;
+    cursor_recv_handle.stop().await;
+    if let Some(task) = guest_audio_send_task {
+        task.abort();
+        let _ = task.await;
+    }
+    if let Some(encode) = guest_audio_encode_handle {
+        encode.stop();
+    }
+    if let Some(capture) = guest_audio_capture_handle {
+        capture.stop();
+    }
     if let Some(decode) = audio_decode_handle {
         decode.stop();
     }
@@ -343,6 +473,34 @@ fn start_host_audio(
         Some(pkt_rx),
         Some(stream_config),
     ))
+}
+
+fn start_guest_audio_sender(
+    session: &NegotiatedSession,
+    conn: Arc<pairwire_transport::PairwireConnection>,
+) -> Result<GuestAudioSenderParts> {
+    if !session.has_capability(&Capability::Audio) {
+        return Ok((None, None, None));
+    }
+
+    let audio_config = AudioConfig::default();
+    let (audio_capture, audio_frame_rx) = start_audio_capture(audio_config.clone())?;
+    let (audio_encode, mut guest_opus_rx) = AudioEncodeThread::start(audio_config, audio_frame_rx)
+        .context("failed to start guest audio encoder")?;
+
+    let send_task = tokio::spawn(async move {
+        while let Some(pkt) = guest_opus_rx.recv().await {
+            if let Err(error) =
+                datagram_router::send_tagged(conn.raw_conn(), TAG_GUEST_AUDIO, &pkt.data)
+            {
+                warn!(%error, "guest audio datagram send failed");
+                break;
+            }
+        }
+    });
+
+    info!("guest audio sender started");
+    Ok((Some(audio_capture), Some(audio_encode), Some(send_task)))
 }
 
 /// Start screen capture — real (scap) when `capture` feature is enabled, fake otherwise.

@@ -181,6 +181,11 @@ Each entry should include:
 - **Resolution**: QUIC datagrams are a completely safe side-channel that moq-lite will never interfere with. However, if multiple tasks call `conn.read_datagram()` they steal datagrams from each other non-deterministically. A single DatagramRouter that reads ALL datagrams and dispatches by tag byte is the correct pattern.
 - **Key insight**: The transport architecture should be: (1) moq-lite owns all streams, (2) ONE datagram router owns all datagrams, (3) nothing else touches the raw connection primitives.
 
+### 2026-04-03 — core-graphics cursor polling needs `CGEventSource`, not `CGEventType`
+- **Area**: macOS, input, core-graphics
+- **What**: While adding host cursor polling, `CGEvent::new(CGEventType::Null)` did not compile on `core-graphics 0.25`. The constructor takes a `CGEventSource` and returns `Result<CGEvent, ()>`, not `Option<CGEvent>`.
+- **Resolution**: Create a `CGEventSource` with `CGEventSourceStateID::HIDSystemState`, then call `CGEvent::new(source)` and read `.location()` from the resulting event.
+
 ### 2026-04-03 — Bidirectional moq-lite (with_origin / with_publish+with_consume) is fragile
 - **Area**: moq-lite, transport
 - **What**: Attempted multiple approaches to get guest→host audio over moq-lite alongside host→guest screen+audio. `Server::with_origin()` caused the host to see its own broadcast announcement and try to subscribe to itself. `Server::with_publish().with_consume()` + `Client::with_publish().with_consume()` caused the guest to get stuck — the moq-lite session internally opens control streams for both Publisher and Subscriber roles, and the two sides' Publishers/Subscribers fight over stream accept calls.
