@@ -140,17 +140,17 @@ mod inner {
             }
 
             // Check for quality adaptation changes (non-blocking).
-            if let Some(ref mut rx) = quality_rx {
-                if rx.has_changed().unwrap_or(false) {
-                    let new_config = rx.borrow_and_update().clone();
-                    if new_config.fps != target_fps {
-                        info!(
-                            old_fps = target_fps,
-                            new_fps = new_config.fps,
-                            "quality adaptation: fps changed"
-                        );
-                        target_fps = new_config.fps;
-                    }
+            if let Some(ref mut rx) = quality_rx
+                && rx.has_changed().unwrap_or(false)
+            {
+                let new_config = rx.borrow_and_update().clone();
+                if new_config.fps != target_fps {
+                    info!(
+                        old_fps = target_fps,
+                        new_fps = new_config.fps,
+                        "quality adaptation: fps changed"
+                    );
+                    target_fps = new_config.fps;
                 }
             }
 
@@ -202,7 +202,7 @@ mod inner {
                 static_frame_count += 1;
                 // Send a keepalive after N consecutive static frames so the
                 // receiver knows the stream is alive even with no new content.
-                if keepalive_after > 0 && static_frame_count % keepalive_after == 0 {
+                if keepalive_after > 0 && static_frame_count.is_multiple_of(keepalive_after) {
                     debug!(static_frame_count, "sending keepalive");
                     let keepalive = EncodedPacket {
                         data: Bytes::new(),
