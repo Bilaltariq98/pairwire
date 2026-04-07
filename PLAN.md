@@ -1060,6 +1060,26 @@
 
 ---
 
+## Architectural Note: UI/UX Layer Separation (Pre-Phase 5)
+
+> **Status**: Draft thinking — not committed. See `docs/10-ui-architecture-proposal.md`.
+>
+> Before building enterprise features (team management, rooms, contacts, invite flows), we need to separate the UI layer from the core engine. Right now `crates/app/` is a monolith mixing CLI, session orchestration, and egui rendering. This works fine for dogfooding — keep proving capabilities CLI-first.
+>
+> **The insight**: pairwire has two fundamentally different UI surfaces:
+> 1. **Session viewer** — GPU-rendered screen texture, cursor overlays, drawing, in-session toolbar (mic/cam/share toggles). egui is the right tool.
+> 2. **Lobby/management** — contacts, rooms, invite links, settings, team admin. This needs web-grade UI richness (think Tuple's sidebar). egui can't do this well.
+>
+> **Proposed path** (when the time comes):
+> 1. Extract `ui-core` crate — shared state, session state machine, command/event types
+> 2. Extract `viewer` crate from `app` — egui viewer + toolbar as a standalone crate
+> 3. Add Tauri shell — webview for lobby UI, spawns egui viewer for sessions
+> 4. CLI remains first-class — Tauri is additive, not a replacement
+>
+> **Don't do this yet.** Finish Phase 3.5 interaction layer and Phase 4 capabilities first. The crate split should happen when we've designed what free pairwire vs paid pairwire actually looks and feels like as a product. RustDesk's pattern (Session<T: InvokeUiSession> generic over UI handler) is worth studying when we get here.
+
+---
+
 ## Phase 5: Multi-Party & Polish
 
 > **Goal**: Expand from 1:1 to small-group collaboration (mob programming, team reviews). This is the natural evolution after the core 1:1 experience is solid.
