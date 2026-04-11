@@ -3,15 +3,13 @@
 //! Provides:
 //! - `open_control_stream()` — bidirectional reliable stream for session management
 //! - `open_input_stream()` — unidirectional reliable stream for keyboard/mouse events
-//! - `send_datagram()` / `recv_datagram()` — unreliable cursor updates
 //! - `send_message<T>()` / `recv_message<T>()` — length-prefixed postcard framing
 //!
 //! Stream priority is set via QUIC stream priority fields where supported.
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, BytesMut};
 use iroh::endpoint::{Connection, ConnectionError, RecvStream, SendStream};
 use pairwire_core::{Error, Result};
-use pairwire_protocol::CursorUpdate;
 use postcard::{from_bytes, to_allocvec};
 use serde::{Serialize, de::DeserializeOwned};
 use tracing::instrument;
@@ -30,7 +28,12 @@ fn is_connection_closed(err: &ConnectionError) -> bool {
 }
 
 /// Maximum size for a length-prefixed message (4 MB).
-const MAX_MESSAGE_LEN: u32 = 4 * 1024 * 1024;
+/// Maximum allowed message size for length-prefixed protocol messages.
+///
+/// 2MB accommodates clipboard payloads (capped at 1MB in `ClipboardSync`)
+/// plus serialization overhead, while preventing unbounded allocation
+/// from malicious peers (reduced from previous 4MB).
+const MAX_MESSAGE_LEN: u32 = 2 * 1024 * 1024;
 
 /// A pairwire connection to a remote peer.
 ///
@@ -116,41 +119,6 @@ impl PairwireConnection {
         }
     }
 
-    /// Send a `CursorUpdate` as an unreliable QUIC datagram.
-    ///
-    /// Datagrams are best-effort and may be dropped. Suitable for 60Hz cursor updates.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serialization fails or the datagram cannot be sent.
-    pub fn send_cursor_datagram(&self, update: &CursorUpdate) -> Result<()> {
-        let bytes = to_allocvec(update)
-            .map_err(|e| Error::Serialization(format!("cursor serialize: {e}")))?;
-        debug_assert!(
-            bytes.len() < 1200,
-            "cursor datagram {} bytes exceeds QUIC MTU",
-            bytes.len()
-        );
-        self.conn
-            .send_datagram(Bytes::from(bytes))
-            .map_err(|e| Error::Transport(format!("send_datagram failed: {e}")))?;
-        Ok(())
-    }
-
-    /// Receive the next QUIC datagram and deserialize it as a `CursorUpdate`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the datagram cannot be read or deserialization fails.
-    pub async fn recv_cursor_datagram(&self) -> Result<CursorUpdate> {
-        let bytes = self
-            .conn
-            .read_datagram()
-            .await
-            .map_err(|e| Error::Transport(format!("read_datagram failed: {e}")))?;
-        from_bytes(&bytes).map_err(|e| Error::Serialization(format!("cursor deserialize: {e}")))
-    }
-
     /// Open a unidirectional stream for screen frame data (priority 3 — lowest).
     ///
     /// Each keyframe group gets its own stream. The receiver abandons old streams
@@ -198,8 +166,7 @@ impl PairwireConnection {
 /// or the stream write fails.
 #[instrument(skip(stream, msg))]
 pub async fn send_message<T: Serialize>(stream: &mut SendStream, msg: &T) -> Result<()> {
-    let payload =
-        to_allocvec(msg).map_err(|e| Error::Serialization(format!("serialize failed: {e}")))?;
+    let payload = to_allocvec(msg)?;
 
     if payload.len() > MAX_MESSAGE_LEN as usize {
         return Err(Error::Protocol(format!(
@@ -252,7 +219,7 @@ pub async fn recv_message<T: DeserializeOwned>(stream: &mut RecvStream) -> Resul
         .await
         .map_err(|e| Error::Transport(format!("read payload failed: {e}")))?;
 
-    from_bytes(&payload).map_err(|e| Error::Serialization(format!("deserialize failed: {e}")))
+    Ok(from_bytes(&payload)?)
 }
 
 #[cfg(test)]

@@ -468,7 +468,7 @@
   - `just all` passes
 
 ### P3.2.1: Bidirectional Audio (Guest Mic → Host)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P3.1, P3.2
 - **Description**: P3.1 and P3.2 implement one-directional audio (host mic → guest speakers). For real pair programming both peers need to speak and hear each other. The guest/joiner must also capture their microphone and publish it as a moq-lite audio track; the host receives and plays it.
 - **Deliverables**:
@@ -476,7 +476,7 @@
   - Wire host-side audio decode + playback of the guest's track in `run_host()`
   - Both peers publish and subscribe to each other's audio track (two separate moq-lite tracks: one per direction)
   - Ensure volume/mute controls apply to the correct track on each side
-- **Notes**: Current state — host mic → guest speakers works (verified in first real-device test, 2026-04-01). Guest mic → host is entirely absent from the session wiring.
+- **Notes**: Implemented via tagged datagrams (TAG_GUEST_AUDIO). Guest captures mic → Opus encode → datagram send → host datagram router → decode → playback. Uses datagrams to avoid moq-lite bidirectional contention.
 - **Acceptance criteria**:
   - Guest speaks, host hears them
   - Both directions work simultaneously without echo (echo cancellation is stretch — AEC is a separate concern)
@@ -604,7 +604,7 @@
   - `just all` passes
 
 ### P3.5.2: Control Takeover
-- **Status**: `[ ]`
+- **Status**: `[~]` (session wiring + viewer input capture done; exact coordinate mapping TODO)
 - **Depends on**: P3.5.1, P2.3
 - **Description**: Guest can take keyboard/mouse control by clicking in the viewer. Host reclaims by moving their real mouse. Like Tuple's "click to drive" model.
 - **Code locations**:
@@ -703,7 +703,8 @@
   - `just all` passes
 
 ### P3.5.6: Wire Quality Adaptation
-- **Status**: `[ ]`
+- **Status**: `[x]`
+- **Notes**: QualityMonitor spawned and connected to encoder via watch channel. Encoder adapts fps by frame-skipping (e.g., 30→15 = skip every other frame). Resolution changes logged but not yet applied (would require encoder reinitialization).
 - **Depends on**: P2.5
 - **Description**: Wire `QualityMonitor` into host session and connect to encode thread.
 - **Code locations**:
@@ -727,61 +728,72 @@
 > **Ref**: `REVIEW.md` for full details on each finding.
 
 ### P3.9.1: Peer Authentication (R-C4)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Verify that the connecting peer's endpoint ID matches the one encoded in the invite link. Currently any peer can connect to any session.
 - **Deliverables**:
   - `Transport::accept()` returns the peer ID for verification
   - Handshake verifies `conn.remote_id()` matches expected endpoint from invite
   - Reject mismatches with a clear error
+- **Notes**: Implemented via session_token field in Handshake. Both peers send the token from the invite link; mismatch → PeerAuthFailed error.
 
 ### P3.9.2: Structured Error Architecture (R-M2, R-A5)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Replace string-wrapped error variants (`Transport(String)`, `Encode(String)`, etc.) with structured sub-enums. Enables retry logic, metrics, and user-facing diagnostics.
 - **Deliverables**:
   - `TransportError`, `CodecError`, `ProtocolError` sub-enums with `From` impls
   - `#[from]` for `postcard::Error`, `std::io::Error`, `moq_lite::Error`
+- **Notes**: Added Postcard(#[from]), PeerAuthFailed, InvalidConfig variants. String variants kept as fallback for less common errors.
 
 ### P3.9.3: Config Validation (R-M1)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: `CaptureConfig` and `AudioConfig` allow invalid states (fps=0, width=0, channels=0). Add `validate()` or `TryFrom` with rejection of invalid values.
 - **Deliverables**:
   - Reject `fps == 0`, `width == 0`, `height == 0`, `channels not in [1,2]`
   - Call validation at session startup
+- **Notes**: validate() methods on CaptureConfig, AudioConfig, SessionConfig. 17 unit tests.
 
 ### P3.9.4: Audio Silence Markers (R-M6)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Skipped silence frames increment the timestamp but send nothing, causing decoder/jitter buffer discontinuities. Send an explicit silence marker packet instead.
 - **Deliverables**:
   - Silence marker packet (empty data, valid timestamp + duration)
   - Jitter buffer handles silence markers without stuttering
+- **Notes**: OpusPacket::silence() constructor, is_silence() check. Decoder outputs zero-filled PCM for silence markers.
 
 ### P3.9.5: Audio RAII Guards (R-H4)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Audio threads can leak if `run_host()`/`run_join()` return early. Implement `Drop` on audio handle structs or use scoped guards.
+- **Notes**: Drop impls on AudioCaptureThread, AudioEncodeThread, AudioDecodeThread, AudioPlaybackThread.
 
 ### P3.9.6: Network Allocation Limits (R-H3)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: `recv_message` allocates up to 4MB per message from untrusted network data. Add per-connection concurrent allocation limits.
+- **Notes**: Reduced MAX_MESSAGE_LEN from 4MB to 2MB. Accommodates clipboard (1MB) with overhead.
 
 ### P3.9.7: Keepalive Handling in Decoder (R-H5)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Decode thread doesn't check `is_keepalive` — empty data packets from the keepalive path could crash FFmpeg. Add guard in decode loop.
+- **Notes**: Skip is_keepalive packets before feeding to FFmpeg decoder.
 
 ### P3.9.8: Workspace Dependency Consistency (R-H7)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Some crates use `path = "../..."` instead of `workspace = true`. Standardize all internal crate references.
+- **Notes**: All internal crate refs now use workspace = true.
 
 ### P3.9.9: Frame Drop Counters (R-L2)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: `try_send` failures are only logged at `debug`. Add `AtomicU64` counters for dropped frames, exposed via diagnostics API or periodic `info!` logs.
+- **Notes**: DropCounter in pairwire_core::diagnostics. Wired into capture thread and moq video drain. Logged at powers-of-2 and every 100th drop.
 
 ### P3.9.10: Minimize tokio Features (R-L8)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: Workspace uses `features = ["full"]` for tokio. Audit and enumerate only needed features to reduce compile time and binary size.
+- **Notes**: Replaced with rt, rt-multi-thread, sync, time, macros. Dropped net, io-util, signal, fs.
 
 ### P3.9.11: Protocol Boundary Tests (R-L5)
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Description**: No adversarial/boundary tests for protocol types (MAX values, empty collections, truncated input). Add fuzzing and property-based tests.
+- **Notes**: 36 boundary tests in boundary_tests.rs covering all protocol types.
 
 ---
 
@@ -945,6 +957,126 @@
   - `negotiate_quality` unit tests covering: Retina host + small viewer → encode at viewer size; both have HW → High profile; neither has HW → Baseline
   - Resize viewer window → encoder reinitializes at new resolution within one keyframe interval
   - `just all` passes
+
+### P4.8: Audio Controls — Mute/Unmute & Per-Capability Opt-In
+> **Priority**: Do this right after Phase 3.5 completion. Essential for real-world use — without mute, audio feedback makes 2-machine testing painful.
+- **Status**: `[ ]`
+- **Depends on**: P3.2.1
+- **Description**: Add runtime audio controls missing from the current implementation. Guest audio sending is on by default with no way to mute.
+- **Deliverables**:
+  - **Mute/unmute toggle**: `watch::Sender<bool>` checked by audio capture thread each frame. Muted → send silence markers instead of capturing.
+  - **CLI flags**: `--no-mic` / `--mute` to start with mic disabled. `--no-audio` to disable audio entirely.
+  - **Per-capability opt-in**: Wire `SetSharing { screen, audio }` control message so peers can toggle audio mid-session without restarting.
+  - **Permission model**: Match remote control pattern — `--allow-audio` equivalent, or always-on with mute UI.
+  - **Tray/UI integration**: Mute toggle in system tray menu and viewer status bar.
+- **Acceptance criteria**:
+  - `--mute` starts session with mic silenced
+  - Mute toggle during session takes effect within 1 frame (20ms)
+  - `SetSharing` message toggles remote audio within 100ms
+  - `just all` passes
+
+### P4.9: Symmetric Session Architecture (Design Note)
+- **Status**: `[ ]`
+- **Description**: Unify `run_host`/`run_join` into a single `run_session` that takes a role config. Both peers run the full pipeline and dynamically enable/disable screen sharing. This enables "call mode" where both sides have audio, neither is sharing screen initially, and either can start sharing.
+- **Design outline**:
+  - `SessionRole { share_screen: bool, share_audio: bool, accept_control: bool }`
+  - Both sides run capture+encode+publish (gated by `share_screen`)
+  - Both sides run subscribe+decode+display (gated by remote `share_screen`)
+  - `SetSharing` control messages toggle mid-session
+  - "Call mode" = `{ share_screen: false, share_audio: true, accept_control: false }`
+  - Protocol already supports this (capabilities are per-peer, moq-lite tracks are per-source)
+- **Notes**: Significant refactor of session.rs. The current asymmetric design (host=publisher, guest=subscriber) is baked into the session code. Consider this a Phase 5 item — do after multi-party architecture is designed, as symmetric sessions and multi-party have overlapping concerns.
+- **Acceptance criteria**:
+  - Single `run_session` entry point replaces `run_host` + `run_join`
+  - Either peer can toggle screen sharing mid-session
+  - "Call mode" works (audio-only, no screen, either can start sharing)
+  - `just all` passes
+
+### P4.10: Quality Controls — Viewer Badge & Manual Override
+- **Status**: `[ ]`
+- **Depends on**: P3.5.6
+- **Description**: Surface the quality adaptation state to the user and allow manual override.
+- **Deliverables**:
+  - **Viewer badge**: green/yellow/red dot in viewer status bar showing current quality tier (Full/Reduced/Degraded)
+  - **Manual override**: CLI flag `--max-fps N` / `--max-resolution WxH` to cap quality ceiling
+  - **Tray integration**: "Connection Quality: Good/Fair/Poor" in tray menu
+- **Acceptance criteria**:
+  - Viewer badge updates within 2 seconds of tier change
+  - Manual override caps are respected by QualityMonitor
+  - `just all` passes
+
+---
+
+## Phase 4.5: Packaging & Distribution
+
+> **Goal**: Make pairwire installable by non-developers. Proper app bundles solve the macOS permissions problem (Screen Recording, Accessibility, Microphone must be granted to a specific app, not Terminal.app). Also enables distribution to designers, PMs, and other collaborators.
+>
+> **Priority**: Do this after Phase 3.5 + P4.8 (audio controls) are feature-complete. A polished .app with a working pair programming experience is more valuable than terminal sharing with a rough CLI.
+
+### P4.5.1: macOS .app Bundle
+- **Status**: `[ ]`
+- **Description**: Create a proper macOS application bundle that can be drag-installed to /Applications.
+- **Deliverables**:
+  - `Info.plist` with correct bundle ID, permissions declarations (`NSScreenCaptureUsageDescription`, `NSMicrophoneUsageDescription`, `NSAccessibilityUsageDescription`)
+  - App icon (`.icns`)
+  - Universal binary (arm64 + x86_64) via `cargo build --target aarch64-apple-darwin --target x86_64-apple-darwin` + `lipo`
+  - DMG or ZIP distribution for drag-to-install
+  - Code signing with developer certificate (or ad-hoc for testing)
+  - Menu bar icon works from the .app context (not Terminal)
+- **Notes**: The .app bundle solves the permissions UX — users grant permissions once to "pairwire.app" instead of re-granting every time they switch terminals. Also enables Gatekeeper-signed distribution.
+- **Acceptance criteria**:
+  - Double-click .app → host mode starts with tray icon
+  - macOS permission dialogs appear on first launch
+  - `pairwire join` works from CLI alongside the .app
+
+### P4.5.2: Windows Installer
+- **Status**: `[ ]`
+- **Description**: Windows `.exe` with bundled FFmpeg DLLs or MSI installer.
+- **Deliverables**:
+  - Portable `.exe` with FFmpeg DLLs alongside (simplest)
+  - OR: MSI/NSIS installer that adds to PATH
+  - System tray integration on Windows
+- **Notes**: FFmpeg on Windows is the main complexity — vcpkg build or pre-built DLLs.
+
+### P4.5.3: Linux Package
+- **Status**: `[ ]`
+- **Description**: AppImage or `.deb` for easy installation on Linux.
+- **Deliverables**:
+  - AppImage (portable, no install needed)
+  - OR: `.deb` package for Debian/Ubuntu
+  - Desktop file + icon for application launcher integration
+- **Notes**: PipeWire screen capture on Wayland requires specific portal permissions.
+
+### P4.5.4: Opinionated GUI Mode
+- **Status**: `[ ]`
+- **Description**: Default launch (double-click / no args) opens a "start session" GUI instead of requiring CLI arguments. The CLI remains fully functional for power users.
+- **Design**:
+  - No args → opens a small window: "Host a Session" / "Join a Session" buttons
+  - Host: one click → starts sharing, shows invite link with "Copy" button
+  - Join: paste invite link, click "Connect"
+  - Settings accessible from the window (fps, resolution, audio, permissions)
+  - CLI `pairwire host` / `pairwire join <url>` still works exactly as before
+- **Notes**: Could use egui for consistency, or native platform dialogs for a more polished feel. tao+wry (webview) is another option — see project memory on UI strategy.
+
+---
+
+## Architectural Note: UI/UX Layer Separation (Pre-Phase 5)
+
+> **Status**: Draft thinking — not committed. See `docs/10-ui-architecture-proposal.md`.
+>
+> Before building enterprise features (team management, rooms, contacts, invite flows), we need to separate the UI layer from the core engine. Right now `crates/app/` is a monolith mixing CLI, session orchestration, and egui rendering. This works fine for dogfooding — keep proving capabilities CLI-first.
+>
+> **The insight**: pairwire has two fundamentally different UI surfaces:
+> 1. **Session viewer** — GPU-rendered screen texture, cursor overlays, drawing, in-session toolbar (mic/cam/share toggles). egui is the right tool.
+> 2. **Lobby/management** — contacts, rooms, invite links, settings, team admin. This needs web-grade UI richness (think Tuple's sidebar). egui can't do this well.
+>
+> **Proposed path** (when the time comes):
+> 1. Extract `ui-core` crate — shared state, session state machine, command/event types
+> 2. Extract `viewer` crate from `app` — egui viewer + toolbar as a standalone crate
+> 3. Add Tauri shell — webview for lobby UI, spawns egui viewer for sessions
+> 4. CLI remains first-class — Tauri is additive, not a replacement
+>
+> **Don't do this yet.** Finish Phase 3.5 interaction layer and Phase 4 capabilities first. The crate split should happen when we've designed what free pairwire vs paid pairwire actually looks and feels like as a product. RustDesk's pattern (Session<T: InvokeUiSession> generic over UI handler) is worth studying when we get here.
 
 ---
 

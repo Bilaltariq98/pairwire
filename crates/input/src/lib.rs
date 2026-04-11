@@ -18,6 +18,11 @@ pub mod receiver;
 pub mod sender;
 
 #[cfg(target_os = "macos")]
+mod cursor_macos;
+#[cfg(not(target_os = "macos"))]
+mod cursor_stub;
+
+#[cfg(target_os = "macos")]
 mod inject_macos;
 
 #[cfg(not(target_os = "macos"))]
@@ -26,6 +31,14 @@ mod inject_stub;
 pub use clipboard::{
     ClipboardReceiver, ClipboardReceiverHandle, ClipboardSender, ClipboardSenderHandle,
 };
+#[cfg(target_os = "macos")]
+pub use cursor_macos::current_cursor_position;
+#[cfg(target_os = "macos")]
+pub use cursor_macos::current_cursor_state;
+#[cfg(not(target_os = "macos"))]
+pub use cursor_stub::current_cursor_position;
+#[cfg(not(target_os = "macos"))]
+pub use cursor_stub::current_cursor_state;
 pub use receiver::{InputReceiver, InputReceiverHandle};
 pub use sender::{InputSender, InputSenderHandle};
 
@@ -39,4 +52,21 @@ pub enum InputPermission {
     FullControl,
     /// Only keyboard events are injected.
     KeyboardOnly,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_permission_default_is_denied() {
+        assert_eq!(InputPermission::default(), InputPermission::Denied);
+    }
+
+    #[test]
+    fn input_permission_copy_eq() {
+        let a = InputPermission::FullControl;
+        let b = a; // Copy
+        assert_eq!(a, b);
+    }
 }

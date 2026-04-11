@@ -282,4 +282,105 @@ mod tests {
         };
         assert_eq!(h.tier(), QualityTier::Degraded);
     }
+
+    // --- Boundary threshold tests ---
+
+    #[test]
+    fn loss_at_exactly_5_percent_is_full() {
+        // 5.0% = 50 per-mille, threshold is > 5% so exactly at is Full
+        let h = ConnectionHealth {
+            rtt_ms: 0,
+            loss_per_mille: 50,
+        };
+        assert_eq!(h.tier(), QualityTier::Full);
+    }
+
+    #[test]
+    fn loss_just_above_5_percent_is_reduced() {
+        let h = ConnectionHealth {
+            rtt_ms: 0,
+            loss_per_mille: 51,
+        };
+        assert_eq!(h.tier(), QualityTier::Reduced);
+    }
+
+    #[test]
+    fn loss_at_exactly_15_percent_is_reduced() {
+        // 15.0% = 150 per-mille, threshold is > 15% so exactly at is Reduced
+        let h = ConnectionHealth {
+            rtt_ms: 0,
+            loss_per_mille: 150,
+        };
+        assert_eq!(h.tier(), QualityTier::Reduced);
+    }
+
+    #[test]
+    fn loss_just_above_15_percent_is_degraded() {
+        let h = ConnectionHealth {
+            rtt_ms: 0,
+            loss_per_mille: 151,
+        };
+        assert_eq!(h.tier(), QualityTier::Degraded);
+    }
+
+    #[test]
+    fn rtt_at_exactly_200ms_is_full() {
+        let h = ConnectionHealth {
+            rtt_ms: 200,
+            loss_per_mille: 0,
+        };
+        assert_eq!(h.tier(), QualityTier::Full);
+    }
+
+    #[test]
+    fn rtt_at_201ms_is_reduced() {
+        let h = ConnectionHealth {
+            rtt_ms: 201,
+            loss_per_mille: 0,
+        };
+        assert_eq!(h.tier(), QualityTier::Reduced);
+    }
+
+    #[test]
+    fn zero_health_is_full() {
+        let h = ConnectionHealth::default();
+        assert_eq!(h.tier(), QualityTier::Full);
+    }
+
+    #[test]
+    fn max_loss_is_degraded() {
+        let h = ConnectionHealth {
+            rtt_ms: 0,
+            loss_per_mille: 1000,
+        };
+        assert_eq!(h.tier(), QualityTier::Degraded);
+    }
+
+    // --- Tier application edge cases ---
+
+    #[test]
+    fn reduced_tier_preserves_small_resolution() {
+        // If base is already 720p, Reduced shouldn't upscale
+        let small = CaptureConfig {
+            width: 640,
+            height: 480,
+            fps: 30,
+            ..Default::default()
+        };
+        let cfg = QualityTier::Reduced.apply(&small);
+        assert_eq!(cfg.width, 640);
+        assert_eq!(cfg.height, 480);
+    }
+
+    #[test]
+    fn degraded_tier_preserves_low_fps() {
+        let slow = CaptureConfig {
+            fps: 10,
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        };
+        let cfg = QualityTier::Degraded.apply(&slow);
+        assert_eq!(cfg.fps, 10); // already below 15, don't change
+    }
 }

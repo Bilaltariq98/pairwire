@@ -7,7 +7,7 @@ version.workspace = true
 [dependencies]
 pairwire-core.workspace = true
 pairwire-protocol.workspace = true
-pairwire-transport = { path = "../transport" }
+pairwire-transport.workspace = true
 iroh.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -44,12 +44,14 @@ impl NegotiatedSession {
 ///
 /// `display_width`/`display_height`/`display_scale` are 0 on the guest side
 /// (guest doesn't share a display).
+/// `session_token` is the 16-byte session ID from the invite link.
 #[must_use]
 pub fn local_handshake(
     capabilities: Vec<Capability>,
     display_width: u16,
     display_height: u16,
     display_scale: u16,
+    session_token: [u8; 16],
 ) -> Handshake {
     Handshake {
         version: PROTOCOL_VERSION,
@@ -59,6 +61,7 @@ pub fn local_handshake(
         display_scale,
         video_codecs: vec![VideoCodec::H264],
         audio_codecs: vec![AudioCodec::Opus],
+        session_token,
     }
 }
 
@@ -129,8 +132,15 @@ pub async fn guest_handshake(
 /// Intersect two handshakes into a `NegotiatedSession`.
 ///
 /// Returns `Err(VersionMismatch)` if protocol versions are incompatible.
+/// Returns `Err(PeerAuthFailed)` if session tokens don't match.
 #[allow(clippy::needless_pass_by_value)] // callers pass owned Handshake values
 fn negotiate(local: Handshake, remote: Handshake) -> Result<NegotiatedSession> {
+    // Verify session token — both peers must present the same token from the invite.
+    if local.session_token != remote.session_token {
+        warn!("session token mismatch — rejecting peer");
+        return Err(Error::PeerAuthFailed);
+    }
+
     if remote.version != PROTOCOL_VERSION {
         warn!(
             local_version = PROTOCOL_VERSION,
@@ -206,6 +216,8 @@ mod tests {
     use super::*;
     use pairwire_protocol::Capability;
 
+    const TEST_TOKEN: [u8; 16] = [0xAA; 16];
+
     fn make_hs(caps: Vec<Capability>, video: Vec<VideoCodec>) -> Handshake {
         Handshake {
             version: PROTOCOL_VERSION,
@@ -215,6 +227,7 @@ mod tests {
             display_scale: 100,
             video_codecs: video,
             audio_codecs: vec![AudioCodec::Opus],
+            session_token: TEST_TOKEN,
         }
     }
 
@@ -272,7 +285,96 @@ mod tests {
 
     #[test]
     fn local_handshake_sets_version() {
-        let hs = local_handshake(vec![Capability::Screen], 1920, 1080, 100);
+        let hs = local_handshake(vec![Capability::Screen], 1920, 1080, 100, TEST_TOKEN);
         assert_eq!(hs.version, PROTOCOL_VERSION);
+        assert_eq!(hs.session_token, TEST_TOKEN);
+    }
+
+    #[test]
+    fn negotiate_session_token_mismatch() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        remote.session_token = [0xBB; 16]; // different token
+        let err = negotiate(local, remote).unwrap_err();
+        assert!(matches!(err, Error::PeerAuthFailed));
+    }
+
+    #[test]
+    fn negotiate_matching_session_token_succeeds() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_ok());
+    }
+
+    #[test]
+    fn negotiate_no_common_caps() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let remote = make_hs(vec![Capability::Audio], vec![VideoCodec::H264]);
+        let session = negotiate(local, remote).unwrap();
+        assert!(session.capabilities.is_empty());
+    }
+
+    #[test]
+    fn negotiate_empty_caps_succeeds() {
+        let local = make_hs(vec![], vec![VideoCodec::H264]);
+        let remote = make_hs(vec![], vec![VideoCodec::H264]);
+        let session = negotiate(local, remote).unwrap();
+        assert!(session.capabilities.is_empty());
+        assert_eq!(session.video_codec, Some(VideoCodec::H264));
+    }
+
+    #[test]
+    fn negotiate_rejects_oversized_caps() {
+        let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        remote.capabilities = vec![Capability::Screen; 17]; // > 16
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_err());
+    }
+
+    #[test]
+    fn negotiate_rejects_oversized_video_codecs() {
+        let mut remote = make_hs(vec![], vec![VideoCodec::H264]);
+        remote.video_codecs = vec![VideoCodec::H264; 9]; // > 8
+        let local = make_hs(vec![], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_err());
+    }
+
+    #[test]
+    fn negotiate_rejects_inconsistent_display_dims() {
+        let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        remote.display_width = 1920;
+        remote.display_height = 0; // inconsistent: one is 0, other isn't
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_err());
+    }
+
+    #[test]
+    fn negotiate_allows_zero_display_dims() {
+        // Guest sends 0,0 — valid (guest doesn't share a display)
+        let mut remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        remote.display_width = 0;
+        remote.display_height = 0;
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        assert!(negotiate(local, remote).is_ok());
+    }
+
+    #[test]
+    fn negotiate_preserves_remote_handshake() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let remote = make_hs(
+            vec![Capability::Screen, Capability::Audio],
+            vec![VideoCodec::H264],
+        );
+        let session = negotiate(local, remote).unwrap();
+        assert_eq!(session.remote.capabilities.len(), 2);
+    }
+
+    #[test]
+    fn has_capability_returns_false_for_missing() {
+        let local = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let remote = make_hs(vec![Capability::Screen], vec![VideoCodec::H264]);
+        let session = negotiate(local, remote).unwrap();
+        assert!(session.has_capability(&Capability::Screen));
+        assert!(!session.has_capability(&Capability::Audio));
     }
 }

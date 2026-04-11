@@ -32,7 +32,7 @@ use hang::container::{BufList, Frame, OrderedConsumer, OrderedProducer, Timestam
 use moq_lite::{BroadcastProducer, Client, OriginProducer, Server, Track};
 use pairwire_audio::OpusPacket;
 use pairwire_capture::EncodedPacket;
-use pairwire_core::{Error, Result};
+use pairwire_core::{Error, Result, diagnostics::DropCounter};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -509,6 +509,7 @@ async fn drain_video(
     mut consumer: OrderedConsumer,
     pkt_tx: std::sync::mpsc::SyncSender<EncodedPacket>,
 ) {
+    let drops = DropCounter::new("video_decode_drops");
     loop {
         match consumer.read().await {
             Ok(Some(frame)) => {
@@ -523,7 +524,13 @@ async fn drain_video(
                     is_keepalive: false,
                 };
                 if pkt_tx.try_send(pkt).is_err() {
-                    debug!("decoder channel full, dropping frame");
+                    let n = drops.increment();
+                    if n.is_power_of_two() || n.is_multiple_of(100) {
+                        info!(
+                            total_drops = n,
+                            "decoder channel full, dropping video frame"
+                        );
+                    }
                 }
             }
             Ok(None) => {
@@ -535,6 +542,10 @@ async fn drain_video(
                 break;
             }
         }
+    }
+    let total = drops.get();
+    if total > 0 {
+        info!(total_drops = total, "video drain total dropped frames");
     }
 }
 

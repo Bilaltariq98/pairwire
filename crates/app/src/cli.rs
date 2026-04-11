@@ -20,6 +20,8 @@ pub struct HostArgs {
     pub fps: u32,
     pub width: u32,
     pub height: u32,
+    /// Whether to auto-grant remote control permission to the guest.
+    pub allow_remote_control: bool,
 }
 
 impl Default for HostArgs {
@@ -28,6 +30,7 @@ impl Default for HostArgs {
             fps: 30,
             width: 1920,
             height: 1080,
+            allow_remote_control: false,
         }
     }
 }
@@ -42,7 +45,11 @@ pub struct JoinArgs {
 /// Parse `std::env::args()` into a `Command`.
 pub fn parse_args() -> anyhow::Result<Command> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    parse_from_args(&args)
+}
 
+/// Parse a pre-split argument list (without the program name) into a `Command`.
+fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
     match args.first().map(std::string::String::as_str) {
         Some("host") => {
             let mut a = HostArgs::default();
@@ -51,15 +58,18 @@ pub fn parse_args() -> anyhow::Result<Command> {
                 match args[i].as_str() {
                     "--fps" => {
                         i += 1;
-                        a.fps = parse_u32(&args, i, "--fps")?;
+                        a.fps = parse_u32(args, i, "--fps")?;
                     }
                     "--width" => {
                         i += 1;
-                        a.width = parse_u32(&args, i, "--width")?;
+                        a.width = parse_u32(args, i, "--width")?;
                     }
                     "--height" => {
                         i += 1;
-                        a.height = parse_u32(&args, i, "--height")?;
+                        a.height = parse_u32(args, i, "--height")?;
+                    }
+                    "--allow-remote-control" => {
+                        a.allow_remote_control = true;
                     }
                     flag => anyhow::bail!("unknown flag: {flag}"),
                 }
@@ -93,50 +103,8 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> anyhow::Result<Command> {
-        let args: Vec<String> = std::iter::once("pairwire")
-            .chain(args.iter().copied())
-            .map(String::from)
-            .collect();
-        // Temporarily override args by parsing directly
-        parse_from(args)
-    }
-
-    fn parse_from(args: Vec<String>) -> anyhow::Result<Command> {
-        match args.get(1).map(|s| s.as_str()) {
-            Some("host") => {
-                let mut a = HostArgs::default();
-                let mut i = 2;
-                while i < args.len() {
-                    match args[i].as_str() {
-                        "--fps" => {
-                            i += 1;
-                            a.fps = parse_u32(&args, i, "--fps")?;
-                        }
-                        "--width" => {
-                            i += 1;
-                            a.width = parse_u32(&args, i, "--width")?;
-                        }
-                        "--height" => {
-                            i += 1;
-                            a.height = parse_u32(&args, i, "--height")?;
-                        }
-                        flag => anyhow::bail!("unknown flag: {flag}"),
-                    }
-                    i += 1;
-                }
-                Ok(Command::Host(a))
-            }
-            Some("join") => {
-                if args.len() < 3 {
-                    anyhow::bail!("usage: pairwire join <invite-url>");
-                }
-                let invite_url = args[2].clone();
-                let no_gui = args.iter().any(|a| a == "--no-gui");
-                Ok(Command::Join(JoinArgs { invite_url, no_gui }))
-            }
-            Some(cmd) => anyhow::bail!("unknown command: {cmd}"),
-            None => anyhow::bail!("no command"),
-        }
+        let args: Vec<String> = args.iter().map(|s| String::from(*s)).collect();
+        parse_from_args(&args)
     }
 
     #[test]
@@ -158,6 +126,16 @@ mod tests {
         assert_eq!(a.fps, 60);
         assert_eq!(a.width, 2560);
         assert_eq!(a.height, 1440);
+        assert!(!a.allow_remote_control);
+    }
+
+    #[test]
+    fn parse_host_allow_remote_control() {
+        let cmd = parse(&["host", "--allow-remote-control"]).unwrap();
+        let Command::Host(a) = cmd else {
+            panic!("expected Host")
+        };
+        assert!(a.allow_remote_control);
     }
 
     #[test]

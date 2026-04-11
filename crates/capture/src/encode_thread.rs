@@ -48,6 +48,18 @@ mod inner {
             config: CaptureConfig,
             input: mpsc::Receiver<RawFrame>,
         ) -> Result<(Self, async_mpsc::Receiver<EncodedPacket>)> {
+            Self::start_with_quality(config, input, None)
+        }
+
+        /// Start with an optional quality adaptation channel.
+        ///
+        /// When `quality_rx` is provided, the encode thread checks for config
+        /// changes each frame and adapts fps by skipping frames.
+        pub fn start_with_quality(
+            config: CaptureConfig,
+            input: mpsc::Receiver<RawFrame>,
+            quality_rx: Option<tokio::sync::watch::Receiver<CaptureConfig>>,
+        ) -> Result<(Self, async_mpsc::Receiver<EncodedPacket>)> {
             let (tx, rx) = async_mpsc::channel(ENCODE_CHANNEL_CAPACITY);
             let stop_flag = Arc::new(AtomicBool::new(false));
             let stop_flag_thread = Arc::clone(&stop_flag);
@@ -55,7 +67,8 @@ mod inner {
             let handle = thread::Builder::new()
                 .name("pairwire-encode".into())
                 .spawn(move || {
-                    if let Err(e) = encode_loop(&config, &input, &tx, &stop_flag_thread) {
+                    if let Err(e) = encode_loop(&config, &input, &tx, &stop_flag_thread, quality_rx)
+                    {
                         warn!(error = %e, "encode thread error");
                     }
                     info!("encode thread stopped");
@@ -90,6 +103,7 @@ mod inner {
         input: &mpsc::Receiver<RawFrame>,
         tx: &async_mpsc::Sender<EncodedPacket>,
         stop_flag: &AtomicBool,
+        mut quality_rx: Option<tokio::sync::watch::Receiver<CaptureConfig>>,
     ) -> Result<()> {
         ffmpeg_next::init().map_err(|e| Error::Encode(format!("ffmpeg init: {e}")))?;
 
@@ -108,6 +122,11 @@ mod inner {
         let mut last_hash: Option<u64> = None;
         let mut static_frame_count: u32 = 0;
 
+        // Quality adaptation: track target fps for frame skipping.
+        let base_fps = config.fps;
+        let mut target_fps = base_fps;
+        let mut frames_since_encode: u32 = 0;
+
         info!(
             width = config.width,
             height = config.height,
@@ -120,10 +139,36 @@ mod inner {
                 break;
             }
 
+            // Check for quality adaptation changes (non-blocking).
+            if let Some(ref mut rx) = quality_rx
+                && rx.has_changed().unwrap_or(false)
+            {
+                let new_config = rx.borrow_and_update().clone();
+                if new_config.fps != target_fps {
+                    info!(
+                        old_fps = target_fps,
+                        new_fps = new_config.fps,
+                        "quality adaptation: fps changed"
+                    );
+                    target_fps = new_config.fps;
+                }
+            }
+
             let raw = match input.recv() {
                 Ok(f) => f,
                 Err(_) => break,
             };
+
+            // FPS adaptation: skip frames when target_fps < base_fps.
+            // E.g., base=30, target=15 → encode every 2nd frame.
+            if target_fps < base_fps && target_fps > 0 {
+                frames_since_encode += 1;
+                let skip_ratio = base_fps / target_fps;
+                if frames_since_encode < skip_ratio {
+                    continue;
+                }
+                frames_since_encode = 0;
+            }
 
             // Initialize or reinitialize the scaler when capture dimensions change.
             if scaler.is_none() || raw.width != src_width || raw.height != src_height {
@@ -157,7 +202,7 @@ mod inner {
                 static_frame_count += 1;
                 // Send a keepalive after N consecutive static frames so the
                 // receiver knows the stream is alive even with no new content.
-                if keepalive_after > 0 && static_frame_count % keepalive_after == 0 {
+                if keepalive_after > 0 && static_frame_count.is_multiple_of(keepalive_after) {
                     debug!(static_frame_count, "sending keepalive");
                     let keepalive = EncodedPacket {
                         data: Bytes::new(),
