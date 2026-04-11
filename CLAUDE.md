@@ -20,6 +20,7 @@ Rust-native P2P pair programming tool. Terminal-first collaboration over QUIC (i
    - UX & interaction design: `docs/07-ux-design.md`
    - Multi-party architecture: `docs/08-multi-party-architecture.md`
    - Localhost tunneling spec: `docs/09-localhost-tunneling.md`
+   - Game streaming insights: `docs/10-game-streaming-architecture-insights.md`
 
 ## Validation Commands
 
