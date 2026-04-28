@@ -81,6 +81,11 @@ pub async fn host_handshake(
 ) -> Result<(SendStream, RecvStream, NegotiatedSession)> {
     debug!("sending host handshake");
     send_message(&mut send, &ControlMessage::Handshake(local.clone())).await?;
+    // The handshake stream is one-shot. Finish the send side so QUIC wakes the
+    // peer promptly and the stream cannot be confused with later control/input
+    // streams. Session control currently uses separate streams.
+    send.finish()
+        .map_err(|e| Error::Transport(format!("finish host handshake stream: {e}")))?;
 
     debug!("waiting for guest handshake");
     let msg: ControlMessage = recv_message(&mut recv).await?;
@@ -124,6 +129,10 @@ pub async fn guest_handshake(
 
     debug!("sending guest handshake");
     send_message(&mut send, &ControlMessage::Handshake(local.clone())).await?;
+    // The handshake stream is one-shot; finish the send side to make the
+    // response visible promptly to the host.
+    send.finish()
+        .map_err(|e| Error::Transport(format!("finish guest handshake stream: {e}")))?;
 
     let session = negotiate(local, remote)?;
     Ok((send, recv, session))
