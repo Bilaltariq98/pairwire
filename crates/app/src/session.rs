@@ -222,7 +222,7 @@ pub async fn run_host(
     let host_cursor_log_task = tokio::spawn(async move {
         while host_cursor_watch.changed().await.is_ok() {
             if let Some(update) = host_cursor_watch.borrow().clone() {
-                tracing::info!(
+                tracing::debug!(
                     peer_id = update.peer_id,
                     x = update.x,
                     y = update.y,
@@ -1080,7 +1080,7 @@ mod tests {
     // verifies that run_cursor_poll compiles, constructs without panicking, and
     // exits cleanly when the receiving end of the channel is dropped.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn run_cursor_poll_emits_configured_peer_id() {
+    async fn run_cursor_poll_exits_on_channel_close() {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         drop(rx);
         let handle = run_cursor_poll(tx, 1, 0, 0);
