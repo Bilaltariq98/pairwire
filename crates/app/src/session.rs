@@ -161,7 +161,7 @@ pub async fn run_host(
     // draw_point_tx feeds live DrawPoint datagrams from the router into DrawingReceiver.
     let mut host_drawing_send_handle = None;
     let mut host_drawing_recv_handle = None;
-    let mut host_draw_point_tx: Option<tokio::sync::mpsc::Sender<bytes::Bytes>> = None;
+    let mut host_draw_point_tx = None;
 
     if session.has_capability(&Capability::Annotations) {
         match conn.accept_bi().await {
@@ -448,28 +448,6 @@ pub async fn run_join(
         }
     });
 
-    let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
-    let router = datagram_router::start(
-        conn.raw_conn().clone(),
-        DatagramChannels {
-            cursor_tx: cursor_chan_tx,
-            guest_audio_tx: None,
-            draw_point_tx: guest_draw_point_tx,
-            reaction_tx: None,
-        },
-    );
-
-    let (cursor_recv_handle, mut cursor_watch_rx) = CursorReceiver::spawn(cursor_chan_rx);
-    let cursor_watch_tx = cursor_tx.clone();
-    let cursor_forward_task = tokio::spawn(async move {
-        loop {
-            if cursor_watch_rx.changed().await.is_err() {
-                break;
-            }
-            let _ = cursor_watch_tx.send(cursor_watch_rx.borrow().clone());
-        }
-    });
-
     // Open input bidi stream (guest→host) before moq-lite starts.
     // Forward events from the viewer's input channel to the InputSender.
     // ClipboardSender shares the same channel so clipboard events ride the same stream.
@@ -513,9 +491,10 @@ pub async fn run_join(
 
     // Open annotation bidi stream (guest→host) before moq-lite starts.
     // Carries DrawStroke / DrawClear messages in both directions.
+    // Must be declared before the datagram router so guest_draw_point_tx is in scope.
     let mut guest_drawing_send_handle = None;
     let mut guest_drawing_recv_handle = None;
-    let mut guest_draw_point_tx: Option<tokio::sync::mpsc::Sender<bytes::Bytes>> = None;
+    let mut guest_draw_point_tx = None;
 
     if session.has_capability(&Capability::Annotations) {
         match conn.open_control_stream().await {
@@ -547,6 +526,28 @@ pub async fn run_join(
             Err(e) => warn!(error = %e, "failed to open annotation stream"),
         }
     }
+
+    let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
+    let router = datagram_router::start(
+        conn.raw_conn().clone(),
+        DatagramChannels {
+            cursor_tx: cursor_chan_tx,
+            guest_audio_tx: None,
+            draw_point_tx: guest_draw_point_tx,
+            reaction_tx: None,
+        },
+    );
+
+    let (cursor_recv_handle, mut cursor_watch_rx) = CursorReceiver::spawn(cursor_chan_rx);
+    let cursor_watch_tx = cursor_tx.clone();
+    let cursor_forward_task = tokio::spawn(async move {
+        loop {
+            if cursor_watch_rx.changed().await.is_err() {
+                break;
+            }
+            let _ = cursor_watch_tx.send(cursor_watch_rx.borrow().clone());
+        }
+    });
 
     // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
