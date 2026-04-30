@@ -35,14 +35,8 @@ impl ResolutionPreset {
     pub fn resolve(self, physical: (u32, u32)) -> (u32, u32) {
         match self {
             ResolutionPreset::Native => physical,
-            ResolutionPreset::P1080 => (
-                physical.0.min(1920),
-                physical.1.min(1080),
-            ),
-            ResolutionPreset::P720 => (
-                physical.0.min(1280),
-                physical.1.min(720),
-            ),
+            ResolutionPreset::P1080 => (physical.0.min(1920), physical.1.min(1080)),
+            ResolutionPreset::P720 => (physical.0.min(1280), physical.1.min(720)),
         }
     }
 }
@@ -54,9 +48,9 @@ impl FromStr for ResolutionPreset {
             "native" => Ok(Self::Native),
             "1080p" => Ok(Self::P1080),
             "720p" => Ok(Self::P720),
-            other => anyhow::bail!(
-                "unknown resolution preset '{other}' — use native, 1080p, or 720p"
-            ),
+            other => {
+                anyhow::bail!("unknown resolution preset '{other}' — use native, 1080p, or 720p")
+            }
         }
     }
 }
@@ -106,9 +100,9 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
                     }
                     "--resolution" => {
                         i += 1;
-                        let val = args.get(i).ok_or_else(|| {
-                            anyhow::anyhow!("--resolution requires a value")
-                        })?;
+                        let val = args
+                            .get(i)
+                            .ok_or_else(|| anyhow::anyhow!("--resolution requires a value"))?;
                         a.resolution = val.parse()?;
                     }
                     "--allow-remote-control" => {
