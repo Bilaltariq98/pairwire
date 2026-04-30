@@ -120,6 +120,8 @@ pub enum ControlMessage {
     },
     /// Clear drawing annotations.
     DrawClear(crate::drawing::DrawClear),
+    /// A completed drawing stroke from either peer.
+    DrawStroke(crate::drawing::DrawStroke),
 }
 
 /// Diagnostic heartbeat sent periodically on the control stream.
