@@ -120,13 +120,11 @@ pub async fn run_host(
             Ok(Some((_input_send, input_recv))) => {
                 // Clipboard messages arriving on the input stream are routed to
                 // ClipboardReceiver, which writes them to the host OS clipboard.
-                let (clipboard_sync_tx, clipboard_sync_rx) =
-                    tokio::sync::mpsc::channel(8);
+                let (clipboard_sync_tx, clipboard_sync_rx) = tokio::sync::mpsc::channel(8);
                 let cb_receiver = ClipboardReceiver::new(clipboard_sync_rx);
                 clipboard_recv_handle = Some(cb_receiver.spawn());
 
-                let receiver = InputReceiver::new(input_recv)
-                    .with_clipboard(clipboard_sync_tx);
+                let receiver = InputReceiver::new(input_recv).with_clipboard(clipboard_sync_tx);
                 let handle = receiver.spawn();
                 if args.allow_remote_control {
                     handle.set_permission(pairwire_input::InputPermission::FullControl);
@@ -428,12 +426,19 @@ pub async fn run_join(
         "handshake complete"
     );
 
+    // Give the host a short turn to finish its handshake path and enter its
+    // post-handshake accept loop before the guest opens annotation/moq streams.
+    // On same-machine runs, opening follow-up bidi streams immediately after
+    // the guest handshake can intermittently leave the host stuck waiting for
+    // the handshake response while the viewer sits at "Connecting…".
+    // TODO: replace this timing guard with an explicit host-ready control ack
+    // once the control plane has a persistent session-management stream.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
     // Quality monitor on the guest side — drives the HUD quality dot.
     // Uses a dummy CaptureConfig since the guest doesn't encode; we only need the tier.
-    let guest_quality_monitor = QualityMonitor::new(
-        Arc::new(conn.raw_conn().clone()),
-        CaptureConfig::default(),
-    );
+    let guest_quality_monitor =
+        QualityMonitor::new(Arc::new(conn.raw_conn().clone()), CaptureConfig::default());
     let (guest_quality_handle, _guest_quality_config_rx, guest_quality_tier_rx) =
         guest_quality_monitor.spawn();
 
