@@ -7,9 +7,10 @@ use std::sync::{
 
 use iroh::endpoint::RecvStream;
 use pairwire_core::{Error, Result};
-use pairwire_protocol::input::InputMessage;
+use pairwire_protocol::input::{ClipboardSync, InputMessage};
 use pairwire_transport::connection::recv_message;
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, instrument, warn};
 
 use crate::InputPermission;
@@ -62,14 +63,28 @@ impl InputReceiverHandle {
 /// Receives `InputMessage` events from a QUIC stream and injects them into the OS.
 ///
 /// Events are silently dropped when permission is `Denied`.
+/// Clipboard messages are forwarded to `clipboard_tx` if provided, bypassing injection.
 pub struct InputReceiver {
     stream: RecvStream,
+    /// If set, `InputMessage::Clipboard` payloads are forwarded here instead of injected.
+    clipboard_tx: Option<mpsc::Sender<ClipboardSync>>,
 }
 
 impl InputReceiver {
     #[must_use]
     pub fn new(stream: RecvStream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            clipboard_tx: None,
+        }
+    }
+
+    /// Attach a clipboard channel. `InputMessage::Clipboard` payloads will be
+    /// forwarded to this sender rather than passed to the OS injection path.
+    #[must_use]
+    pub fn with_clipboard(mut self, tx: mpsc::Sender<ClipboardSync>) -> Self {
+        self.clipboard_tx = Some(tx);
+        self
     }
 
     /// Spawn the receiver task.
@@ -82,6 +97,7 @@ impl InputReceiver {
         let permission = Arc::new(AtomicPermission::default());
         let perm_clone = Arc::clone(&permission);
         let mut stream = self.stream;
+        let clipboard_tx = self.clipboard_tx;
 
         let join = tokio::spawn(async move {
             info!("input receiver started");
@@ -101,14 +117,29 @@ impl InputReceiver {
                                 break;
                             }
                             Ok(event) => {
-                                let perm = perm_clone.load();
-                                if perm == InputPermission::Denied {
-                                    debug!("input event dropped — permission denied");
-                                    continue;
-                                }
-                                debug!(event = ?event, ?perm, "injecting input event");
-                                if let Err(e) = inject_event(&event, perm) {
-                                    warn!(error = %e, "input injection failed");
+                                match event {
+                                    // Clipboard messages are routed to the clipboard subsystem,
+                                    // not injected as OS events.
+                                    InputMessage::Clipboard(sync) => {
+                                        if let Some(ref tx) = clipboard_tx {
+                                            if tx.send(sync).await.is_err() {
+                                                debug!("clipboard_tx closed, dropping clipboard message");
+                                            }
+                                        } else {
+                                            debug!("clipboard message received but no clipboard_tx configured");
+                                        }
+                                    }
+                                    other => {
+                                        let perm = perm_clone.load();
+                                        if perm == InputPermission::Denied {
+                                            debug!("input event dropped — permission denied");
+                                            continue;
+                                        }
+                                        debug!(event = ?other, ?perm, "injecting input event");
+                                        if let Err(e) = inject_event(&other, perm) {
+                                            warn!(error = %e, "input injection failed");
+                                        }
+                                    }
                                 }
                             }
                         }

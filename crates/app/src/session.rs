@@ -20,7 +20,7 @@ use pairwire_core::{
     SessionId,
     config::{AudioConfig, CaptureConfig, VideoEncoder},
 };
-use pairwire_input::{InputReceiver, InputSender};
+use pairwire_input::{ClipboardReceiver, ClipboardSender, InputReceiver, InputSender};
 use pairwire_protocol::{Capability, CursorUpdate};
 use pairwire_transport::{
     AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
@@ -105,10 +105,19 @@ pub async fn run_host(
 
     // Accept the input bidi stream opened by the guest (before moq-lite starts).
     // Auto-grant FullControl when allow_remote_control is true (default: false).
+    let mut clipboard_recv_handle = None;
     let input_recv_handle = if session.has_capability(&Capability::RemoteControl) {
         match conn.accept_bi().await {
             Ok(Some((_input_send, input_recv))) => {
-                let receiver = InputReceiver::new(input_recv);
+                // Clipboard messages arriving on the input stream are routed to
+                // ClipboardReceiver, which writes them to the host OS clipboard.
+                let (clipboard_sync_tx, clipboard_sync_rx) =
+                    tokio::sync::mpsc::channel(8);
+                let cb_receiver = ClipboardReceiver::new(clipboard_sync_rx);
+                clipboard_recv_handle = Some(cb_receiver.spawn());
+
+                let receiver = InputReceiver::new(input_recv)
+                    .with_clipboard(clipboard_sync_tx);
                 let handle = receiver.spawn();
                 if args.allow_remote_control {
                     handle.set_permission(pairwire_input::InputPermission::FullControl);
@@ -132,6 +141,11 @@ pub async fn run_host(
     } else {
         None
     };
+
+    // Clipboard sync is currently guest→host only: the guest's ClipboardSender pushes
+    // InputMessage::Clipboard onto the input stream; InputReceiver routes it to
+    // ClipboardReceiver above. Host→guest requires a reverse send path (bidi input
+    // stream or a separate stream) — deferred.
 
     let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
     let (guest_audio_chan_tx, guest_audio_chan_rx) = tokio::sync::mpsc::channel(64);
@@ -294,6 +308,9 @@ pub async fn run_host(
     quality_handle.stop().await;
     router.stop().await;
     cursor_send_handle.stop().await;
+    if let Some(handle) = clipboard_recv_handle {
+        handle.stop().await;
+    }
     if let Some(handle) = input_recv_handle {
         handle.stop().await;
     }
@@ -379,6 +396,8 @@ pub async fn run_join(
 
     // Open input bidi stream (guest→host) before moq-lite starts.
     // Forward events from the viewer's input channel to the InputSender.
+    // ClipboardSender shares the same channel so clipboard events ride the same stream.
+    let mut guest_clipboard_send_handle = None;
     let (input_send_handle, input_forward_task) =
         if session.has_capability(&Capability::RemoteControl) {
             match conn.open_control_stream().await {
@@ -387,6 +406,12 @@ pub async fn run_join(
                         tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
                     let sender = InputSender::new(input_send);
                     let handle = sender.spawn(rx);
+
+                    // ClipboardSender monitors the guest clipboard and pushes
+                    // InputMessage::Clipboard onto the same stream as keyboard/mouse.
+                    let cb_sender = ClipboardSender::new(tx.clone(), true);
+                    guest_clipboard_send_handle = Some(cb_sender.spawn());
+
                     // Forward viewer input events to the InputSender channel.
                     let forward = tokio::spawn(async move {
                         while let Some(msg) = viewer_input_rx.recv().await {
@@ -479,6 +504,9 @@ pub async fn run_join(
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
     cursor_recv_handle.stop().await;
+    if let Some(handle) = guest_clipboard_send_handle {
+        handle.stop().await;
+    }
     if let Some(task) = input_forward_task {
         task.abort();
         let _ = task.await;
