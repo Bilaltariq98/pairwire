@@ -190,7 +190,12 @@ mod inner {
                         None
                     }
                 }
-                Err(_) => None,
+                Err(err) => {
+                    if err.is_disconnected() {
+                        warn!("tray menu event channel disconnected");
+                    }
+                    None
+                }
             }
         }
     }

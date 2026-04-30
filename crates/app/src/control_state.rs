@@ -2,7 +2,8 @@
 //! of truth; guest mirrors what the host most recently confirmed).
 //!
 //! These types are exposed here for T5 to consume; they are not yet wired
-//! into the session loop.
+//! into the session loop. Once T5 lands, the items below will be referenced
+//! from `session.rs` and the module-level `dead_code` allow can be removed.
 #![allow(dead_code)]
 
 use pairwire_input::InputPermission;
@@ -82,6 +83,13 @@ mod tests {
     }
 
     #[test]
+    fn grant_after_request_moves_to_guest_active() {
+        let mut state = RuntimeControlState::GuestRequested;
+        state.apply(ControlAction::Grant);
+        assert_eq!(state, RuntimeControlState::GuestActive);
+    }
+
+    #[test]
     fn revoke_when_already_host_is_noop() {
         let mut state = RuntimeControlState::HostActive;
         state.apply(ControlAction::Revoke);
@@ -92,15 +100,15 @@ mod tests {
     fn permission_for_state() {
         assert_eq!(
             RuntimeControlState::HostActive.input_permission(),
-            pairwire_input::InputPermission::Denied
+            InputPermission::Denied
         );
         assert_eq!(
             RuntimeControlState::GuestActive.input_permission(),
-            pairwire_input::InputPermission::FullControl
+            InputPermission::FullControl
         );
         assert_eq!(
             RuntimeControlState::GuestRequested.input_permission(),
-            pairwire_input::InputPermission::Denied
+            InputPermission::Denied
         );
     }
 }
