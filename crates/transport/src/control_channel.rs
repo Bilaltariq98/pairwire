@@ -169,6 +169,80 @@ mod tests {
         b_handle.stop().await;
     }
 
+    /// Verify the session-open ordering contract that `run_host` / `run_join` rely on:
+    ///   1. Host calls `accept_bi` for the control channel.
+    ///   2. Guest calls `open_control_stream`, spawns `ControlChannel`, then immediately
+    ///      sends an initial `SetSharing` message so the QUIC STREAM frame is written —
+    ///      this unblocks the host's `accept_bi`.
+    ///   3. Host spawns its own `ControlChannel` on the accepted stream.
+    ///   4. Host's broadcast subscriber receives the guest's `SetSharing` message.
+    ///
+    /// The test documents that the pre-queue requirement (discovered in T1) holds for
+    /// the host-accepts-first / guest-opens-first ordering used in the session loop.
+    #[tokio::test]
+    async fn control_channel_handles_session_open_ordering() {
+        use pairwire_protocol::ControlMessage;
+        use std::time::Duration;
+
+        let (peer_a, peer_b) = crate::test_utils::loopback_pair().await;
+
+        // Spawn the host side: accept_bi blocks until guest writes the first STREAM frame.
+        let host_task = tokio::spawn(async move {
+            let (send, recv) = tokio::time::timeout(Duration::from_secs(5), async {
+                peer_a
+                    .accept_bi()
+                    .await
+                    .expect("accept_bi error")
+                    .expect("connection closed before CC stream")
+            })
+            .await
+            .expect("host accept_bi timed out");
+
+            let (_outbound_tx, outbound_rx) = mpsc::channel(8);
+            let host_handle = ControlChannel::spawn(send, recv, outbound_rx);
+            let mut host_inbound = host_handle.subscribe();
+
+            let msg = tokio::time::timeout(Duration::from_secs(5), host_inbound.recv())
+                .await
+                .expect("host inbound recv timed out")
+                .expect("host inbound channel error");
+
+            host_handle.stop().await;
+            msg
+        });
+
+        // Guest side: open_control_stream, spawn ControlChannel, send SetSharing immediately.
+        // This is the pattern used in run_join — open, spawn, send initial message to flush
+        // the QUIC stream announcement so the host's accept_bi can return.
+        let (guest_ctrl_outbound_tx, guest_ctrl_outbound_rx) = mpsc::channel::<ControlMessage>(8);
+        let (ctrl_send, ctrl_recv) = peer_b.open_control_stream().await.unwrap();
+        let guest_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, guest_ctrl_outbound_rx);
+
+        // Force the QUIC bidi stream open — open_bi alone doesn't announce the stream
+        // to the remote's accept_bi until the first STREAM frame is written.
+        guest_ctrl_outbound_tx
+            .send(ControlMessage::SetSharing {
+                screen: true,
+                audio: true,
+            })
+            .await
+            .unwrap();
+
+        let received = host_task.await.expect("host task panicked");
+        assert!(
+            matches!(
+                received,
+                ControlMessage::SetSharing {
+                    screen: true,
+                    audio: true
+                }
+            ),
+            "expected SetSharing{{screen:true,audio:true}}, got {received:?}"
+        );
+
+        guest_handle.stop().await;
+    }
+
     #[tokio::test]
     async fn control_channel_stops_cleanly() {
         let (peer_a, peer_b) = crate::test_utils::loopback_pair().await;
