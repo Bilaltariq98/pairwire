@@ -113,13 +113,20 @@ impl QualityMonitor {
         Self { conn, base_config }
     }
 
-    /// Spawn the monitor. Returns a handle and a `watch::Receiver<CaptureConfig>`.
+    /// Spawn the monitor.
     ///
-    /// The receiver always holds the current adapted config. The encode thread
-    /// should check it before each frame and reconfigure if it has changed.
+    /// Returns a handle, a `watch::Receiver<CaptureConfig>` (adapted config for the
+    /// encode thread), and a `watch::Receiver<QualityTier>` (current tier for the UI).
     #[instrument(skip(self))]
-    pub fn spawn(self) -> (QualityMonitorHandle, watch::Receiver<CaptureConfig>) {
+    pub fn spawn(
+        self,
+    ) -> (
+        QualityMonitorHandle,
+        watch::Receiver<CaptureConfig>,
+        watch::Receiver<QualityTier>,
+    ) {
         let (config_tx, config_rx) = watch::channel(self.base_config.clone());
+        let (tier_tx, tier_rx) = watch::channel(QualityTier::Full);
         let (stop_tx, mut stop_rx) = oneshot::channel();
 
         let join = tokio::spawn(async move {
@@ -167,6 +174,7 @@ impl QualityMonitor {
                                 "quality tier changed"
                             );
                             let _ = config_tx.send(adapted);
+                            let _ = tier_tx.send(effective_tier);
                         }
                     }
                 }
@@ -174,7 +182,7 @@ impl QualityMonitor {
             info!("quality monitor stopped");
         });
 
-        (QualityMonitorHandle { stop_tx, join }, config_rx)
+        (QualityMonitorHandle { stop_tx, join }, config_rx, tier_rx)
     }
 }
 

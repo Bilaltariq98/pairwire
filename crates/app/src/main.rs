@@ -153,9 +153,25 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     let (drawing_event_tx, _) =
         tokio::sync::broadcast::channel::<pairwire_transport::DrawingEvent>(32);
     let drawing_event_tx_for_session = drawing_event_tx.clone();
+    // Mute channel: viewer sends mute state (true=muted), session applies to capture thread.
+    let (mute_tx, mute_rx_for_session) = tokio::sync::watch::channel(false);
+    // Quality tier: session publishes current connection quality, viewer shows HUD dot.
+    let (quality_tx_for_session, quality_rx) =
+        tokio::sync::watch::channel(pairwire_transport::QualityTier::Full);
 
     #[cfg(not(feature = "gui"))]
-    let _ = (&frame_rx, &cursor_rx, &conn_rx, &input_tx, &drawing_event_tx, &drawing_strokes_rx);
+    let _ = (
+        &frame_rx,
+        &cursor_rx,
+        &conn_rx,
+        &input_tx,
+        &drawing_event_tx,
+        &drawing_strokes_rx,
+        &mute_tx,
+        &mute_rx_for_session,
+        &quality_tx_for_session,
+        &quality_rx,
+    );
 
     let no_gui = args.no_gui;
 
@@ -167,6 +183,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
             let cursor_tx = cursor_tx.clone();
             let drawing_strokes_tx = drawing_strokes_tx.clone();
             let args = args.clone();
+            let mute_rx = mute_rx_for_session.clone();
+            let quality_tx = quality_tx_for_session.clone();
             // Each reconnect gets a fresh broadcast subscriber → mpsc bridge.
             let mut input_broadcast_rx = input_tx_for_session.subscribe();
             let mut drawing_broadcast_rx = drawing_event_tx_for_session.subscribe();
@@ -197,6 +215,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                     cursor_tx,
                     drawing_strokes_tx,
                     drawing_bridge_rx,
+                    mute_rx,
+                    quality_tx,
                     input_bridge_rx,
                 )
                 .await
@@ -223,6 +243,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                 input_tx,
                 drawing_strokes_rx,
                 drawing_event_tx,
+                mute_tx,
+                quality_rx,
                 "pairwire",
             )?;
         }
