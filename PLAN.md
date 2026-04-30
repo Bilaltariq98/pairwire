@@ -629,7 +629,7 @@
   - `just all` passes
 
 ### P3.5.3: Drawing & Annotations
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P3.5.1
 - **Description**: Either peer can draw on the shared screen. Strokes are overlays (not baked into capture). Inspired by Tuple's laser pointer + persistent drawing.
 - **Deliverables**:

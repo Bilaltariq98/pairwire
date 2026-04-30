@@ -25,9 +25,9 @@ use pairwire_core::{
 use pairwire_input::{ClipboardReceiver, ClipboardSender, InputReceiver, InputSender};
 use pairwire_protocol::{Capability, CursorUpdate, VideoCodec};
 use pairwire_transport::{
-    AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
-    NegotiatedSession, QualityMonitor, TAG_GUEST_AUDIO, Transport, datagram_router,
-    guest_handshake, host_handshake, local_handshake,
+    AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, DrawingReceiver,
+    DrawingSender, MoqSessionSubscriber, NegotiatedSession, QualityMonitor, TAG_GUEST_AUDIO,
+    Transport, datagram_router, guest_handshake, host_handshake, local_handshake,
 };
 #[cfg(feature = "encode")]
 use pairwire_transport::{MoqSessionPublisher, VideoStreamConfig};
@@ -143,6 +143,34 @@ pub async fn run_host(
     // ClipboardReceiver above. Host→guest requires a reverse send path (bidi input
     // stream or a separate stream) — deferred.
 
+    // Accept the annotation bidi stream opened by the guest (before moq-lite starts).
+    // Used for DrawStroke / DrawClear messages in both directions.
+    // draw_point_tx feeds live DrawPoint datagrams from the router into DrawingReceiver.
+    let mut host_drawing_send_handle = None;
+    let mut host_drawing_recv_handle = None;
+    let mut host_draw_point_tx: Option<tokio::sync::mpsc::Sender<bytes::Bytes>> = None;
+
+    if session.has_capability(&Capability::Annotations) {
+        match conn.accept_bi().await {
+            Ok(Some((annot_send, annot_recv))) => {
+                let (draw_event_tx, draw_event_rx) = tokio::sync::mpsc::channel(32);
+                let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
+                let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
+                let (recv_handle, _strokes_rx, _live_rx) =
+                    DrawingReceiver::new(annot_recv).spawn(draw_pt_rx);
+                host_drawing_send_handle = Some(sender.spawn(draw_event_rx));
+                host_drawing_recv_handle = Some(recv_handle);
+                host_draw_point_tx = Some(draw_pt_tx);
+                // draw_event_tx unused on host for now — host has no viewer to
+                // capture drawing input from. Kept for future host-side annotation.
+                drop(draw_event_tx);
+                info!("annotation stream accepted");
+            }
+            Ok(None) => warn!("connection closed before annotation stream"),
+            Err(e) => warn!(error = %e, "failed to accept annotation stream"),
+        }
+    }
+
     let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
     let (guest_audio_chan_tx, guest_audio_chan_rx) = tokio::sync::mpsc::channel(64);
     let router = datagram_router::start(
@@ -150,7 +178,7 @@ pub async fn run_host(
         DatagramChannels {
             cursor_tx: cursor_chan_tx,
             guest_audio_tx: Some(guest_audio_chan_tx),
-            draw_point_tx: None,
+            draw_point_tx: host_draw_point_tx,
             reaction_tx: None,
         },
     );
@@ -310,6 +338,12 @@ pub async fn run_host(
     quality_handle.stop().await;
     router.stop().await;
     cursor_send_handle.stop().await;
+    if let Some(handle) = host_drawing_send_handle {
+        handle.stop().await;
+    }
+    if let Some(handle) = host_drawing_recv_handle {
+        handle.stop().await;
+    }
     if let Some(handle) = clipboard_recv_handle {
         handle.stop().await;
     }
@@ -340,11 +374,14 @@ pub async fn run_host(
 /// Run as guest: connect to host, handshake, receive and decode frames, forward to viewer.
 ///
 /// `viewer_input_rx` receives input events from the viewer UI (keyboard/mouse).
-/// These are forwarded to the host via the `InputSender` when remote control is active.
+/// `drawing_event_rx` receives drawing events from the viewer (strokes, points, clears).
+/// `drawing_tx` publishes the accumulated stroke list to the viewer whenever it changes.
 pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
     cursor_tx: watch::Sender<Option<CursorUpdate>>,
+    drawing_tx: watch::Sender<Vec<pairwire_protocol::drawing::DrawStroke>>,
+    mut drawing_event_rx: tokio::sync::mpsc::Receiver<pairwire_transport::DrawingEvent>,
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
@@ -379,7 +416,7 @@ pub async fn run_join(
         DatagramChannels {
             cursor_tx: cursor_chan_tx,
             guest_audio_tx: None,
-            draw_point_tx: None,
+            draw_point_tx: guest_draw_point_tx,
             reaction_tx: None,
         },
     );
@@ -435,6 +472,43 @@ pub async fn run_join(
         } else {
             (None, None)
         };
+
+    // Open annotation bidi stream (guest→host) before moq-lite starts.
+    // Carries DrawStroke / DrawClear messages in both directions.
+    let mut guest_drawing_send_handle = None;
+    let mut guest_drawing_recv_handle = None;
+    let mut guest_draw_point_tx: Option<tokio::sync::mpsc::Sender<bytes::Bytes>> = None;
+
+    if session.has_capability(&Capability::Annotations) {
+        match conn.open_control_stream().await {
+            Ok((annot_send, annot_recv)) => {
+                let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
+                let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
+                let (recv_handle, strokes_rx, _live_rx) =
+                    DrawingReceiver::new(annot_recv).spawn(draw_pt_rx);
+
+                // Forward received strokes to the viewer's drawing watch channel.
+                let drawing_fwd_tx = drawing_tx.clone();
+                tokio::spawn(async move {
+                    let mut rx = strokes_rx;
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let _ = drawing_fwd_tx.send(rx.borrow().clone());
+                    }
+                });
+
+                // DrawingSender consumes drawing_event_rx directly — viewer events
+                // flow straight to the sender without an extra bridge channel.
+                guest_drawing_send_handle = Some(sender.spawn(drawing_event_rx));
+                guest_drawing_recv_handle = Some(recv_handle);
+                guest_draw_point_tx = Some(draw_pt_tx);
+                info!("annotation stream opened");
+            }
+            Err(e) => warn!(error = %e, "failed to open annotation stream"),
+        }
+    }
 
     // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
@@ -505,6 +579,12 @@ pub async fn run_join(
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
     cursor_recv_handle.stop().await;
+    if let Some(handle) = guest_drawing_send_handle {
+        handle.stop().await;
+    }
+    if let Some(handle) = guest_drawing_recv_handle {
+        handle.stop().await;
+    }
     if let Some(handle) = guest_clipboard_send_handle {
         handle.stop().await;
     }
@@ -744,11 +824,15 @@ fn available_video_codecs() -> Vec<VideoCodec> {
 fn host_capabilities() -> Vec<Capability> {
     #[cfg(feature = "audio")]
     {
-        vec![Capability::Screen, Capability::Audio]
+        vec![
+            Capability::Screen,
+            Capability::Audio,
+            Capability::Annotations,
+        ]
     }
     #[cfg(not(feature = "audio"))]
     {
-        vec![Capability::Screen]
+        vec![Capability::Screen, Capability::Annotations]
     }
 }
 
@@ -759,11 +843,16 @@ fn guest_capabilities() -> Vec<Capability> {
             Capability::Screen,
             Capability::RemoteControl,
             Capability::Audio,
+            Capability::Annotations,
         ]
     }
     #[cfg(not(feature = "audio"))]
     {
-        vec![Capability::Screen, Capability::RemoteControl]
+        vec![
+            Capability::Screen,
+            Capability::RemoteControl,
+            Capability::Annotations,
+        ]
     }
 }
 

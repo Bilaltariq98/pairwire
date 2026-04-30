@@ -8,7 +8,9 @@ mod inner {
     use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2};
     use pairwire_capture::DecodedFrame;
     use pairwire_protocol::CursorUpdate;
+    use pairwire_protocol::drawing::{DrawMode, DrawPoint, DrawStroke};
     use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseScroll};
+    use pairwire_transport::DrawingEvent;
     use tokio::sync::{broadcast, watch};
     use tracing::debug;
 
@@ -20,6 +22,8 @@ mod inner {
         cursor_rx: watch::Receiver<Option<CursorUpdate>>,
         conn_rx: watch::Receiver<ConnectionState>,
         input_tx: broadcast::Sender<InputMessage>,
+        drawing_rx: watch::Receiver<Vec<DrawStroke>>,
+        drawing_tx: broadcast::Sender<DrawingEvent>,
         texture: Option<TextureHandle>,
         frame_count: u64,
         last_fps_time: std::time::Instant,
@@ -28,6 +32,16 @@ mod inner {
         tex_size: Option<(f32, f32)>,
         /// Cached display rect and size from last render (for input coordinate mapping).
         display_rect: Option<(egui::Rect, Vec2)>,
+        /// Whether drawing mode is active (toggled with Cmd/Ctrl+Shift+D).
+        drawing_mode: bool,
+        /// Current draw mode (laser vs persistent).
+        draw_mode: DrawMode,
+        /// Points accumulated in the current stroke (host-display coordinates).
+        current_stroke: Vec<(u16, u16)>,
+        /// Whether the pointer is currently pressed in drawing mode.
+        drawing_active: bool,
+        /// Peer ID for this guest's strokes (always 1 for the guest in 1:1 sessions).
+        peer_id: u8,
     }
 
     impl ViewerApp {
@@ -36,24 +50,100 @@ mod inner {
             cursor_rx: watch::Receiver<Option<CursorUpdate>>,
             conn_rx: watch::Receiver<ConnectionState>,
             input_tx: broadcast::Sender<InputMessage>,
+            drawing_rx: watch::Receiver<Vec<DrawStroke>>,
+            drawing_tx: broadcast::Sender<DrawingEvent>,
         ) -> Self {
             Self {
                 frame_rx,
                 cursor_rx,
                 conn_rx,
                 input_tx,
+                drawing_rx,
+                drawing_tx,
                 texture: None,
                 frame_count: 0,
                 last_fps_time: std::time::Instant::now(),
                 fps: 0.0,
                 tex_size: None,
                 display_rect: None,
+                drawing_mode: false,
+                draw_mode: DrawMode::Laser,
+                current_stroke: Vec::new(),
+                drawing_active: false,
+                peer_id: 1,
             }
+        }
+
+        fn send_drawing(&self, event: DrawingEvent) {
+            let _ = self.drawing_tx.send(event);
         }
 
         fn send_input(&self, msg: InputMessage) {
             // Best-effort send — if no receivers or channel full, silently drop.
             let _ = self.input_tx.send(msg);
+        }
+
+        /// Render all completed strokes from `drawing_rx` as overlays on the screen texture.
+        ///
+        /// Laser strokes are drawn with 50% opacity; persistent strokes are fully opaque.
+        /// Points are in host-display coordinates and are mapped back to viewer pixels.
+        fn render_strokes(
+            &self,
+            ui: &egui::Ui,
+            rect: egui::Rect,
+            display_size: Vec2,
+            tex_size: egui::Vec2,
+        ) {
+            let strokes = self.drawing_rx.borrow();
+            if strokes.is_empty() && self.current_stroke.is_empty() {
+                return;
+            }
+
+            let p = ui.painter();
+
+            // Map a host-coordinate point to a viewer pixel position.
+            let to_screen = |hx: u16, hy: u16| -> egui::Pos2 {
+                let rx = hx as f32 / tex_size.x;
+                let ry = hy as f32 / tex_size.y;
+                egui::pos2(
+                    rect.min.x + rx * display_size.x,
+                    rect.min.y + ry * display_size.y,
+                )
+            };
+
+            // Render completed strokes received from the remote peer.
+            for stroke in strokes.iter() {
+                if stroke.points.len() < 2 {
+                    continue;
+                }
+                let alpha = match stroke.mode {
+                    DrawMode::Laser => 160u8,
+                    DrawMode::Persistent => 230u8,
+                };
+                let color = egui::Color32::from_rgba_unmultiplied(
+                    stroke.color[0],
+                    stroke.color[1],
+                    stroke.color[2],
+                    alpha,
+                );
+                let egui_stroke = egui::Stroke::new(3.0, color);
+                for window in stroke.points.windows(2) {
+                    let a = to_screen(window[0].0, window[0].1);
+                    let b = to_screen(window[1].0, window[1].1);
+                    p.line_segment([a, b], egui_stroke);
+                }
+            }
+
+            // Render the current in-progress stroke (local, not yet sent).
+            if self.current_stroke.len() >= 2 {
+                let color = egui::Color32::from_rgba_unmultiplied(255, 80, 80, 200);
+                let egui_stroke = egui::Stroke::new(3.0, color);
+                for window in self.current_stroke.windows(2) {
+                    let a = to_screen(window[0].0, window[0].1);
+                    let b = to_screen(window[1].0, window[1].1);
+                    p.line_segment([a, b], egui_stroke);
+                }
+            }
         }
 
         fn upload_frame(&mut self, ctx: &Context, frame: &DecodedFrame) {
@@ -118,6 +208,9 @@ mod inner {
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                             egui::Color32::WHITE,
                         );
+
+                        // Drawing strokes overlay (below cursor)
+                        self.render_strokes(ui, rect, display_size, tex_size);
 
                         // Remote cursor overlay
                         if let Some(cursor) = self.cursor_rx.borrow().as_ref() {
@@ -201,85 +294,173 @@ mod inner {
     }
 
     impl ViewerApp {
-        /// Read egui input events and send them as `InputMessage` to the host.
-        fn capture_input_events(&self, ctx: &Context) {
+        /// Read egui input events and forward them to the host or drawing subsystem.
+        ///
+        /// When drawing mode is active (Cmd/Ctrl+Shift+D), pointer events build strokes
+        /// instead of being forwarded as remote control input.
+        fn capture_input_events(&mut self, ctx: &Context) {
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
 
-            ctx.input(|input| {
-                // Keyboard events
-                for event in &input.events {
-                    match event {
-                        egui::Event::Key {
-                            key,
-                            pressed,
-                            modifiers,
-                            ..
-                        } => {
-                            let mut mods: u8 = 0;
-                            if modifiers.shift {
-                                mods |= pairwire_protocol::input::MOD_SHIFT;
+            // Collect events and pointer state before mutating self.
+            let (events, latest_pos, pointer_down) = ctx.input(|input| {
+                (
+                    input.events.clone(),
+                    input.pointer.latest_pos(),
+                    input.pointer.primary_down(),
+                )
+            });
+
+            for event in &events {
+                match event {
+                    egui::Event::Key {
+                        key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } => {
+                        // Cmd/Ctrl+Shift+D — toggle drawing mode.
+                        if *pressed
+                            && *key == egui::Key::D
+                            && modifiers.shift
+                            && (modifiers.mac_cmd || modifiers.command || modifiers.ctrl)
+                        {
+                            self.drawing_mode = !self.drawing_mode;
+                            self.current_stroke.clear();
+                            self.drawing_active = false;
+                            debug!(drawing_mode = self.drawing_mode, "drawing mode toggled");
+                            continue;
+                        }
+
+                        // Escape clears strokes in drawing mode.
+                        if *pressed && *key == egui::Key::Escape && self.drawing_mode {
+                            self.send_drawing(DrawingEvent::Clear(
+                                pairwire_protocol::drawing::DrawClear { peer_id: Some(self.peer_id) },
+                            ));
+                            self.current_stroke.clear();
+                            self.drawing_active = false;
+                            continue;
+                        }
+
+                        // In drawing mode, don't forward keyboard events to host.
+                        if self.drawing_mode {
+                            continue;
+                        }
+
+                        let mut mods: u8 = 0;
+                        if modifiers.shift {
+                            mods |= pairwire_protocol::input::MOD_SHIFT;
+                        }
+                        if modifiers.ctrl {
+                            mods |= pairwire_protocol::input::MOD_CTRL;
+                        }
+                        if modifiers.alt {
+                            mods |= pairwire_protocol::input::MOD_ALT;
+                        }
+                        if modifiers.mac_cmd || modifiers.command {
+                            mods |= pairwire_protocol::input::MOD_META;
+                        }
+                        self.send_input(InputMessage::Key(KeyEvent {
+                            key_code: *key as u32,
+                            modifiers: mods,
+                            pressed: *pressed,
+                            timestamp_ms: now_ms,
+                        }));
+                    }
+
+                    egui::Event::PointerButton { pos, button, pressed, .. } => {
+                        if self.drawing_mode {
+                            if *button == egui::PointerButton::Primary {
+                                if *pressed {
+                                    // Start a new stroke.
+                                    self.current_stroke.clear();
+                                    self.drawing_active = true;
+                                    if let Some((hx, hy)) = self.map_pointer_to_host(*pos) {
+                                        self.current_stroke.push((hx, hy));
+                                    }
+                                } else if self.drawing_active {
+                                    // Stroke complete — send it.
+                                    self.drawing_active = false;
+                                    if self.current_stroke.len() >= 2 {
+                                        let stroke = DrawStroke {
+                                            peer_id: self.peer_id,
+                                            color: [255, 80, 80],
+                                            points: std::mem::take(&mut self.current_stroke),
+                                            mode: self.draw_mode,
+                                        };
+                                        self.send_drawing(DrawingEvent::Stroke(stroke));
+                                    } else {
+                                        self.current_stroke.clear();
+                                    }
+                                }
                             }
-                            if modifiers.ctrl {
-                                mods |= pairwire_protocol::input::MOD_CTRL;
-                            }
-                            if modifiers.alt {
-                                mods |= pairwire_protocol::input::MOD_ALT;
-                            }
-                            if modifiers.mac_cmd || modifiers.command {
-                                mods |= pairwire_protocol::input::MOD_META;
-                            }
-                            self.send_input(InputMessage::Key(KeyEvent {
-                                key_code: *key as u32,
-                                modifiers: mods,
+                            continue;
+                        }
+
+                        if let Some((hx, hy)) = self.map_pointer_to_host(*pos) {
+                            let btn = match button {
+                                egui::PointerButton::Primary => 0,
+                                egui::PointerButton::Secondary => 1,
+                                egui::PointerButton::Middle => 2,
+                                _ => 0,
+                            };
+                            self.send_input(InputMessage::Click(MouseClick {
+                                x: hx,
+                                y: hy,
+                                button: btn,
                                 pressed: *pressed,
                                 timestamp_ms: now_ms,
                             }));
                         }
-                        egui::Event::PointerButton {
-                            pos,
-                            button,
-                            pressed,
-                            ..
-                        } => {
-                            // Map to host coordinates using the screen rect.
-                            // For now, use a rough mapping based on window size.
-                            if let Some((hx, hy)) = self.map_pointer_to_host(*pos) {
-                                let btn = match button {
-                                    egui::PointerButton::Primary => 0,
-                                    egui::PointerButton::Secondary => 1,
-                                    egui::PointerButton::Middle => 2,
-                                    _ => 0,
-                                };
-                                self.send_input(InputMessage::Click(MouseClick {
+                    }
+
+                    egui::Event::MouseWheel { delta, .. } => {
+                        if self.drawing_mode {
+                            continue;
+                        }
+                        if let Some(pos) = latest_pos {
+                            if let Some((hx, hy)) = self.map_pointer_to_host(pos) {
+                                #[allow(clippy::cast_possible_truncation)]
+                                self.send_input(InputMessage::Scroll(MouseScroll {
                                     x: hx,
                                     y: hy,
-                                    button: btn,
-                                    pressed: *pressed,
+                                    delta_x: (delta.x * 100.0) as i16,
+                                    delta_y: (delta.y * 100.0) as i16,
                                     timestamp_ms: now_ms,
                                 }));
                             }
                         }
-                        egui::Event::MouseWheel { delta, .. } => {
-                            if let Some(pos) = input.pointer.latest_pos() {
-                                if let Some((hx, hy)) = self.map_pointer_to_host(pos) {
-                                    #[allow(clippy::cast_possible_truncation)]
-                                    self.send_input(InputMessage::Scroll(MouseScroll {
-                                        x: hx,
-                                        y: hy,
-                                        delta_x: (delta.x * 100.0) as i16,
-                                        delta_y: (delta.y * 100.0) as i16,
-                                        timestamp_ms: now_ms,
-                                    }));
-                                }
-                            }
+                    }
+
+                    _ => {}
+                }
+            }
+
+            // While drawing is active, sample pointer position each frame to build
+            // the stroke and send live DrawPoint datagrams.
+            if self.drawing_mode && self.drawing_active && pointer_down {
+                if let Some(pos) = latest_pos {
+                    if let Some((hx, hy)) = self.map_pointer_to_host(pos) {
+                        let last = self.current_stroke.last().copied();
+                        // Only append if the pointer moved at least 2 host pixels.
+                        let moved = last.map_or(true, |(lx, ly)| {
+                            let dx = (hx as i32 - lx as i32).abs();
+                            let dy = (hy as i32 - ly as i32).abs();
+                            dx >= 2 || dy >= 2
+                        });
+                        if moved {
+                            self.current_stroke.push((hx, hy));
+                            self.send_drawing(DrawingEvent::Point(DrawPoint {
+                                peer_id: self.peer_id,
+                                x: hx,
+                                y: hy,
+                            }));
                         }
-                        _ => {}
                     }
                 }
-            });
+            }
         }
 
         /// Map pointer position to host display coordinates using the cached display rect.
@@ -320,6 +501,8 @@ mod inner {
         cursor_rx: watch::Receiver<Option<CursorUpdate>>,
         conn_rx: watch::Receiver<ConnectionState>,
         input_tx: broadcast::Sender<InputMessage>,
+        drawing_rx: watch::Receiver<Vec<DrawStroke>>,
+        drawing_tx: broadcast::Sender<DrawingEvent>,
         title: &str,
     ) -> anyhow::Result<()> {
         let options = eframe::NativeOptions {
@@ -335,7 +518,12 @@ mod inner {
             options,
             Box::new(|_cc| {
                 Ok(Box::new(ViewerApp::new(
-                    frame_rx, cursor_rx, conn_rx, input_tx,
+                    frame_rx,
+                    cursor_rx,
+                    conn_rx,
+                    input_tx,
+                    drawing_rx,
+                    drawing_tx,
                 )))
             }),
         )

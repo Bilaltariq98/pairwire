@@ -140,14 +140,22 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     let (cursor_tx, cursor_rx) =
         tokio::sync::watch::channel::<Option<pairwire_protocol::CursorUpdate>>(None);
     let (conn_tx, conn_rx) = tokio::sync::watch::channel(ConnectionState::Connected);
+    // Drawing strokes watch: session publishes accumulated strokes, viewer renders them.
+    let (drawing_strokes_tx, drawing_strokes_rx) =
+        tokio::sync::watch::channel::<Vec<pairwire_protocol::drawing::DrawStroke>>(Vec::new());
     // Input channel: viewer sends InputMessage events, session forwards to host.
     // Uses broadcast so each reconnect attempt can subscribe independently.
     let (input_tx, _) =
         tokio::sync::broadcast::channel::<pairwire_protocol::input::InputMessage>(32);
     let input_tx_for_session = input_tx.clone();
+    // Drawing event channel: viewer sends DrawingEvent (strokes, points, clears) to session.
+    // Uses broadcast so each reconnect attempt can subscribe independently.
+    let (drawing_event_tx, _) =
+        tokio::sync::broadcast::channel::<pairwire_transport::DrawingEvent>(32);
+    let drawing_event_tx_for_session = drawing_event_tx.clone();
 
     #[cfg(not(feature = "gui"))]
-    let _ = (&frame_rx, &cursor_rx, &conn_rx, &input_tx);
+    let _ = (&frame_rx, &cursor_rx, &conn_rx, &input_tx, &drawing_event_tx, &drawing_strokes_rx);
 
     let no_gui = args.no_gui;
 
@@ -157,21 +165,41 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
         reconnect::with_reconnect(policy, conn_tx, move || {
             let frame_tx = frame_tx.clone();
             let cursor_tx = cursor_tx.clone();
+            let drawing_strokes_tx = drawing_strokes_tx.clone();
             let args = args.clone();
             // Each reconnect gets a fresh broadcast subscriber → mpsc bridge.
-            let mut broadcast_rx = input_tx_for_session.subscribe();
+            let mut input_broadcast_rx = input_tx_for_session.subscribe();
+            let mut drawing_broadcast_rx = drawing_event_tx_for_session.subscribe();
             async move {
-                let (bridge_tx, bridge_rx) =
+                let (input_bridge_tx, input_bridge_rx) =
                     tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
-                // Forward broadcast → mpsc for this session's lifetime.
                 tokio::spawn(async move {
-                    while let Ok(msg) = broadcast_rx.recv().await {
-                        if bridge_tx.send(msg).await.is_err() {
+                    while let Ok(msg) = input_broadcast_rx.recv().await {
+                        if input_bridge_tx.send(msg).await.is_err() {
                             break;
                         }
                     }
                 });
-                session::run_join(args, frame_tx, cursor_tx, bridge_rx).await
+                // Bridge drawing events broadcast → mpsc for this session attempt.
+                // DrawingSender inside session consumes the mpsc receiver.
+                let (drawing_bridge_tx, drawing_bridge_rx) =
+                    tokio::sync::mpsc::channel::<pairwire_transport::DrawingEvent>(32);
+                tokio::spawn(async move {
+                    while let Ok(event) = drawing_broadcast_rx.recv().await {
+                        if drawing_bridge_tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                session::run_join(
+                    args,
+                    frame_tx,
+                    cursor_tx,
+                    drawing_strokes_tx,
+                    drawing_bridge_rx,
+                    input_bridge_rx,
+                )
+                .await
             }
         })
         .await
@@ -188,7 +216,15 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     } else {
         #[cfg(feature = "gui")]
         {
-            viewer::run_viewer(frame_rx, cursor_rx, conn_rx, input_tx, "pairwire")?;
+            viewer::run_viewer(
+                frame_rx,
+                cursor_rx,
+                conn_rx,
+                input_tx,
+                drawing_strokes_rx,
+                drawing_event_tx,
+                "pairwire",
+            )?;
         }
         #[cfg(not(feature = "gui"))]
         {
