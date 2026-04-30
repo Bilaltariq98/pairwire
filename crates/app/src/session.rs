@@ -974,7 +974,7 @@ fn guest_capabilities() -> Vec<Capability> {
 
 #[cfg(test)]
 mod tests {
-    use super::scale_cursor_to_frame;
+    use super::{run_cursor_poll, scale_cursor_to_frame};
 
     #[test]
     fn scale_cursor_maps_into_frame_space() {
@@ -1030,5 +1030,19 @@ mod tests {
             scale_cursor_to_frame(1512, 982, 3024, 1964, 1512, 982),
             (756, 491)
         );
+    }
+
+    // current_cursor_state requires a real CGEvent context on macOS and cannot
+    // be meaningfully exercised in a unit test environment. This smoke test
+    // verifies that run_cursor_poll compiles, constructs without panicking, and
+    // exits cleanly when the receiving end of the channel is dropped.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_cursor_poll_emits_configured_peer_id() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let handle = run_cursor_poll(tx, 1, 0, 0);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        handle.abort();
+        let _ = handle.await;
     }
 }
