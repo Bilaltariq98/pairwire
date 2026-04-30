@@ -7,9 +7,9 @@
 mod inner {
     use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2};
     use pairwire_capture::DecodedFrame;
+    use pairwire_protocol::CursorUpdate;
     use pairwire_protocol::drawing::{DrawMode, DrawPoint, DrawStroke};
     use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseScroll};
-    use pairwire_protocol::CursorUpdate;
     use pairwire_transport::{DrawingEvent, QualityTier};
     use tokio::sync::{broadcast, watch};
     use tracing::debug;

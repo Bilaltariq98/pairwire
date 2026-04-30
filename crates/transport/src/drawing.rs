@@ -25,9 +25,9 @@ use postcard::to_allocvec;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
+use crate::connection::PairwireConnection;
 use crate::connection::{recv_message, send_message};
 use crate::datagram_router::{self, TAG_DRAW_POINT};
-use crate::connection::PairwireConnection;
 
 // ── Sender ────────────────────────────────────────────────────────────────────
 
@@ -72,22 +72,20 @@ impl DrawingSender {
                     break;
                 };
                 match event {
-                    DrawingEvent::Point(pt) => {
-                        match to_allocvec(&pt) {
-                            Ok(payload) => {
-                                if let Err(e) = datagram_router::send_tagged(
-                                    conn.raw_conn(),
-                                    TAG_DRAW_POINT,
-                                    &payload,
-                                ) {
-                                    warn!(error = %e, "draw point datagram send failed");
-                                } else {
-                                    debug!(x = pt.x, y = pt.y, "draw point sent");
-                                }
+                    DrawingEvent::Point(pt) => match to_allocvec(&pt) {
+                        Ok(payload) => {
+                            if let Err(e) = datagram_router::send_tagged(
+                                conn.raw_conn(),
+                                TAG_DRAW_POINT,
+                                &payload,
+                            ) {
+                                warn!(error = %e, "draw point datagram send failed");
+                            } else {
+                                debug!(x = pt.x, y = pt.y, "draw point sent");
                             }
-                            Err(e) => warn!(error = %e, "draw point serialization failed"),
                         }
-                    }
+                        Err(e) => warn!(error = %e, "draw point serialization failed"),
+                    },
                     DrawingEvent::Stroke(stroke) => {
                         let msg = ControlMessage::DrawStroke(stroke);
                         if let Err(e) = send_message(&mut stream, &msg).await {
@@ -224,7 +222,11 @@ impl DrawingReceiver {
             info!("drawing receiver stopped");
         });
 
-        (DrawingReceiverHandle { handle, stop_tx }, strokes_rx, live_rx)
+        (
+            DrawingReceiverHandle { handle, stop_tx },
+            strokes_rx,
+            live_rx,
+        )
     }
 }
 
