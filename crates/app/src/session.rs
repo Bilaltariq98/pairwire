@@ -215,48 +215,22 @@ pub async fn run_host(
     let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
     let cursor_frame_width = u16::try_from(capture_config.width).unwrap_or(u16::MAX);
     let cursor_frame_height = u16::try_from(capture_config.height).unwrap_or(u16::MAX);
-    let cursor_poll_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(16));
-        let mut last_sent = None;
+    let cursor_poll_task =
+        run_cursor_poll(cursor_update_tx, 0, cursor_frame_width, cursor_frame_height);
 
-        loop {
-            interval.tick().await;
-            match pairwire_input::current_cursor_state() {
-                Ok(((x, y), (display_width, display_height))) => {
-                    let (x, y) = scale_cursor_to_frame(
-                        x,
-                        y,
-                        display_width,
-                        display_height,
-                        cursor_frame_width,
-                        cursor_frame_height,
-                    );
-                    let update = CursorUpdate {
-                        peer_id: 0,
-                        x,
-                        y,
-                        visible: true,
-                        click_animation: 0,
-                    };
-
-                    if last_sent.as_ref() == Some(&update) {
-                        continue;
-                    }
-
-                    last_sent = Some(update.clone());
-                    if cursor_update_tx.send(update).await.is_err() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    warn!(%error, "host cursor polling stopped");
-                    break;
-                }
+    let (host_cursor_recv_handle, mut host_cursor_watch) = CursorReceiver::spawn(cursor_chan_rx);
+    let host_cursor_log_task = tokio::spawn(async move {
+        while host_cursor_watch.changed().await.is_ok() {
+            if let Some(update) = host_cursor_watch.borrow().clone() {
+                tracing::info!(
+                    peer_id = update.peer_id,
+                    x = update.x,
+                    y = update.y,
+                    "guest cursor"
+                );
             }
         }
     });
-
-    let (_host_cursor_handle, _host_cursor_watch) = CursorReceiver::spawn(cursor_chan_rx);
 
     // Audio capture + encode pipeline (feeds into unified moq session).
     let (audio_capture_handle, audio_encode_handle, _audio_pkt_rx, _audio_stream_config) =
@@ -362,6 +336,9 @@ pub async fn run_host(
 
     cursor_poll_task.abort();
     let _ = cursor_poll_task.await;
+    host_cursor_log_task.abort();
+    let _ = host_cursor_log_task.await;
+    host_cursor_recv_handle.stop().await;
     quality_handle.stop().await;
     host_ctrl_handle.stop().await;
     router.stop().await;
@@ -406,6 +383,7 @@ pub async fn run_host(
 /// `drawing_tx` publishes the accumulated stroke list to the viewer whenever it changes.
 /// `mute_rx` receives mute toggle commands from the viewer (`true` = muted).
 /// `quality_tx` publishes the current connection quality tier to the viewer.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
@@ -598,6 +576,14 @@ pub async fn run_join(
         }
     });
 
+    // Guest cursor sender — polls the guest's own cursor and sends datagrams to the host.
+    // peer_id=1 identifies the guest. Frame dims are 0,0 so cursor stays in guest display
+    // coords (the host has no video frame from the guest to scale into).
+    let guest_cursor_send = CursorSender::new(Arc::clone(&conn));
+    let (guest_cursor_update_tx, guest_cursor_update_rx) = tokio::sync::mpsc::channel(1);
+    let guest_cursor_send_handle = guest_cursor_send.spawn(guest_cursor_update_rx);
+    let guest_cursor_poll_task = run_cursor_poll(guest_cursor_update_tx, 1, 0, 0);
+
     // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
     #[cfg(feature = "encode")]
@@ -691,6 +677,9 @@ pub async fn run_join(
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
     cursor_recv_handle.stop().await;
+    guest_cursor_poll_task.abort();
+    let _ = guest_cursor_poll_task.await;
+    guest_cursor_send_handle.stop().await;
     if let Some(handle) = guest_drawing_send_handle {
         handle.stop().await;
     }
@@ -852,6 +841,60 @@ async fn start_guest_audio_sender(
 
     info!("guest audio sender started");
     Ok((Some(audio_capture), Some(audio_encode), Some(send_task)))
+}
+
+/// Spawn a task that polls the local cursor at ~60 Hz and sends [`CursorUpdate`]s to the
+/// provided channel. The task exits when the channel send fails (receiver dropped) or when
+/// [`pairwire_input::current_cursor_state`] returns an error.
+///
+/// `peer_id` is stamped onto every emitted update so the receiver can identify the sender.
+/// Pass `frame_width`/`frame_height` of 0 to keep coordinates in display space (no scaling).
+fn run_cursor_poll(
+    cursor_update_tx: tokio::sync::mpsc::Sender<CursorUpdate>,
+    peer_id: u16,
+    frame_width: u16,
+    frame_height: u16,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(16));
+        let mut last_sent: Option<CursorUpdate> = None;
+
+        loop {
+            interval.tick().await;
+            match pairwire_input::current_cursor_state() {
+                Ok(((x, y), (display_width, display_height))) => {
+                    let (x, y) = scale_cursor_to_frame(
+                        x,
+                        y,
+                        display_width,
+                        display_height,
+                        frame_width,
+                        frame_height,
+                    );
+                    let update = CursorUpdate {
+                        peer_id,
+                        x,
+                        y,
+                        visible: true,
+                        click_animation: 0,
+                    };
+
+                    if last_sent.as_ref() == Some(&update) {
+                        continue;
+                    }
+
+                    last_sent = Some(update.clone());
+                    if cursor_update_tx.send(update).await.is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "cursor polling stopped");
+                    break;
+                }
+            }
+        }
+    })
 }
 
 fn scale_cursor_to_frame(
