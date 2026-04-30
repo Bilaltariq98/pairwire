@@ -88,6 +88,8 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
                         session_handle.abort();
                         std::process::exit(0);
                     }
+                    // T4: exposed but not yet wired — wiring happens in T5.
+                    TrayAction::GrantControl | TrayAction::RevokeControl => {}
                 }
             }
 

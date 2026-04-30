@@ -1,12 +1,17 @@
 //! Runtime control state used by both host and guest (host owns the source
 //! of truth; guest mirrors what the host most recently confirmed).
+//!
+//! These types are exposed here for T5 to consume; they are not yet wired
+//! into the session loop.
+#![allow(dead_code)]
 
 use pairwire_input::InputPermission;
 
 /// Tracks who currently owns keyboard and mouse input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RuntimeControlState {
     /// Default. Host owns the keyboard/mouse; input from guest is dropped.
+    #[default]
     HostActive,
     /// Guest has sent a `ControlRequest`; host has not yet decided.
     GuestRequested,
@@ -48,12 +53,6 @@ impl RuntimeControlState {
             Self::GuestActive => InputPermission::FullControl,
             _ => InputPermission::Denied,
         }
-    }
-}
-
-impl Default for RuntimeControlState {
-    fn default() -> Self {
-        Self::HostActive
     }
 }
 
