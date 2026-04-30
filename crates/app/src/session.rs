@@ -122,8 +122,7 @@ pub async fn run_host(
         .await
         .context("failed to accept control channel stream")?
         .ok_or_else(|| anyhow::anyhow!("connection closed before control channel"))?;
-    let host_ctrl_handle =
-        ControlChannel::spawn(ctrl_send, ctrl_recv, host_ctrl_outbound_rx);
+    let host_ctrl_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, host_ctrl_outbound_rx);
     // T5 replaces this underscore-prefixed binding with a real consumer.
     let _host_ctrl_inbound = host_ctrl_handle.subscribe();
     info!("control channel accepted");
@@ -462,8 +461,7 @@ pub async fn run_join(
         .open_control_stream()
         .await
         .context("failed to open control channel stream")?;
-    let guest_ctrl_handle =
-        ControlChannel::spawn(ctrl_send, ctrl_recv, guest_ctrl_outbound_rx);
+    let guest_ctrl_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, guest_ctrl_outbound_rx);
     // T5 replaces this underscore-prefixed binding with a real consumer.
     let _guest_ctrl_inbound = guest_ctrl_handle.subscribe();
 
