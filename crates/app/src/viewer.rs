@@ -7,9 +7,9 @@
 mod inner {
     use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2};
     use pairwire_capture::DecodedFrame;
-    use pairwire_protocol::CursorUpdate;
     use pairwire_protocol::drawing::{DrawMode, DrawPoint, DrawStroke};
     use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseScroll};
+    use pairwire_protocol::CursorUpdate;
     use pairwire_transport::{DrawingEvent, QualityTier};
     use tokio::sync::{broadcast, watch};
     use tracing::debug;
@@ -20,8 +20,8 @@ mod inner {
     /// Peer 0 (host) → blue, peer 1 (guest) → red, others → hashed hue.
     fn peer_color(peer_id: u8) -> egui::Color32 {
         match peer_id {
-            0 => egui::Color32::from_rgb(80, 140, 255),  // host: blue
-            1 => egui::Color32::from_rgb(255, 80, 80),   // guest: red
+            0 => egui::Color32::from_rgb(80, 140, 255), // host: blue
+            1 => egui::Color32::from_rgb(255, 80, 80),  // guest: red
             _ => {
                 // Hash peer_id to a hue in [0, 360).
                 let hue = (peer_id as f32 * 137.508) % 360.0; // golden angle
@@ -209,7 +209,7 @@ mod inner {
         /// Render the toolbar — a compact strip at the bottom of the viewer.
         ///
         /// Contains: mute toggle, draw mode toggle, draw mode switcher (laser/persistent).
-        fn render_toolbar(&mut self, ui: &egui::Ui) {
+        fn render_toolbar(&mut self, ui: &mut egui::Ui) {
             let rect = ui.max_rect();
             let toolbar_h = 32.0;
             let toolbar_rect = egui::Rect::from_min_size(
@@ -225,24 +225,29 @@ mod inner {
             );
 
             // Place buttons inside the toolbar rect using a child UI.
-            let mut child = ui.child_ui(
-                toolbar_rect,
-                egui::Layout::left_to_right(egui::Align::Center),
-                None,
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(toolbar_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             child.add_space(8.0);
 
             // Mute button
-            let mic_label = if self.muted { "🔇 Unmute" } else { "🎤 Mute" };
+            let mic_label = if self.muted {
+                "🔇 Unmute"
+            } else {
+                "🎤 Mute"
+            };
             let mic_color = if self.muted {
                 egui::Color32::from_rgb(220, 80, 80)
             } else {
                 egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200)
             };
             if child
-                .add(egui::Button::new(
-                    egui::RichText::new(mic_label).color(mic_color).size(12.0),
-                ).frame(false))
+                .add(
+                    egui::Button::new(egui::RichText::new(mic_label).color(mic_color).size(12.0))
+                        .frame(false),
+                )
                 .clicked()
             {
                 self.toggle_mute();
@@ -251,16 +256,21 @@ mod inner {
             child.separator();
 
             // Draw mode toggle
-            let draw_label = if self.drawing_mode { "✏ Drawing ON" } else { "✏ Draw" };
+            let draw_label = if self.drawing_mode {
+                "✏ Drawing ON"
+            } else {
+                "✏ Draw"
+            };
             let draw_color = if self.drawing_mode {
                 egui::Color32::from_rgb(255, 200, 80)
             } else {
                 egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200)
             };
             if child
-                .add(egui::Button::new(
-                    egui::RichText::new(draw_label).color(draw_color).size(12.0),
-                ).frame(false))
+                .add(
+                    egui::Button::new(egui::RichText::new(draw_label).color(draw_color).size(12.0))
+                        .frame(false),
+                )
                 .clicked()
             {
                 self.drawing_mode = !self.drawing_mode;
@@ -280,9 +290,12 @@ mod inner {
                     egui::Color32::from_rgba_unmultiplied(160, 160, 160, 180)
                 };
                 if child
-                    .add(egui::Button::new(
-                        egui::RichText::new("Laser").color(laser_color).size(11.0),
-                    ).frame(false))
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Laser").color(laser_color).size(11.0),
+                        )
+                        .frame(false),
+                    )
                     .clicked()
                 {
                     self.draw_mode = DrawMode::Laser;
@@ -293,9 +306,14 @@ mod inner {
                     egui::Color32::from_rgba_unmultiplied(160, 160, 160, 180)
                 };
                 if child
-                    .add(egui::Button::new(
-                        egui::RichText::new("Persistent").color(persist_color).size(11.0),
-                    ).frame(false))
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Persistent")
+                                .color(persist_color)
+                                .size(11.0),
+                        )
+                        .frame(false),
+                    )
                     .clicked()
                 {
                     self.draw_mode = DrawMode::Persistent;
@@ -304,16 +322,19 @@ mod inner {
                 child.add_space(4.0);
                 // Clear button
                 if child
-                    .add(egui::Button::new(
-                        egui::RichText::new("Clear").color(
-                            egui::Color32::from_rgba_unmultiplied(200, 100, 100, 200)
-                        ).size(11.0),
-                    ).frame(false))
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear")
+                                .color(egui::Color32::from_rgba_unmultiplied(200, 100, 100, 200))
+                                .size(11.0),
+                        )
+                        .frame(false),
+                    )
                     .clicked()
                 {
-                    self.send_drawing(DrawingEvent::Clear(
-                        pairwire_protocol::drawing::DrawClear { peer_id: Some(self.peer_id) },
-                    ));
+                    self.send_drawing(DrawingEvent::Clear(pairwire_protocol::drawing::DrawClear {
+                        peer_id: Some(self.peer_id),
+                    }));
                     self.current_stroke.clear();
                 }
             }
@@ -359,9 +380,8 @@ mod inner {
                 // Use peer_color for consistency with the cursor overlay.
                 // stroke.color is a fallback for future custom colors.
                 let base = peer_color(stroke.peer_id);
-                let color = egui::Color32::from_rgba_unmultiplied(
-                    base.r(), base.g(), base.b(), alpha,
-                );
+                let color =
+                    egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
                 let egui_stroke = egui::Stroke::new(3.0, color);
                 for window in stroke.points.windows(2) {
                     let a = to_screen(window[0].0, window[0].1);
@@ -373,7 +393,8 @@ mod inner {
             // Render the current in-progress stroke (local, not yet sent).
             if self.current_stroke.len() >= 2 {
                 let base = peer_color(self.peer_id);
-                let color = egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 200);
+                let color =
+                    egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 200);
                 let egui_stroke = egui::Stroke::new(3.0, color);
                 for window in self.current_stroke.windows(2) {
                     let a = to_screen(window[0].0, window[0].1);
@@ -512,7 +533,10 @@ mod inner {
                                         egui::Stroke::new(
                                             1.5,
                                             egui::Color32::from_rgba_unmultiplied(
-                                                color.r(), color.g(), color.b(), a,
+                                                color.r(),
+                                                color.g(),
+                                                color.b(),
+                                                a,
                                             ),
                                         ),
                                     );
@@ -613,7 +637,9 @@ mod inner {
                         // Escape clears strokes in drawing mode.
                         if *pressed && *key == egui::Key::Escape && self.drawing_mode {
                             self.send_drawing(DrawingEvent::Clear(
-                                pairwire_protocol::drawing::DrawClear { peer_id: Some(self.peer_id) },
+                                pairwire_protocol::drawing::DrawClear {
+                                    peer_id: Some(self.peer_id),
+                                },
                             ));
                             self.current_stroke.clear();
                             self.drawing_active = false;
@@ -646,7 +672,12 @@ mod inner {
                         }));
                     }
 
-                    egui::Event::PointerButton { pos, button, pressed, .. } => {
+                    egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        ..
+                    } => {
                         if self.drawing_mode {
                             if *button == egui::PointerButton::Primary {
                                 if *pressed {
@@ -665,7 +696,7 @@ mod inner {
                                             peer_id: self.peer_id,
                                             color: [c.r(), c.g(), c.b()],
                                             points: std::mem::take(&mut self.current_stroke),
-                                            mode: self.draw_mode,
+                                            mode: self.draw_mode.clone(),
                                         };
                                         self.send_drawing(DrawingEvent::Stroke(stroke));
                                     } else {
@@ -797,13 +828,7 @@ mod inner {
             options,
             Box::new(|_cc| {
                 Ok(Box::new(ViewerApp::new(
-                    frame_rx,
-                    cursor_rx,
-                    conn_rx,
-                    input_tx,
-                    drawing_rx,
-                    drawing_tx,
-                    mute_tx,
+                    frame_rx, cursor_rx, conn_rx, input_tx, drawing_rx, drawing_tx, mute_tx,
                     quality_rx,
                 )))
             }),

@@ -81,11 +81,15 @@ pub async fn host_handshake(
 ) -> Result<(SendStream, RecvStream, NegotiatedSession)> {
     debug!("sending host handshake");
     send_message(&mut send, &ControlMessage::Handshake(local.clone())).await?;
-    // The handshake stream is one-shot. Finish the send side so QUIC wakes the
-    // peer promptly and the stream cannot be confused with later control/input
-    // streams. Session control currently uses separate streams.
+    // The handshake stream is one-shot. Finish the send side and wait until
+    // the peer has acknowledged the bytes before moving on to additional bidi
+    // streams. iroh/quinn can otherwise leave the opposite side waiting for
+    // the length prefix while later session streams are opened.
     send.finish()
         .map_err(|e| Error::Transport(format!("finish host handshake stream: {e}")))?;
+    send.stopped()
+        .await
+        .map_err(|e| Error::Transport(format!("host handshake stream ack failed: {e}")))?;
 
     debug!("waiting for guest handshake");
     let msg: ControlMessage = recv_message(&mut recv).await?;
@@ -129,10 +133,13 @@ pub async fn guest_handshake(
 
     debug!("sending guest handshake");
     send_message(&mut send, &ControlMessage::Handshake(local.clone())).await?;
-    // The handshake stream is one-shot; finish the send side to make the
-    // response visible promptly to the host.
+    // Ensure the response bytes are acknowledged before the caller drops this
+    // one-shot stream and opens subsequent session streams.
     send.finish()
         .map_err(|e| Error::Transport(format!("finish guest handshake stream: {e}")))?;
+    send.stopped()
+        .await
+        .map_err(|e| Error::Transport(format!("guest handshake stream ack failed: {e}")))?;
 
     let session = negotiate(local, remote)?;
     Ok((send, recv, session))

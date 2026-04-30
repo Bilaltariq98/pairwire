@@ -161,6 +161,7 @@ pub async fn run_host(
     // draw_point_tx feeds live DrawPoint datagrams from the router into DrawingReceiver.
     let mut host_drawing_send_handle = None;
     let mut host_drawing_recv_handle = None;
+    let mut _host_draw_event_tx = None;
     let mut host_draw_point_tx = None;
 
     if session.has_capability(&Capability::Annotations) {
@@ -173,10 +174,10 @@ pub async fn run_host(
                     DrawingReceiver::new(annot_recv).spawn(draw_pt_rx);
                 host_drawing_send_handle = Some(sender.spawn(draw_event_rx));
                 host_drawing_recv_handle = Some(recv_handle);
+                _host_draw_event_tx = Some(draw_event_tx);
                 host_draw_point_tx = Some(draw_pt_tx);
-                // draw_event_tx unused on host for now — host has no viewer to
-                // capture drawing input from. Kept for future host-side annotation.
-                drop(draw_event_tx);
+                // draw_event_tx is kept alive so the host's annotation send half
+                // stays open even though the headless host has no local drawing UI yet.
                 info!("annotation stream accepted");
             }
             Ok(None) => warn!("connection closed before annotation stream"),
@@ -396,7 +397,7 @@ pub async fn run_join(
     frame_tx: watch::Sender<Option<DecodedFrame>>,
     cursor_tx: watch::Sender<Option<CursorUpdate>>,
     drawing_tx: watch::Sender<Vec<pairwire_protocol::drawing::DrawStroke>>,
-    mut drawing_event_rx: tokio::sync::mpsc::Receiver<pairwire_transport::DrawingEvent>,
+    drawing_event_rx: tokio::sync::mpsc::Receiver<pairwire_transport::DrawingEvent>,
     mute_rx: watch::Receiver<bool>,
     quality_tx: watch::Sender<pairwire_transport::QualityTier>,
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,

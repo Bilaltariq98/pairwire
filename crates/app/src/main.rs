@@ -236,7 +236,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     } else {
         #[cfg(feature = "gui")]
         {
-            viewer::run_viewer(
+            let viewer_result = viewer::run_viewer(
                 frame_rx,
                 cursor_rx,
                 conn_rx,
@@ -246,7 +246,22 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                 mute_tx,
                 quality_rx,
                 "pairwire",
-            )?;
+            );
+
+            // The GUI owns the foreground lifetime. When the window closes, stop
+            // the background network task before dropping the Tokio runtime;
+            // otherwise iroh's Endpoint is dropped without `Endpoint::close()`.
+            session_handle.abort();
+            rt.block_on(async {
+                match session_handle.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => eprintln!("session error: {e}"),
+                    Err(e) if e.is_cancelled() => {}
+                    Err(e) => eprintln!("task panic: {e}"),
+                }
+            });
+
+            viewer_result?;
         }
         #[cfg(not(feature = "gui"))]
         {
