@@ -5,6 +5,7 @@
 //!   pairwire join <invite-url> [--no-gui]
 
 mod cli;
+mod control_state;
 mod reconnect;
 mod session;
 mod tray;
