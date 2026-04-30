@@ -15,13 +15,15 @@ use anyhow::{Context, Result};
 use pairwire_audio::{
     AudioCaptureThread, AudioDecodeThread, AudioEncodeThread, AudioPlaybackThread,
 };
-use pairwire_capture::{CaptureThread, DecodedFrame};
+#[cfg(feature = "encode")]
+use pairwire_capture::CaptureThread;
+use pairwire_capture::DecodedFrame;
 use pairwire_core::{
     SessionId,
     config::{AudioConfig, CaptureConfig, VideoEncoder},
 };
 use pairwire_input::{ClipboardReceiver, ClipboardSender, InputReceiver, InputSender};
-use pairwire_protocol::{Capability, CursorUpdate};
+use pairwire_protocol::{Capability, CursorUpdate, VideoCodec};
 use pairwire_transport::{
     AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
     NegotiatedSession, QualityMonitor, TAG_GUEST_AUDIO, Transport, datagram_router,
@@ -79,12 +81,6 @@ pub async fn run_host(
     AudioConfig::default()
         .validate()
         .context("invalid audio config")?;
-
-    // Use real screen capture when the `capture` feature is enabled,
-    // falling back to the fake source otherwise.
-    let (capture_thread, _frame_rx) = start_capture(capture_config.clone())?;
-    #[cfg(feature = "encode")]
-    let frame_rx = _frame_rx;
 
     let conn = Arc::new(
         transport
@@ -266,6 +262,11 @@ pub async fn run_host(
         if session.video_codec.is_none() {
             warn!("no common video codec — not sending frames");
         } else {
+            // Start capture only when the encoder/publisher are about to consume
+            // frames. Starting it while waiting for a guest just fills the small
+            // bounded channel and emits noisy "dropping frame" logs.
+            let (capture_thread, frame_rx) = start_capture(capture_config.clone())?;
+
             let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
                 capture_config.clone(),
                 frame_rx,
@@ -293,6 +294,7 @@ pub async fn run_host(
 
             pub_handle.stop().await;
             encode_thread.stop();
+            capture_thread.stop();
         }
     }
 
@@ -331,7 +333,6 @@ pub async fn run_host(
         capture.stop();
     }
 
-    capture_thread.stop();
     transport.close().await;
     Ok(())
 }
@@ -466,7 +467,7 @@ pub async fn run_join(
     let sub_handle = subscriber.spawn(pkt_tx, audio_pkt_tx);
 
     let (guest_audio_capture_handle, guest_audio_encode_handle, guest_audio_send_task) =
-        start_guest_audio_sender(&session, Arc::clone(&conn))?;
+        start_guest_audio_sender(&session, Arc::clone(&conn)).await?;
 
     #[cfg(feature = "encode")]
     {
@@ -547,13 +548,14 @@ async fn perform_host_handshake(
         .context("failed to open control stream")?;
 
     #[allow(clippy::cast_possible_truncation)] // display dimensions are always < 65535
-    let local = local_handshake(
+    let mut local = local_handshake(
         host_capabilities(),
         config.width as u16,
         config.height as u16,
         100, // scale factor — real value from display API in Phase 3
         session_token,
     );
+    local.video_codecs = available_video_codecs();
 
     let (_send, _recv, session) = host_handshake(send, recv, local)
         .await
@@ -573,13 +575,14 @@ async fn perform_guest_handshake(
         .context("failed to accept control stream")?
         .ok_or_else(|| anyhow::anyhow!("connection closed before control stream"))?;
 
-    let local = local_handshake(
+    let mut local = local_handshake(
         guest_capabilities(),
         0, // guest doesn't share a display
         0,
         0,
         session_token,
     );
+    local.video_codecs = available_video_codecs();
 
     let (_send, _recv, session) = guest_handshake(send, recv, local)
         .await
@@ -620,13 +623,20 @@ fn start_host_audio(
     ))
 }
 
-fn start_guest_audio_sender(
+async fn start_guest_audio_sender(
     session: &NegotiatedSession,
     conn: Arc<pairwire_transport::PairwireConnection>,
 ) -> Result<GuestAudioSenderParts> {
     if !session.has_capability(&Capability::Audio) {
         return Ok((None, None, None));
     }
+
+    // Give the host a short grace period to finish its control-plane handshake
+    // and start its datagram router before the guest begins sending microphone
+    // datagrams. Without this, a same-machine/two-process test can race: the
+    // guest starts capture immediately after its local handshake completes while
+    // the host is still unwinding from the handshake path.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let audio_config = AudioConfig::default();
     let (audio_capture, audio_frame_rx) = start_audio_capture(audio_config.clone())?;
@@ -674,6 +684,7 @@ fn scale_cursor_to_frame(
 }
 
 /// Start screen capture — real (scap) when `capture` feature is enabled, fake otherwise.
+#[cfg(feature = "encode")]
 fn start_capture(
     config: CaptureConfig,
 ) -> Result<(
@@ -717,6 +728,17 @@ fn start_audio_capture(
         }
     }
     AudioCaptureThread::start_fake(config).context("failed to start fake audio capture")
+}
+
+fn available_video_codecs() -> Vec<VideoCodec> {
+    #[cfg(feature = "encode")]
+    {
+        vec![VideoCodec::H264]
+    }
+    #[cfg(not(feature = "encode"))]
+    {
+        Vec::new()
+    }
 }
 
 fn host_capabilities() -> Vec<Capability> {
