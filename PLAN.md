@@ -582,7 +582,7 @@
 - `Reaction { peer_id, emoji, x, y, timestamp }` — via datagram.
 
 ### P3.5.1: Bidirectional Cursor Presence
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P1.8
 - **Description**: Both peers see each other's cursor at all times.
 - **Code locations**:
@@ -604,7 +604,7 @@
   - `just all` passes
 
 ### P3.5.2: Control Takeover
-- **Status**: `[~]` (session wiring + viewer input capture done; exact coordinate mapping TODO)
+- **Status**: `[x]`
 - **Depends on**: P3.5.1, P2.3
 - **Description**: Guest can take keyboard/mouse control by clicking in the viewer. Host reclaims by moving their real mouse. Like Tuple's "click to drive" model.
 - **Code locations**:
@@ -685,7 +685,7 @@
   - `just all` passes
 
 ### P3.5.5: Wire Clipboard Sync
-- **Status**: `[ ]`
+- **Status**: `[x]`
 - **Depends on**: P2.4
 - **Description**: Wire `ClipboardSender`/`ClipboardReceiver` into session.
 - **Code locations**:
