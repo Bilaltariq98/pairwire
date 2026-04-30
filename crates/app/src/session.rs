@@ -25,9 +25,9 @@ use pairwire_core::{
 use pairwire_input::{ClipboardReceiver, ClipboardSender, InputReceiver, InputSender};
 use pairwire_protocol::{Capability, CursorUpdate, VideoCodec};
 use pairwire_transport::{
-    AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, MoqSessionSubscriber,
-    NegotiatedSession, QualityMonitor, TAG_GUEST_AUDIO, Transport, datagram_router,
-    guest_handshake, host_handshake, local_handshake,
+    AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, DrawingReceiver,
+    DrawingSender, MoqSessionSubscriber, NegotiatedSession, QualityMonitor, TAG_GUEST_AUDIO,
+    Transport, datagram_router, guest_handshake, host_handshake, local_handshake,
 };
 #[cfg(feature = "encode")]
 use pairwire_transport::{MoqSessionPublisher, VideoStreamConfig};
@@ -68,10 +68,23 @@ pub async fn run_host(
         let _ = tx.send(invite.to_string());
     }
 
+    // Detect the physical display resolution so the encode pipeline doesn't
+    // apply an unnecessary scale on Retina displays.
+    let physical = pairwire_input::main_display_physical_size();
+    let (width, height) = args.resolution.resolve(physical);
+    info!(
+        physical_w = physical.0,
+        physical_h = physical.1,
+        encode_w = width,
+        encode_h = height,
+        preset = ?args.resolution,
+        "display resolution detected"
+    );
+
     let capture_config = CaptureConfig {
         fps: args.fps,
-        width: args.width,
-        height: args.height,
+        width,
+        height,
         preferred_encoder: VideoEncoder::H264Software,
         ..Default::default()
     };
@@ -107,13 +120,11 @@ pub async fn run_host(
             Ok(Some((_input_send, input_recv))) => {
                 // Clipboard messages arriving on the input stream are routed to
                 // ClipboardReceiver, which writes them to the host OS clipboard.
-                let (clipboard_sync_tx, clipboard_sync_rx) =
-                    tokio::sync::mpsc::channel(8);
+                let (clipboard_sync_tx, clipboard_sync_rx) = tokio::sync::mpsc::channel(8);
                 let cb_receiver = ClipboardReceiver::new(clipboard_sync_rx);
                 clipboard_recv_handle = Some(cb_receiver.spawn());
 
-                let receiver = InputReceiver::new(input_recv)
-                    .with_clipboard(clipboard_sync_tx);
+                let receiver = InputReceiver::new(input_recv).with_clipboard(clipboard_sync_tx);
                 let handle = receiver.spawn();
                 if args.allow_remote_control {
                     handle.set_permission(pairwire_input::InputPermission::FullControl);
@@ -143,6 +154,35 @@ pub async fn run_host(
     // ClipboardReceiver above. Host→guest requires a reverse send path (bidi input
     // stream or a separate stream) — deferred.
 
+    // Accept the annotation bidi stream opened by the guest (before moq-lite starts).
+    // Used for DrawStroke / DrawClear messages in both directions.
+    // draw_point_tx feeds live DrawPoint datagrams from the router into DrawingReceiver.
+    let mut host_drawing_send_handle = None;
+    let mut host_drawing_recv_handle = None;
+    let mut _host_draw_event_tx = None;
+    let mut host_draw_point_tx = None;
+
+    if session.has_capability(&Capability::Annotations) {
+        match conn.accept_bi().await {
+            Ok(Some((annot_send, annot_recv))) => {
+                let (draw_event_tx, draw_event_rx) = tokio::sync::mpsc::channel(32);
+                let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
+                let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
+                let (recv_handle, _strokes_rx, _live_rx) =
+                    DrawingReceiver::new(annot_recv).spawn(draw_pt_rx);
+                host_drawing_send_handle = Some(sender.spawn(draw_event_rx));
+                host_drawing_recv_handle = Some(recv_handle);
+                _host_draw_event_tx = Some(draw_event_tx);
+                host_draw_point_tx = Some(draw_pt_tx);
+                // draw_event_tx is kept alive so the host's annotation send half
+                // stays open even though the headless host has no local drawing UI yet.
+                info!("annotation stream accepted");
+            }
+            Ok(None) => warn!("connection closed before annotation stream"),
+            Err(e) => warn!(error = %e, "failed to accept annotation stream"),
+        }
+    }
+
     let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
     let (guest_audio_chan_tx, guest_audio_chan_rx) = tokio::sync::mpsc::channel(64);
     let router = datagram_router::start(
@@ -150,7 +190,7 @@ pub async fn run_host(
         DatagramChannels {
             cursor_tx: cursor_chan_tx,
             guest_audio_tx: Some(guest_audio_chan_tx),
-            draw_point_tx: None,
+            draw_point_tx: host_draw_point_tx,
             reaction_tx: None,
         },
     );
@@ -250,7 +290,7 @@ pub async fn run_host(
     // Quality monitor — polls connection health and emits adapted configs.
     let quality_monitor =
         QualityMonitor::new(Arc::new(conn.raw_conn().clone()), capture_config.clone());
-    let (quality_handle, _quality_rx) = quality_monitor.spawn();
+    let (quality_handle, _quality_rx, _quality_tier_rx) = quality_monitor.spawn();
     #[cfg(feature = "encode")]
     let quality_rx = _quality_rx;
 
@@ -310,6 +350,12 @@ pub async fn run_host(
     quality_handle.stop().await;
     router.stop().await;
     cursor_send_handle.stop().await;
+    if let Some(handle) = host_drawing_send_handle {
+        handle.stop().await;
+    }
+    if let Some(handle) = host_drawing_recv_handle {
+        handle.stop().await;
+    }
     if let Some(handle) = clipboard_recv_handle {
         handle.stop().await;
     }
@@ -340,11 +386,18 @@ pub async fn run_host(
 /// Run as guest: connect to host, handshake, receive and decode frames, forward to viewer.
 ///
 /// `viewer_input_rx` receives input events from the viewer UI (keyboard/mouse).
-/// These are forwarded to the host via the `InputSender` when remote control is active.
+/// `drawing_event_rx` receives drawing events from the viewer (strokes, points, clears).
+/// `drawing_tx` publishes the accumulated stroke list to the viewer whenever it changes.
+/// `mute_rx` receives mute toggle commands from the viewer (`true` = muted).
+/// `quality_tx` publishes the current connection quality tier to the viewer.
 pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
     cursor_tx: watch::Sender<Option<CursorUpdate>>,
+    drawing_tx: watch::Sender<Vec<pairwire_protocol::drawing::DrawStroke>>,
+    drawing_event_rx: tokio::sync::mpsc::Receiver<pairwire_transport::DrawingEvent>,
+    mute_rx: watch::Receiver<bool>,
+    quality_tx: watch::Sender<pairwire_transport::QualityTier>,
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
@@ -373,25 +426,31 @@ pub async fn run_join(
         "handshake complete"
     );
 
-    let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
-    let router = datagram_router::start(
-        conn.raw_conn().clone(),
-        DatagramChannels {
-            cursor_tx: cursor_chan_tx,
-            guest_audio_tx: None,
-            draw_point_tx: None,
-            reaction_tx: None,
-        },
-    );
+    // Give the host a short turn to finish its handshake path and enter its
+    // post-handshake accept loop before the guest opens annotation/moq streams.
+    // On same-machine runs, opening follow-up bidi streams immediately after
+    // the guest handshake can intermittently leave the host stuck waiting for
+    // the handshake response while the viewer sits at "Connecting…".
+    // TODO: replace this timing guard with an explicit host-ready control ack
+    // once the control plane has a persistent session-management stream.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-    let (cursor_recv_handle, mut cursor_watch_rx) = CursorReceiver::spawn(cursor_chan_rx);
-    let cursor_watch_tx = cursor_tx.clone();
-    let cursor_forward_task = tokio::spawn(async move {
+    // Quality monitor on the guest side — drives the HUD quality dot.
+    // Uses a dummy CaptureConfig since the guest doesn't encode; we only need the tier.
+    let guest_quality_monitor =
+        QualityMonitor::new(Arc::new(conn.raw_conn().clone()), CaptureConfig::default());
+    let (guest_quality_handle, _guest_quality_config_rx, guest_quality_tier_rx) =
+        guest_quality_monitor.spawn();
+
+    // Forward tier changes to the viewer's quality watch channel.
+    let quality_fwd_tx = quality_tx;
+    tokio::spawn(async move {
+        let mut rx = guest_quality_tier_rx;
         loop {
-            if cursor_watch_rx.changed().await.is_err() {
+            if rx.changed().await.is_err() {
                 break;
             }
-            let _ = cursor_watch_tx.send(cursor_watch_rx.borrow().clone());
+            let _ = quality_fwd_tx.send(*rx.borrow());
         }
     });
 
@@ -436,6 +495,66 @@ pub async fn run_join(
             (None, None)
         };
 
+    // Open annotation bidi stream (guest→host) before moq-lite starts.
+    // Carries DrawStroke / DrawClear messages in both directions.
+    // Must be declared before the datagram router so guest_draw_point_tx is in scope.
+    let mut guest_drawing_send_handle = None;
+    let mut guest_drawing_recv_handle = None;
+    let mut guest_draw_point_tx = None;
+
+    if session.has_capability(&Capability::Annotations) {
+        match conn.open_control_stream().await {
+            Ok((annot_send, annot_recv)) => {
+                let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
+                let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
+                let (recv_handle, strokes_rx, _live_rx) =
+                    DrawingReceiver::new(annot_recv).spawn(draw_pt_rx);
+
+                // Forward received strokes to the viewer's drawing watch channel.
+                let drawing_fwd_tx = drawing_tx.clone();
+                tokio::spawn(async move {
+                    let mut rx = strokes_rx;
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let _ = drawing_fwd_tx.send(rx.borrow().clone());
+                    }
+                });
+
+                // DrawingSender consumes drawing_event_rx directly — viewer events
+                // flow straight to the sender without an extra bridge channel.
+                guest_drawing_send_handle = Some(sender.spawn(drawing_event_rx));
+                guest_drawing_recv_handle = Some(recv_handle);
+                guest_draw_point_tx = Some(draw_pt_tx);
+                info!("annotation stream opened");
+            }
+            Err(e) => warn!(error = %e, "failed to open annotation stream"),
+        }
+    }
+
+    let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
+    let router = datagram_router::start(
+        conn.raw_conn().clone(),
+        DatagramChannels {
+            cursor_tx: cursor_chan_tx,
+            guest_audio_tx: None,
+            draw_point_tx: guest_draw_point_tx,
+            reaction_tx: None,
+        },
+    );
+
+    let (cursor_recv_handle, mut cursor_watch_rx) = CursorReceiver::spawn(cursor_chan_rx);
+    let cursor_watch_tx = cursor_tx.clone();
+    let cursor_forward_task = tokio::spawn(async move {
+        loop {
+            if cursor_watch_rx.changed().await.is_err() {
+                break;
+            }
+            let _ = cursor_watch_tx.send(cursor_watch_rx.borrow().clone());
+        }
+    });
+
     // Prepare video decode channel.
     let (pkt_tx, _pkt_rx) = std::sync::mpsc::sync_channel::<pairwire_capture::EncodedPacket>(8);
     #[cfg(feature = "encode")]
@@ -469,6 +588,28 @@ pub async fn run_join(
     let (guest_audio_capture_handle, guest_audio_encode_handle, guest_audio_send_task) =
         start_guest_audio_sender(&session, Arc::clone(&conn)).await?;
 
+    // Watch for mute toggle commands from the viewer and apply them to the capture thread.
+    // We clone the muted AtomicBool flag from the capture thread so the task can
+    // toggle it without holding the capture handle.
+    let mute_task = if let Some(ref capture) = guest_audio_capture_handle {
+        let muted_flag = capture.muted_flag();
+        let mut mute_watch = mute_rx;
+        Some(tokio::spawn(async move {
+            loop {
+                if mute_watch.changed().await.is_err() {
+                    break;
+                }
+                let should_mute = *mute_watch.borrow();
+                muted_flag.store(should_mute, std::sync::atomic::Ordering::Relaxed);
+                info!(muted = should_mute, "mic mute state changed");
+            }
+        }))
+    } else {
+        // No audio capture — consume mute_rx to avoid unused variable warning.
+        drop(mute_rx);
+        None
+    };
+
     #[cfg(feature = "encode")]
     {
         use pairwire_capture::DecodeThread;
@@ -501,10 +642,21 @@ pub async fn run_join(
     }
 
     sub_handle.stop().await;
+    guest_quality_handle.stop().await;
     router.stop().await;
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
     cursor_recv_handle.stop().await;
+    if let Some(handle) = guest_drawing_send_handle {
+        handle.stop().await;
+    }
+    if let Some(handle) = guest_drawing_recv_handle {
+        handle.stop().await;
+    }
+    if let Some(task) = mute_task {
+        task.abort();
+        let _ = task.await;
+    }
     if let Some(handle) = guest_clipboard_send_handle {
         handle.stop().await;
     }
@@ -744,11 +896,15 @@ fn available_video_codecs() -> Vec<VideoCodec> {
 fn host_capabilities() -> Vec<Capability> {
     #[cfg(feature = "audio")]
     {
-        vec![Capability::Screen, Capability::Audio]
+        vec![
+            Capability::Screen,
+            Capability::Audio,
+            Capability::Annotations,
+        ]
     }
     #[cfg(not(feature = "audio"))]
     {
-        vec![Capability::Screen]
+        vec![Capability::Screen, Capability::Annotations]
     }
 }
 
@@ -759,11 +915,16 @@ fn guest_capabilities() -> Vec<Capability> {
             Capability::Screen,
             Capability::RemoteControl,
             Capability::Audio,
+            Capability::Annotations,
         ]
     }
     #[cfg(not(feature = "audio"))]
     {
-        vec![Capability::Screen, Capability::RemoteControl]
+        vec![
+            Capability::Screen,
+            Capability::RemoteControl,
+            Capability::Annotations,
+        ]
     }
 }
 

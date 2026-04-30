@@ -3,6 +3,7 @@
 pub mod connection;
 pub mod cursor;
 pub mod datagram_router;
+pub mod drawing;
 pub mod handshake;
 pub mod invite;
 pub mod moq_session;
@@ -15,6 +16,9 @@ pub use cursor::{CursorReceiver, CursorReceiverHandle, CursorSender, CursorSende
 pub use datagram_router::{
     DatagramChannels, DatagramRouterHandle, TAG_CURSOR, TAG_DRAW_POINT, TAG_GUEST_AUDIO,
     TAG_REACTION,
+};
+pub use drawing::{
+    DrawingEvent, DrawingReceiver, DrawingReceiverHandle, DrawingSender, DrawingSenderHandle,
 };
 pub use handshake::{NegotiatedSession, guest_handshake, host_handshake, local_handshake};
 pub use invite::InviteLink;

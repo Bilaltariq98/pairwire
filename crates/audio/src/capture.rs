@@ -25,7 +25,33 @@ const CAPTURE_CHANNEL_CAPACITY: usize = 8;
 /// Handle to a running audio capture thread.
 pub struct AudioCaptureThread {
     stop_flag: Arc<AtomicBool>,
+    muted: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+}
+
+impl AudioCaptureThread {
+    /// Mute the microphone. Capture continues but sends silence frames.
+    pub fn mute(&self) {
+        self.muted.store(true, Ordering::Relaxed);
+    }
+
+    /// Unmute the microphone.
+    pub fn unmute(&self) {
+        self.muted.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if currently muted.
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
+    }
+
+    /// Returns a cloneable handle to the muted flag.
+    ///
+    /// Clone this before moving the capture thread into a task so the mute
+    /// state can be toggled from another context.
+    pub fn muted_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.muted)
+    }
 }
 
 impl AudioCaptureThread {
@@ -58,8 +84,10 @@ impl AudioCaptureThread {
 
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);
         let stop_flag = Arc::new(AtomicBool::new(false));
+        let muted = Arc::new(AtomicBool::new(false));
         let stop_flag_stream = Arc::clone(&stop_flag);
         let stop_flag_thread = Arc::clone(&stop_flag);
+        let muted_stream = Arc::clone(&muted);
         let sample_rate = config.sample_rate;
         let channels = config.channels;
 
@@ -72,8 +100,13 @@ impl AudioCaptureThread {
                         if stop_flag_stream.load(Ordering::Relaxed) {
                             return;
                         }
+                        let samples = if muted_stream.load(Ordering::Relaxed) {
+                            vec![0.0f32; data.len()]
+                        } else {
+                            data.to_vec()
+                        };
                         let frame = AudioFrame {
-                            samples: data.to_vec(),
+                            samples,
                             sample_rate,
                             channels,
                             timestamp_us: 0,
@@ -100,7 +133,6 @@ impl AudioCaptureThread {
             .name("pairwire-audio-capture".into())
             .spawn(move || {
                 info!("audio capture thread started");
-                // Keep stream alive until stop is signalled.
                 while !stop_flag_thread.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -112,6 +144,7 @@ impl AudioCaptureThread {
         Ok((
             Self {
                 stop_flag,
+                muted,
                 handle: Some(handle),
             },
             rx,
@@ -129,7 +162,9 @@ impl AudioCaptureThread {
     pub fn start_fake(config: AudioConfig) -> Result<(Self, mpsc::Receiver<AudioFrame>)> {
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);
         let stop_flag = Arc::new(AtomicBool::new(false));
+        let muted = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = Arc::clone(&stop_flag);
+        let muted_thread = Arc::clone(&muted);
 
         let handle = thread::Builder::new()
             .name("pairwire-audio-fake".into())
@@ -146,15 +181,20 @@ impl AudioCaptureThread {
                 let mut timestamp_us: u64 = 0;
 
                 while !stop_flag_thread.load(Ordering::Relaxed) {
-                    let mut samples =
-                        Vec::with_capacity(OPUS_FRAME_SAMPLES * config.channels as usize);
-                    for _ in 0..OPUS_FRAME_SAMPLES {
-                        let sample = (phase * 2.0 * std::f32::consts::PI).sin() * 0.1;
-                        for _ in 0..config.channels {
-                            samples.push(sample);
+                    let n = OPUS_FRAME_SAMPLES * config.channels as usize;
+                    let samples = if muted_thread.load(Ordering::Relaxed) {
+                        vec![0.0f32; n]
+                    } else {
+                        let mut buf = Vec::with_capacity(n);
+                        for _ in 0..OPUS_FRAME_SAMPLES {
+                            let sample = (phase * 2.0 * std::f32::consts::PI).sin() * 0.1;
+                            for _ in 0..config.channels {
+                                buf.push(sample);
+                            }
+                            phase = (phase + freq / sample_rate).fract();
                         }
-                        phase = (phase + freq / sample_rate).fract();
-                    }
+                        buf
+                    };
 
                     let frame = AudioFrame {
                         samples,
@@ -180,6 +220,7 @@ impl AudioCaptureThread {
         Ok((
             Self {
                 stop_flag,
+                muted,
                 handle: Some(handle),
             },
             rx,

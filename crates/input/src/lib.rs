@@ -32,13 +32,9 @@ pub use clipboard::{
     ClipboardReceiver, ClipboardReceiverHandle, ClipboardSender, ClipboardSenderHandle,
 };
 #[cfg(target_os = "macos")]
-pub use cursor_macos::current_cursor_position;
-#[cfg(target_os = "macos")]
-pub use cursor_macos::current_cursor_state;
+pub use cursor_macos::{current_cursor_position, current_cursor_state, main_display_physical_size};
 #[cfg(not(target_os = "macos"))]
-pub use cursor_stub::current_cursor_position;
-#[cfg(not(target_os = "macos"))]
-pub use cursor_stub::current_cursor_state;
+pub use cursor_stub::{current_cursor_position, current_cursor_state, main_display_physical_size};
 pub use receiver::{InputReceiver, InputReceiverHandle};
 pub use sender::{InputSender, InputSenderHandle};
 
