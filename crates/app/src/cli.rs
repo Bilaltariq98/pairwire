@@ -1,7 +1,7 @@
 //! CLI argument parsing for pairwire.
 //!
 //! Commands:
-//!   pairwire host [--fps N] [--width W] [--height H]
+//!   pairwire host [--fps N] [--resolution native|1080p|720p]
 //!   pairwire join <invite-url> [--no-gui]
 
 use std::str::FromStr;
@@ -15,11 +15,56 @@ pub enum Command {
     Join(JoinArgs),
 }
 
+/// Resolution preset for the capture pipeline.
+///
+/// `Native` captures at the display's physical pixel resolution (correct for Retina).
+/// `P1080` and `P720` cap the encode resolution regardless of display size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResolutionPreset {
+    /// Detect the physical display resolution at startup and use it directly.
+    Native,
+    /// Cap at 1920×1080 — good default for most network conditions.
+    #[default]
+    P1080,
+    /// Cap at 1280×720 — for low-bandwidth or slow connections.
+    P720,
+}
+
+impl ResolutionPreset {
+    /// Resolve to concrete (width, height) given the detected physical display size.
+    pub fn resolve(self, physical: (u32, u32)) -> (u32, u32) {
+        match self {
+            ResolutionPreset::Native => physical,
+            ResolutionPreset::P1080 => (
+                physical.0.min(1920),
+                physical.1.min(1080),
+            ),
+            ResolutionPreset::P720 => (
+                physical.0.min(1280),
+                physical.1.min(720),
+            ),
+        }
+    }
+}
+
+impl FromStr for ResolutionPreset {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "native" => Ok(Self::Native),
+            "1080p" => Ok(Self::P1080),
+            "720p" => Ok(Self::P720),
+            other => anyhow::bail!(
+                "unknown resolution preset '{other}' — use native, 1080p, or 720p"
+            ),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct HostArgs {
     pub fps: u32,
-    pub width: u32,
-    pub height: u32,
+    pub resolution: ResolutionPreset,
     /// Whether to auto-grant remote control permission to the guest.
     pub allow_remote_control: bool,
 }
@@ -28,8 +73,7 @@ impl Default for HostArgs {
     fn default() -> Self {
         Self {
             fps: 30,
-            width: 1920,
-            height: 1080,
+            resolution: ResolutionPreset::default(),
             allow_remote_control: false,
         }
     }
@@ -60,13 +104,12 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
                         i += 1;
                         a.fps = parse_u32(args, i, "--fps")?;
                     }
-                    "--width" => {
+                    "--resolution" => {
                         i += 1;
-                        a.width = parse_u32(args, i, "--width")?;
-                    }
-                    "--height" => {
-                        i += 1;
-                        a.height = parse_u32(args, i, "--height")?;
+                        let val = args.get(i).ok_or_else(|| {
+                            anyhow::anyhow!("--resolution requires a value")
+                        })?;
+                        a.resolution = val.parse()?;
                     }
                     "--allow-remote-control" => {
                         a.allow_remote_control = true;
@@ -114,19 +157,52 @@ mod tests {
             panic!("expected Host")
         };
         assert_eq!(a.fps, 30);
-        assert_eq!(a.width, 1920);
+        assert_eq!(a.resolution, ResolutionPreset::P1080);
     }
 
     #[test]
     fn parse_host_with_flags() {
-        let cmd = parse(&["host", "--fps", "60", "--width", "2560", "--height", "1440"]).unwrap();
+        let cmd = parse(&["host", "--fps", "60", "--resolution", "native"]).unwrap();
         let Command::Host(a) = cmd else {
             panic!("expected Host")
         };
         assert_eq!(a.fps, 60);
-        assert_eq!(a.width, 2560);
-        assert_eq!(a.height, 1440);
+        assert_eq!(a.resolution, ResolutionPreset::Native);
         assert!(!a.allow_remote_control);
+    }
+
+    #[test]
+    fn parse_host_resolution_720p() {
+        let cmd = parse(&["host", "--resolution", "720p"]).unwrap();
+        let Command::Host(a) = cmd else {
+            panic!("expected Host")
+        };
+        assert_eq!(a.resolution, ResolutionPreset::P720);
+    }
+
+    #[test]
+    fn resolution_preset_resolve_native() {
+        let physical = (3024, 1964);
+        assert_eq!(ResolutionPreset::Native.resolve(physical), (3024, 1964));
+    }
+
+    #[test]
+    fn resolution_preset_resolve_1080p_caps_retina() {
+        let physical = (3024, 1964);
+        assert_eq!(ResolutionPreset::P1080.resolve(physical), (1920, 1080));
+    }
+
+    #[test]
+    fn resolution_preset_resolve_1080p_passthrough_small() {
+        // A 1280×800 display should not be upscaled.
+        let physical = (1280, 800);
+        assert_eq!(ResolutionPreset::P1080.resolve(physical), (1280, 800));
+    }
+
+    #[test]
+    fn resolution_preset_resolve_720p() {
+        let physical = (1920, 1080);
+        assert_eq!(ResolutionPreset::P720.resolve(physical), (1280, 720));
     }
 
     #[test]

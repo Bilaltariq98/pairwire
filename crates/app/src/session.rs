@@ -68,10 +68,23 @@ pub async fn run_host(
         let _ = tx.send(invite.to_string());
     }
 
+    // Detect the physical display resolution so the encode pipeline doesn't
+    // apply an unnecessary scale on Retina displays.
+    let physical = pairwire_input::main_display_physical_size();
+    let (width, height) = args.resolution.resolve(physical);
+    info!(
+        physical_w = physical.0,
+        physical_h = physical.1,
+        encode_w = width,
+        encode_h = height,
+        preset = ?args.resolution,
+        "display resolution detected"
+    );
+
     let capture_config = CaptureConfig {
         fps: args.fps,
-        width: args.width,
-        height: args.height,
+        width,
+        height,
         preferred_encoder: VideoEncoder::H264Software,
         ..Default::default()
     };
@@ -278,7 +291,7 @@ pub async fn run_host(
     // Quality monitor — polls connection health and emits adapted configs.
     let quality_monitor =
         QualityMonitor::new(Arc::new(conn.raw_conn().clone()), capture_config.clone());
-    let (quality_handle, _quality_rx) = quality_monitor.spawn();
+    let (quality_handle, _quality_rx, _quality_tier_rx) = quality_monitor.spawn();
     #[cfg(feature = "encode")]
     let quality_rx = _quality_rx;
 
@@ -376,12 +389,16 @@ pub async fn run_host(
 /// `viewer_input_rx` receives input events from the viewer UI (keyboard/mouse).
 /// `drawing_event_rx` receives drawing events from the viewer (strokes, points, clears).
 /// `drawing_tx` publishes the accumulated stroke list to the viewer whenever it changes.
+/// `mute_rx` receives mute toggle commands from the viewer (`true` = muted).
+/// `quality_tx` publishes the current connection quality tier to the viewer.
 pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
     cursor_tx: watch::Sender<Option<CursorUpdate>>,
     drawing_tx: watch::Sender<Vec<pairwire_protocol::drawing::DrawStroke>>,
     mut drawing_event_rx: tokio::sync::mpsc::Receiver<pairwire_transport::DrawingEvent>,
+    mute_rx: watch::Receiver<bool>,
+    quality_tx: watch::Sender<pairwire_transport::QualityTier>,
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
@@ -409,6 +426,27 @@ pub async fn run_join(
         video_codec = ?session.video_codec,
         "handshake complete"
     );
+
+    // Quality monitor on the guest side — drives the HUD quality dot.
+    // Uses a dummy CaptureConfig since the guest doesn't encode; we only need the tier.
+    let guest_quality_monitor = QualityMonitor::new(
+        Arc::new(conn.raw_conn().clone()),
+        CaptureConfig::default(),
+    );
+    let (guest_quality_handle, _guest_quality_config_rx, guest_quality_tier_rx) =
+        guest_quality_monitor.spawn();
+
+    // Forward tier changes to the viewer's quality watch channel.
+    let quality_fwd_tx = quality_tx;
+    tokio::spawn(async move {
+        let mut rx = guest_quality_tier_rx;
+        loop {
+            if rx.changed().await.is_err() {
+                break;
+            }
+            let _ = quality_fwd_tx.send(*rx.borrow());
+        }
+    });
 
     let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
     let router = datagram_router::start(
@@ -543,6 +581,28 @@ pub async fn run_join(
     let (guest_audio_capture_handle, guest_audio_encode_handle, guest_audio_send_task) =
         start_guest_audio_sender(&session, Arc::clone(&conn)).await?;
 
+    // Watch for mute toggle commands from the viewer and apply them to the capture thread.
+    // We clone the muted AtomicBool flag from the capture thread so the task can
+    // toggle it without holding the capture handle.
+    let mute_task = if let Some(ref capture) = guest_audio_capture_handle {
+        let muted_flag = capture.muted_flag();
+        let mut mute_watch = mute_rx;
+        Some(tokio::spawn(async move {
+            loop {
+                if mute_watch.changed().await.is_err() {
+                    break;
+                }
+                let should_mute = *mute_watch.borrow();
+                muted_flag.store(should_mute, std::sync::atomic::Ordering::Relaxed);
+                info!(muted = should_mute, "mic mute state changed");
+            }
+        }))
+    } else {
+        // No audio capture — consume mute_rx to avoid unused variable warning.
+        drop(mute_rx);
+        None
+    };
+
     #[cfg(feature = "encode")]
     {
         use pairwire_capture::DecodeThread;
@@ -575,6 +635,7 @@ pub async fn run_join(
     }
 
     sub_handle.stop().await;
+    guest_quality_handle.stop().await;
     router.stop().await;
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
@@ -584,6 +645,10 @@ pub async fn run_join(
     }
     if let Some(handle) = guest_drawing_recv_handle {
         handle.stop().await;
+    }
+    if let Some(task) = mute_task {
+        task.abort();
+        let _ = task.await;
     }
     if let Some(handle) = guest_clipboard_send_handle {
         handle.stop().await;
