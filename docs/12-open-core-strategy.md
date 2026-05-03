@@ -4,9 +4,29 @@
 
 Pairwire today is a technically strong, single-binary 1:1 P2P pair-programming tool (iroh + moq-lite + FFmpeg + Opus). It works. What it doesn't have is a product shape: no accounts, no address book, no billing, no short codes, no team concept, no monetization. The current onboarding asks the host to copy-paste a 100+ character `pairwire://<hex-key>?relay=…&token=…` URL into chat — that's a developer-demo UX, not a product UX.
 
-The goal of this change is to draw the open-core boundary cleanly **before** writing the SaaS code, so we don't accidentally bake decisions that close doors. Specifically: keep the protocol + executable open and self-hostable, build the team-workflow layer (accounts, address book, billing, seats, eventually SSO) as a closed service, and replace the long-URL flow with a short OTP-style code that resolves through a rendezvous service. Self-hosters can run the OSS reference rendezvous; the hosted version adds the team layer.
+The goal of this change is to draw the open-core boundary cleanly **before** writing the SaaS code, so we don't accidentally bake decisions that close doors. Specifically: be honest about where the moat actually lives (the technical core, not the cloud features), pick a license that protects it, and replace the long-URL flow with a short OTP-style code that resolves through a rendezvous service.
 
-The buyer is currently unknown — solos vs small teams vs enterprise. v1 is designed to preserve optionality: the OSS funnel is maximized (anyone can run pairwire), the hosted free tier requires only a free account (so we can talk to users + rate-limit abuse), and the paid surface stays small enough to pivot once we see who shows up.
+The buyer is currently unknown — solos vs small teams vs enterprise. v1 is designed to preserve optionality: a source-available funnel (anyone can read, hack, self-host pairwire), the hosted free tier requires only a free account (so we can talk to users + rate-limit abuse), and the paid surface stays small enough to pivot once we see who shows up.
+
+---
+
+## Where the moat actually is
+
+An earlier draft of this plan assumed the closed multi-tenant cloud (accounts, address book, billing, seats) was the moat, with the OSS client as adoption funnel. **That assumption no longer holds in 2026.** With AI-assisted development, "Resend + Auth.js + Stripe + a contacts table" is a weekend's work, not a year's. Auth, billing, CRUD, and team directory are increasingly cookie-cutter — not what a competitor would struggle to replicate.
+
+What *is* hard to replicate is the technical core that already exists in this repo:
+
+- iroh `Endpoint` integration with NAT traversal and relay fallback (`crates/transport/`)
+- moq-lite track plumbing for video and audio with keyframe-aligned groups (`crates/transport/`, `crates/media/`)
+- scap capture quirks: Retina vs logical resolution, idle empty frames, threading constraints (`crates/media/`, see `LEARNINGS.md`)
+- FFmpeg encode/decode pipeline with H.264 keyframe gating on the decode side
+- `UniStreamRouter` for multiplexing moq-lite and raw screen streams over a single QUIC connection (`crates/transport/src/stream_router.rs`)
+- Cursor + remote-control wire protocol with QUIC datagrams under the 1200-byte MTU
+- Opus audio with cpal across platforms
+
+This is months of specialized iroh / moq / scap / FFmpeg domain knowledge, baked into a working binary. It's the actual differentiation. The license needs to protect *this*, not the SaaS layer.
+
+The cloud features still need to exist — you can't sell a hosted product without auth and billing — but they're operational table stakes, not what protects the business.
 
 ---
 
@@ -14,48 +34,68 @@ The buyer is currently unknown — solos vs small teams vs enterprise. v1 is des
 
 | Layer | Status | Repo |
 |---|---|---|
-| `pairwire` executable (client) | **Open source** | `pairwire/` (this repo) |
-| Wire protocol (`crates/protocol`) | **Open source** | `pairwire/` |
-| Reference rendezvous server (1:1, in-mem, anon, rate-limited) | **Open source** | `pairwire/` |
-| Production rendezvous service (auth-gated, persistent, observability) | **Closed** | `pairwire-cloud/` (new private repo) |
-| Account / signup / sessions | **Closed** | `pairwire-cloud/` |
-| Personal address book (v1) | **Closed** | `pairwire-cloud/` |
-| Billing / Stripe | **Closed** | `pairwire-cloud/` |
+| `pairwire` executable (client) | **Source-available** (BSL — see below) | `pairwire/` (this repo) |
+| Wire protocol code (`crates/protocol`) | **Source-available** (BSL) | `pairwire/` |
+| Reference rendezvous server (1:1, in-mem, anon, rate-limited) | **Source-available** (BSL) | `pairwire/` |
+| Production rendezvous service (auth-gated, persistent, observability) | **Closed** (table stakes) | `pairwire-cloud/` (new private repo) |
+| Account / signup / sessions | **Closed** (table stakes) | `pairwire-cloud/` |
+| Personal address book (v1) | **Closed** (table stakes) | `pairwire-cloud/` |
+| Billing / Stripe | **Closed** (table stakes) | `pairwire-cloud/` |
 | Team directory / seats / SSO (v1.1+) | **Closed** | `pairwire-cloud/` |
 | Multi-party rooms (PLAN.md P5.1) | **Deferred** | TBD |
 
-**Why this split is the recommendation**: the OSS reference rendezvous makes the protocol fully implementable (no "open client, mystery server" problem) and lets paranoid self-hosters run the whole 1:1 stack. The closed cloud service adds the team workflow on top — which is what people will actually pay for and which is genuinely hard to fork (it's a multi-tenant SaaS, not a binary).
+The split is unchanged from the earlier draft, but the *reasoning* is different. Cloud is closed because it has to run somewhere we control (auth, billing, multi-tenant data). It is **not** the moat — the source-available client is. BSL on the client preserves the OSS-style funnel (read it, hack it, self-host it, audit it) while preventing a competitor from packaging the technical core into a competing hosted offering.
 
 ---
 
 ## License Decision (NEEDS YOUR PICK)
 
-You currently have `MIT OR Apache-2.0` in the workspace `Cargo.toml`. Three viable options, ranked by my recommendation strength:
+You currently have `MIT OR Apache-2.0` in the workspace `Cargo.toml`. Given where the moat actually lives, MIT/Apache hands away the protected work. The recommendation has flipped from the earlier draft: **adopt a source-available license with a non-compete clause.**
 
-### Option A — Keep MIT OR Apache-2.0 (Recommended)
+### Option A — Business Source License (BSL 1.1) — Recommended
 
-Leave the OSS license as-is. Closed cloud code is just closed (no public license at all).
+Convert the workspace to BSL 1.1 with a 4-year change date that auto-converts to Apache-2.0.
 
-- **Pro**: maximum adoption funnel; zero enterprise license friction; honest — the moat is the closed multi-tenant service, not a copyleft fence.
-- **Pro**: AGPL's network-use clause is designed for *services* (someone running your code as a SaaS). The pairwire client is a client — AGPL gives you almost no protection there that GPL wouldn't.
-- **Con**: someone could in principle take the client + OSS rendezvous and build a competing hosted version. They'd still have to build the team workflow themselves, which is the actual work.
+- **Use grant**: any non-production or non-competing use. Self-host for your own team, fork to study, contribute back, even use commercially internally — as long as you're not running "Pairwire-as-a-Service" against us.
+- **Pro**: protects the technical moat directly. A competitor can't fork `crates/transport/` + `crates/media/` and run a competing hosted offering during the change-date window.
+- **Pro**: still source-available — full read/hack/self-host funnel for individuals, hobbyists, security reviewers. Avoids the "open client, mystery server" anti-pattern.
+- **Pro**: precedent — HashiCorp (Terraform/Vault), Sentry, CockroachDB, Couchbase, MariaDB, Materialize. All source-available, all with profitable hosted services and no fork-and-undercut competitor.
+- **Pro**: auto-converts to Apache after the change-date window, so it's not permanently restrictive — just protected during the period when forks would actually hurt. By year 4, either pairwire is a real business with brand + distribution as moats (source can safely open) or it isn't (restriction was moot).
+- **Con**: not OSI-approved, so it's not "open source" by strict definition. Some communities will treat it that way; some won't.
+- **Con**: relicensing requires either contributor consent (currently just you, easy) or a CLA going forward.
 
-### Option B — Relicense client + reference server to AGPL
+### Option B — Functional Source License (FSL)
 
-Switch this repo to AGPL-3.0.
+Sentry's license. Similar shape to BSL but simpler text — non-compete for 2 years, then auto-converts to MIT or Apache.
 
-- **Pro**: stronger forking deterrent; signals "we mean it" to the OSS community.
-- **Con**: known enterprise repellent — many corporate legal teams blanket-ban AGPL. Forecloses enterprise as a buyer before we know if they are the buyer.
-- **Con**: relicensing a dual-licensed project requires either contributor consent (currently just you, so easy) or a CLA going forward. One-way door.
+- **Pro**: shorter restriction window (2 years vs 4); slightly more community-friendly framing.
+- **Pro**: well-documented, designed by Sentry explicitly for the "open-core company protecting itself" use case.
+- **Con**: newer than BSL, less legal-team familiarity at large companies.
 
-### Option C — Functional Source License (FSL) on the reference server only
+### Option C — AGPL-3.0
 
-Keep the client MIT/Apache. License the reference rendezvous server under FSL (Sentry-style: non-compete for 2 years, then converts to Apache).
+Strong copyleft with a network-use clause.
 
-- **Pro**: prevents a hyperscaler from spinning up "pairwire rendezvous as a service" without the AGPL stigma.
-- **Con**: more complex license story; FSL is newer and less familiar to legal teams; mixed-license repos are a slight maintenance burden.
+- **Pro**: real, OSI-approved open-source license. No "is this really open source?" debate.
+- **Pro**: anyone running pairwire as a service has to release their modifications.
+- **Con (reframed)**: large enterprises blanket-ban AGPL. The earlier draft called this a problem; the honest version is that it's *also* a feature — companies that can't accept AGPL are exactly the ones you'd want paying for a commercial license. But it does shut down the OSS-into-enterprise organic-adoption path.
+- **Con**: weaker protection than BSL/FSL against the specific threat. AGPL only forces release of modifications; a competitor could still run a hosted pairwire as long as they publish their fork.
 
-**My recommendation: A.** The risk AGPL/FSL guards against (someone reselling our OSS) isn't real until we have meaningful users to capture, and by then we'll have built the closed team service that's the actual product. Don't mortgage adoption today against a hypothetical threat tomorrow.
+### Option D — Fully closed-source client
+
+Ship pairwire as a closed-source binary. Publish the wire protocol spec so compatible clients are theoretically possible, but the implementation stays proprietary.
+
+- **Pro**: maximum moat protection; total control of distribution.
+- **Pro**: open the source later, once brand + distribution have become the moat instead of code.
+- **Con**: loses the source-available funnel entirely. No community security review, no contributor pipeline, no "this is hackable" trust signal.
+- **Con**: weaker hiring story — "come work on our closed-source video codec glue" is less attractive than "come work on our source-available P2P stack."
+- **Con**: works against the "P2P, no servers in the data path, you can verify it" trust narrative that's a natural marketing angle for this product.
+
+### Recommendation: BSL 1.1 (Option A)
+
+It fits the actual situation: technical core is the moat, you want to protect it for the next ~4 years while the business is forming, you don't want to permanently restrict community use or close the contributor pipeline. Auto-conversion to Apache is the right pressure-release valve.
+
+Pick FSL if you want a shorter restriction window. Pick AGPL if you specifically want to *force* an enterprise commercial-license conversation. Pick closed-source if you'd rather not be source-available at all yet (a defensible choice — just commit to it deliberately rather than as a default).
 
 ---
 
@@ -74,17 +114,18 @@ Default issuance format is configurable on the rendezvous server side. The legac
 ### Free tier (account-required, no payment)
 
 - Email magic link OR GitHub OAuth signup.
-- Anonymous use of the public hosted rendezvous is **not** allowed (this is the trade for abuse control + an upsell channel). Self-hosters can run their own OSS rendezvous with whatever auth model they want.
+- Anonymous use of the public hosted rendezvous is **not** allowed (this is the trade for abuse control + an upsell channel). Self-hosters can run their own BSL-licensed rendezvous with whatever auth model they want.
 - Free tier gets: short codes, personal address book (recent peers), unlimited 1:1 sessions.
 
 ### Paid tier (v1 = address book + seats; v1.1+ = team directory + SSO)
 
 - Personal address book ships in v1 free; team-org features are the paid hook.
 - Stripe scaffolding lands in v1 but with no live SKU yet — pricing decided once we see who signs up.
+- Reminder: the paid layer's job is to **capture revenue from users who already chose pairwire because the core is good** — not to be the differentiator itself.
 
 ### Self-host story
 
-- OSS includes a thin reference rendezvous server (`crates/rendezvous-server`): in-memory store, per-IP rate limit, no auth, supports all three code formats.
+- Repo includes a thin reference rendezvous server (`crates/rendezvous-server`): in-memory store, per-IP rate limit, no auth, supports all three code formats. BSL-licensed like the rest of the workspace.
 - Client takes `--rendezvous <url>` (or `PAIRWIRE_RENDEZVOUS` env) — defaults to `api.pairwire.dev`. Self-hosters point at their own.
 - Production cloud rendezvous (closed) is a drop-in API-compatible replacement that adds auth, persistence, observability, and address-book integration.
 
@@ -92,58 +133,67 @@ Default issuance format is configurable on the rendezvous server side. The legac
 
 ## Implementation Steps
 
-### Phase 1 — Protocol + code formats (OSS, this repo)
+### Phase 0 — Relicense (this repo)
 
-1. **`crates/core/src/code.rs`** (new): `Code` type with three encoders/decoders (numeric / alpha / phrase). Curated 4096-word wordlist embedded.
-2. **`crates/protocol/src/rendezvous.rs`** (new): wire types for `IssueCodeRequest`, `IssueCodeResponse`, `ResolveCodeRequest`, `ResolveCodeResponse`. Versioned per `CONVENTIONS.md`.
-3. **`crates/transport/src/rendezvous.rs`** (new): HTTP client wrapping the protocol, with retry + timeout.
-4. **`crates/transport/src/invite.rs`**: extend `InviteLink` to also carry a `Code` variant alongside the existing URL form. Reuse the existing `EndpointAddr`/`SessionId` plumbing — don't duplicate.
+0. Update workspace `Cargo.toml` `license` field to chosen SPDX identifier (e.g., `BUSL-1.1`).
+1. Replace root `LICENSE` (currently MIT/Apache dual) with the chosen license text. For BSL, include the Additional Use Grant and Change Date headers.
+2. Update README license section. Add a short "Why source-available?" paragraph that explains the change for current/future contributors.
+3. If a CONTRIBUTING.md exists or gets added, note the licensing terms for new contributions.
 
-### Phase 2 — Reference rendezvous server (OSS, this repo)
+### Phase 1 — Protocol + code formats
 
-5. **`crates/rendezvous-server/`** (new crate, new binary `pairwire-rendezvous`): axum + in-memory `DashMap`, per-IP rate limit (governor crate already common in the ecosystem — check before adding), TTL eviction, all three code formats. Health endpoint. No auth, no persistence.
-6. Add to workspace `Cargo.toml`. Add `just rendezvous` recipe to the Justfile.
+4. **`crates/core/src/code.rs`** (new): `Code` type with three encoders/decoders (numeric / alpha / phrase). Curated 4096-word wordlist embedded.
+5. **`crates/protocol/src/rendezvous.rs`** (new): wire types for `IssueCodeRequest`, `IssueCodeResponse`, `ResolveCodeRequest`, `ResolveCodeResponse`. Versioned per `CONVENTIONS.md`.
+6. **`crates/transport/src/rendezvous.rs`** (new): HTTP client wrapping the protocol, with retry + timeout.
+7. **`crates/transport/src/invite.rs`**: extend `InviteLink` to also carry a `Code` variant alongside the existing URL form. Reuse the existing `EndpointAddr`/`SessionId` plumbing — don't duplicate.
 
-### Phase 3 — Wire it into the client (OSS, this repo)
+### Phase 2 — Reference rendezvous server
 
-7. **`crates/app/src/cli.rs`**: add `--rendezvous <url>` (env: `PAIRWIRE_RENDEZVOUS`, default `api.pairwire.dev`), `--legacy-url` flag on `host`, `--code-format {numeric|alpha|phrase}` flag.
-8. **`crates/app/src/session.rs:54-76`**: replace `transport.invite_link(session_id)` direct print with: issue code via rendezvous, print code, fall back to printing long URL on rendezvous failure (with a clear warning).
-9. **`crates/app/src/cli.rs` join path**: parse arg as `Code` first, fall back to `pairwire://` URL parse. On code, resolve via rendezvous to get `EndpointAddr`+`SessionId`, then existing connect path.
-10. **`README.md`** + relevant `docs/`: update the onboarding section to show short-code flow. Add a `docs/11-rendezvous-protocol.md` spec doc for self-hosters.
+8. **`crates/rendezvous-server/`** (new crate, new binary `pairwire-rendezvous`): axum + in-memory `DashMap`, per-IP rate limit (check Cargo.toml before adding `governor`), TTL eviction, all three code formats. Health endpoint. No auth, no persistence.
+9. Add to workspace `Cargo.toml`. Add `just rendezvous` recipe to the Justfile.
+
+### Phase 3 — Wire it into the client
+
+10. **`crates/app/src/cli.rs`**: add `--rendezvous <url>` (env: `PAIRWIRE_RENDEZVOUS`, default `api.pairwire.dev`), `--legacy-url` flag on `host`, `--code-format {numeric|alpha|phrase}` flag.
+11. **`crates/app/src/session.rs:54-76`**: replace `transport.invite_link(session_id)` direct print with: issue code via rendezvous, print code, fall back to printing long URL on rendezvous failure (with a clear warning).
+12. **`crates/app/src/cli.rs` join path**: parse arg as `Code` first, fall back to `pairwire://` URL parse. On code, resolve via rendezvous to get `EndpointAddr` + `SessionId`, then existing connect path.
+13. **`README.md`** + relevant `docs/`: update onboarding to short-code flow. Add `docs/13-rendezvous-protocol.md` spec doc for self-hosters.
 
 ### Phase 4 — Scaffold the closed cloud repo (separate private repo)
 
-This is just the skeleton — actual product work continues after the OSS plan is shipped.
+Skeleton only — actual product work continues after the source-available work is shipped.
 
-11. New repo `pairwire-cloud/` (private). Recommend: TypeScript + Hono on Cloudflare Workers + D1, or Rust + axum on Fly.io. Decide based on your familiarity — this is a Bilal-velocity question, not a tech-superiority one.
-12. Stub: `/v1/codes` (POST issue, GET resolve) — same wire protocol as the OSS server, with auth middleware added.
-13. Stub: account model (email magic link via Resend or similar; GitHub OAuth via standard flow).
-14. Stub: address book table + `/v1/peers` endpoint.
-15. Stripe scaffolding: customer create on signup, no SKU live yet.
-16. CI: deploy on push to main, env-driven config, secrets in 1Password Connect or Doppler.
+14. New repo `pairwire-cloud/` (private). Recommend: TypeScript + Hono on Cloudflare Workers + D1, or Rust + axum on Fly.io. Decide based on your familiarity — this is a velocity question, not a tech-superiority one.
+15. Stub: `/v1/codes` (POST issue, GET resolve) — same wire protocol as the OSS server, with auth middleware added.
+16. Stub: account model (email magic link via Resend; GitHub OAuth via standard flow).
+17. Stub: address book table + `/v1/peers` endpoint.
+18. Stripe scaffolding: customer create on signup, no SKU live yet.
+19. CI: deploy on push to main, env-driven config, secrets in 1Password Connect or Doppler.
 
 ### Phase 5 — Glue: client knows about cloud accounts
 
-17. **`crates/app/src/cli.rs`**: `pairwire login` (browser-based OAuth-style flow that drops a token in `~/.config/pairwire/auth.toml`).
-18. **`crates/transport/src/rendezvous.rs`**: bearer-auth header when token present.
-19. Address book sync: after a session, optionally POST peer info to cloud (with explicit consent — privacy-first; default off and clearly labeled).
+20. **`crates/app/src/cli.rs`**: `pairwire login` (browser-based OAuth-style flow that drops a token in `~/.config/pairwire/auth.toml`).
+21. **`crates/transport/src/rendezvous.rs`**: bearer-auth header when token present.
+22. Address book sync: after a session, optionally POST peer info to cloud (with explicit consent — privacy-first; default off and clearly labeled).
 
 ---
 
 ## Critical Files (to modify or create)
 
-- `Cargo.toml` (workspace) — confirm license string stays `MIT OR Apache-2.0` per Option A
+- `Cargo.toml` (workspace) — change `license` from `MIT OR Apache-2.0` to chosen SPDX (`BUSL-1.1` if BSL)
+- `LICENSE` (root) — replace dual-license content with chosen license text + Additional Use Grant + Change Date for BSL
+- `README.md` — license section + a short "why source-available" note
 - `crates/transport/src/invite.rs:23-56` — extend, don't replace
-- `crates/transport/src/transport.rs:25,49` — keep iroh n0 relay preset; rendezvous is a separate concern from NAT-traversal relays (these are different services)
+- `crates/transport/src/transport.rs:25,49` — keep iroh n0 relay preset; rendezvous is a separate concern from NAT-traversal relays (different services)
 - `crates/app/src/cli.rs:10-16` — extend subcommands
 - `crates/app/src/session.rs:54-76` — main wiring change
 - `crates/protocol/src/lib.rs` — register new `rendezvous` module
 - `crates/core/src/types.rs` — add `Code` type
 - New: `crates/rendezvous-server/` (full crate)
-- New: `docs/11-rendezvous-protocol.md`
+- New: `docs/13-rendezvous-protocol.md`
 - New repo: `pairwire-cloud/` (separate, private)
-- `LEARNINGS.md` — log any iroh/rate-limit/code-format gotchas as we hit them
-- `PLAN.md` — add a P3.7 "Rendezvous & short codes" section between P3 and P4
+- `LEARNINGS.md` — log iroh/rate-limit/code-format gotchas as we hit them
+- `PLAN.md` — add a P3.7 "Rendezvous & short codes" section between P3 and P4; add a P0 "Relicense to BSL" task at the top
 
 ---
 
@@ -153,20 +203,20 @@ This is just the skeleton — actual product work continues after the OSS plan i
 - Recording / transcription
 - SSO, audit logs, on-prem cloud
 - Team directory (only personal "recent peers" address book in v1)
-- Live pricing — Stripe is wired but no SKU until we know the buyer
+- Live pricing — Stripe wired but no SKU until we know the buyer
 - Brand split (single-brand for now; renameable later)
 
 ---
 
 ## Verification
 
-End-to-end sanity for the OSS work:
+End-to-end sanity for the source-available work:
 
 ```bash
 # 1. Workspace builds clean
 just all
 
-# 2. Run OSS rendezvous locally
+# 2. Run reference rendezvous locally
 just rendezvous &  # listens on :8080
 
 # 3. Host issues a short code via local rendezvous
@@ -188,14 +238,21 @@ for i in {1..200}; do curl -X POST localhost:8080/v1/codes; done
 
 # 7. All three code formats round-trip
 cargo test -p pairwire-core code::
+
+# 8. License sanity
+grep -r "MIT OR Apache" Cargo.toml crates/  # expect: no matches after Phase 0
+head -5 LICENSE  # expect: BSL header (or chosen license)
 ```
 
 For Phase 4–5 (cloud): separate verification in the `pairwire-cloud` repo — out of scope for this plan file.
 
 ---
 
-## Open Questions (for you to confirm at exit-plan time)
+## Open Questions (for you to confirm)
 
-1. **License**: Option A (MIT/Apache, my recommendation), B (AGPL), or C (FSL on the rendezvous)?
-2. **Default hosted rendezvous URL** in the OSS binary: `api.pairwire.dev` (or different domain)? Acceptable for the OSS to ship pointing at your hosted service by default? (Self-host overridable via flag/env.)
-3. **Cloud stack pick**: TypeScript+CF Workers, or Rust+axum+Fly? (Doesn't change this plan — but unblocks Phase 4 once chosen.)
+1. **License**: BSL 1.1 (recommended), FSL, AGPL, or fully closed-source?
+2. **BSL Additional Use Grant scope** (if BSL): standard wording is "may make production use of the Licensed Work, provided that you do not offer the Licensed Work to third parties on a hosted or embedded basis in order to compete with Pairwire's paid version." OK as-is or tighter/looser?
+3. **Change date** (if BSL): 4 years (BSL standard) or shorter?
+4. **Default hosted rendezvous URL** in the binary: `api.pairwire.dev` (or different domain)? Acceptable for the binary to ship pointing at your hosted service by default? (Self-host overridable via flag/env.)
+5. **Cloud stack pick**: TypeScript + CF Workers, or Rust + axum + Fly? Doesn't change this plan, but unblocks Phase 4 once chosen.
+6. **Existing contributors**: any external contributors to relicense? (If just you, Phase 0 is a unilateral commit. If others, need consent or CLA.)
