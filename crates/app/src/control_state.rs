@@ -1,10 +1,5 @@
 //! Runtime control state used by both host and guest (host owns the source
 //! of truth; guest mirrors what the host most recently confirmed).
-//!
-//! These types are exposed here for T5 to consume; they are not yet wired
-//! into the session loop. Once T5 lands, the items below will be referenced
-//! from `session.rs` and the module-level `dead_code` allow can be removed.
-#![allow(dead_code)]
 
 use pairwire_input::InputPermission;
 

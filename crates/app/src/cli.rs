@@ -59,7 +59,9 @@ impl FromStr for ResolutionPreset {
 pub struct HostArgs {
     pub fps: u32,
     pub resolution: ResolutionPreset,
-    /// Whether to auto-grant remote control permission to the guest.
+    /// When set, automatically grants `FullControl` the moment the guest sends a
+    /// `ControlRequest`. When unset, the host must click "Allow Remote Control" in
+    /// the tray menu to grant.
     pub allow_remote_control: bool,
 }
 
