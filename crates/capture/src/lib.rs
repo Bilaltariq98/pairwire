@@ -7,11 +7,13 @@
 //! Without feature flags, only `CaptureThread::start_fake()` is available.
 
 pub mod capture_thread;
+pub mod cursor_visibility;
 pub mod decode_thread;
 pub mod encode_thread;
 pub mod frame;
 
 pub use capture_thread::CaptureThread;
+pub use cursor_visibility::ShowCursorFlag;
 pub use frame::{DecodedFrame, EncodedPacket, RawFrame};
 
 #[cfg(feature = "ffmpeg")]
