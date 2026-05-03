@@ -1,6 +1,7 @@
 //! iroh P2P connectivity layer for pairwire.
 
 pub mod connection;
+pub mod control_channel;
 pub mod cursor;
 pub mod datagram_router;
 pub mod drawing;
@@ -11,7 +12,11 @@ pub mod quality;
 pub mod transport;
 pub mod wt_session;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 pub use connection::PairwireConnection;
+pub use control_channel::{ControlChannel, ControlChannelHandle};
 pub use cursor::{CursorReceiver, CursorReceiverHandle, CursorSender, CursorSenderHandle};
 pub use datagram_router::{
     DatagramChannels, DatagramRouterHandle, TAG_CURSOR, TAG_DRAW_POINT, TAG_GUEST_AUDIO,
