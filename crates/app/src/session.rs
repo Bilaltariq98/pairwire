@@ -427,6 +427,9 @@ pub async fn run_host(
 /// `drawing_tx` publishes the accumulated stroke list to the viewer whenever it changes.
 /// `mute_rx` receives mute toggle commands from the viewer (`true` = muted).
 /// `quality_tx` publishes the current connection quality tier to the viewer.
+/// `control_state_tx` publishes the current `RuntimeControlState` to the viewer's HUD.
+/// `control_request_rx` receives `ControlRequest` messages from the viewer and forwards them to
+/// the host via the control channel.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_join(
     args: JoinArgs,
@@ -437,6 +440,8 @@ pub async fn run_join(
     mute_rx: watch::Receiver<bool>,
     quality_tx: watch::Sender<pairwire_transport::QualityTier>,
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
+    control_state_tx: watch::Sender<crate::control_state::RuntimeControlState>,
+    mut control_request_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::ControlMessage>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
     let _ = &frame_tx;
@@ -500,14 +505,22 @@ pub async fn run_join(
 
     // Guest control-state machine: mirrors the host's ControlGrant / ControlRevoke
     // messages and updates a watch channel so the viewer can reflect the state.
-    // (T7 will consume the watch receiver — for now we discard it.)
-    let (control_state_tx, _control_state_rx) =
-        tokio::sync::watch::channel(crate::control_state::RuntimeControlState::HostActive);
+    // `control_state_tx` is provided by the caller (main.rs) and shared with the viewer.
     let guest_ctrl_inbound_for_task = guest_ctrl_handle.subscribe();
     let guest_ctrl_state_task = tokio::spawn(guest_ctrl_state_task_fn(
         guest_ctrl_inbound_for_task,
         control_state_tx,
     ));
+
+    // Forward ControlRequest messages from the viewer to the host via the control channel.
+    let ctrl_outbound_tx_for_fwd = guest_ctrl_outbound_tx.clone();
+    let control_request_fwd_task = tokio::spawn(async move {
+        while let Some(msg) = control_request_rx.recv().await {
+            if ctrl_outbound_tx_for_fwd.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Quality monitor on the guest side — drives the HUD quality dot.
     // Uses a dummy CaptureConfig since the guest doesn't encode; we only need the tier.
@@ -727,6 +740,8 @@ pub async fn run_join(
     guest_quality_handle.stop().await;
     guest_ctrl_state_task.abort();
     let _ = guest_ctrl_state_task.await;
+    control_request_fwd_task.abort();
+    let _ = control_request_fwd_task.await;
     guest_ctrl_handle.stop().await;
     router.stop().await;
     cursor_forward_task.abort();

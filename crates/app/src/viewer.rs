@@ -7,13 +7,14 @@
 mod inner {
     use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2};
     use pairwire_capture::DecodedFrame;
-    use pairwire_protocol::CursorUpdate;
     use pairwire_protocol::drawing::{DrawMode, DrawPoint, DrawStroke};
     use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseScroll};
+    use pairwire_protocol::{ControlMessage, ControlRequest, CursorUpdate};
     use pairwire_transport::{DrawingEvent, QualityTier};
     use tokio::sync::{broadcast, watch};
-    use tracing::debug;
+    use tracing::{debug, info};
 
+    use crate::control_state::RuntimeControlState;
     use crate::reconnect::ConnectionState;
 
     /// Derive a consistent egui color from a peer ID.
@@ -70,6 +71,10 @@ mod inner {
         mute_tx: watch::Sender<bool>,
         /// Receives current connection quality tier from the session.
         quality_rx: watch::Receiver<QualityTier>,
+        /// Receives the current control state published by the session.
+        control_rx: watch::Receiver<RuntimeControlState>,
+        /// Sends ControlMessage events to the session (e.g. ControlRequest).
+        control_tx: broadcast::Sender<ControlMessage>,
         texture: Option<TextureHandle>,
         frame_count: u64,
         last_fps_time: std::time::Instant,
@@ -90,6 +95,9 @@ mod inner {
         peer_id: u8,
         /// Local mic mute state — mirrored to session via mute_tx.
         muted: bool,
+        /// Whether the guest has sent a ControlRequest and is awaiting host approval.
+        /// Cleared when `control_rx` changes to a new state (Grant or no-op).
+        has_pending_request: bool,
     }
 
     impl ViewerApp {
@@ -102,6 +110,8 @@ mod inner {
             drawing_tx: broadcast::Sender<DrawingEvent>,
             mute_tx: watch::Sender<bool>,
             quality_rx: watch::Receiver<QualityTier>,
+            control_rx: watch::Receiver<RuntimeControlState>,
+            control_tx: broadcast::Sender<ControlMessage>,
         ) -> Self {
             Self {
                 frame_rx,
@@ -112,6 +122,8 @@ mod inner {
                 drawing_tx,
                 mute_tx,
                 quality_rx,
+                control_rx,
+                control_tx,
                 texture: None,
                 frame_count: 0,
                 last_fps_time: std::time::Instant::now(),
@@ -124,6 +136,7 @@ mod inner {
                 drawing_active: false,
                 peer_id: 1,
                 muted: false,
+                has_pending_request: false,
             }
         }
 
@@ -131,6 +144,17 @@ mod inner {
             self.muted = !self.muted;
             let _ = self.mute_tx.send(self.muted);
             debug!(muted = self.muted, "mic mute toggled");
+        }
+
+        /// Send a `ControlRequest` to the host and mark local state as pending.
+        fn request_control(&mut self) {
+            let _ = self
+                .control_tx
+                .send(ControlMessage::ControlRequest(ControlRequest {
+                    peer_id: u16::from(self.peer_id),
+                }));
+            self.has_pending_request = true;
+            info!(peer_id = self.peer_id, "guest sent ControlRequest");
         }
 
         fn send_drawing(&self, event: DrawingEvent) {
@@ -144,7 +168,7 @@ mod inner {
 
         /// Render the status HUD in the bottom-right corner.
         ///
-        /// Shows: FPS + quality dot, mute badge (when muted), control state badge.
+        /// Shows: FPS + quality dot, mute badge (when muted), drawing badge, control state.
         fn render_hud(&self, ui: &egui::Ui) {
             let p = ui.painter();
             let base = ui.max_rect().right_bottom() + Vec2::new(-10.0, -10.0);
@@ -203,7 +227,45 @@ mod inner {
                     egui::FontId::proportional(11.0),
                     egui::Color32::from_rgba_unmultiplied(255, 200, 80, 220),
                 );
+                y -= line_h;
             }
+
+            // Control state badge
+            let control_state = *self.control_rx.borrow();
+            let (ctrl_label, ctrl_color) =
+                if self.has_pending_request && control_state == RuntimeControlState::HostActive {
+                    (
+                        "Awaiting host approval…",
+                        egui::Color32::from_rgba_unmultiplied(255, 220, 0, 220),
+                    )
+                } else {
+                    match control_state {
+                        RuntimeControlState::HostActive => (
+                            "View only",
+                            egui::Color32::from_rgba_unmultiplied(180, 180, 180, 180),
+                        ),
+                        // note: currently unreachable from the guest side — the host does not yet
+                        // broadcast a "received your request" ack back to the guest watch channel.
+                        // This arm is kept for exhaustiveness and future-proofing: if the host
+                        // ever sends a GuestRequested state transition the guest will render it
+                        // correctly without a code change.
+                        RuntimeControlState::GuestRequested => (
+                            "Awaiting host approval…",
+                            egui::Color32::from_rgba_unmultiplied(255, 220, 0, 220),
+                        ),
+                        RuntimeControlState::GuestActive => (
+                            "You have control",
+                            egui::Color32::from_rgba_unmultiplied(100, 220, 100, 220),
+                        ),
+                    }
+                };
+            p.text(
+                egui::pos2(base.x, y),
+                egui::Align2::RIGHT_BOTTOM,
+                ctrl_label,
+                egui::FontId::proportional(11.0),
+                ctrl_color,
+            );
         }
 
         /// Render the toolbar — a compact strip at the bottom of the viewer.
@@ -254,6 +316,25 @@ mod inner {
             }
 
             child.separator();
+
+            // Request Control button — only visible when guest is in view-only mode
+            let ctrl_state = *self.control_rx.borrow();
+            if ctrl_state == RuntimeControlState::HostActive && !self.has_pending_request {
+                if child
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Request Control")
+                                .color(egui::Color32::from_rgba_unmultiplied(200, 200, 200, 200))
+                                .size(12.0),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    self.request_control();
+                }
+                child.separator();
+            }
 
             // Draw mode toggle
             let draw_label = if self.drawing_mode {
@@ -445,6 +526,13 @@ mod inner {
             }
             ctx.request_repaint();
 
+            // Clear the pending-request flag whenever the control state changes
+            // (host responded: either granted or silently reverted to HostActive).
+            if self.control_rx.has_changed().unwrap_or(false) {
+                self.control_rx.mark_unchanged();
+                self.has_pending_request = false;
+            }
+
             let conn_state = self.conn_rx.borrow().clone();
 
             egui::CentralPanel::default()
@@ -634,6 +722,21 @@ mod inner {
                             continue;
                         }
 
+                        // Cmd/Ctrl+Shift+R — request control from keyboard.
+                        if *pressed
+                            && *key == egui::Key::R
+                            && modifiers.shift
+                            && (modifiers.mac_cmd || modifiers.command || modifiers.ctrl)
+                        {
+                            let ctrl_state = *self.control_rx.borrow();
+                            if ctrl_state == RuntimeControlState::HostActive
+                                && !self.has_pending_request
+                            {
+                                self.request_control();
+                            }
+                            continue;
+                        }
+
                         // Escape clears strokes in drawing mode.
                         if *pressed && *key == egui::Key::Escape && self.drawing_mode {
                             self.send_drawing(DrawingEvent::Clear(
@@ -643,6 +746,13 @@ mod inner {
                             ));
                             self.current_stroke.clear();
                             self.drawing_active = false;
+                            continue;
+                        }
+
+                        // Escape cancels a pending control request when not in drawing mode.
+                        if *pressed && *key == egui::Key::Escape && self.has_pending_request {
+                            self.has_pending_request = false;
+                            info!("guest cancelled pending control request");
                             continue;
                         }
 
@@ -813,6 +923,8 @@ mod inner {
         drawing_tx: broadcast::Sender<DrawingEvent>,
         mute_tx: watch::Sender<bool>,
         quality_rx: watch::Receiver<QualityTier>,
+        control_rx: watch::Receiver<RuntimeControlState>,
+        control_tx: broadcast::Sender<ControlMessage>,
         title: &str,
     ) -> anyhow::Result<()> {
         let options = eframe::NativeOptions {
@@ -829,7 +941,7 @@ mod inner {
             Box::new(|_cc| {
                 Ok(Box::new(ViewerApp::new(
                     frame_rx, cursor_rx, conn_rx, input_tx, drawing_rx, drawing_tx, mute_tx,
-                    quality_rx,
+                    quality_rx, control_rx, control_tx,
                 )))
             }),
         )
