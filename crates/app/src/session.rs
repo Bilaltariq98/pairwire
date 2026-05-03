@@ -301,9 +301,16 @@ pub async fn run_host(
         host_tray_default_rx
     };
 
+    // Cursor-visibility flag — starts visible (true); flipped to false when the
+    // guest is granted control and back to true on revoke. All clones share the
+    // underlying AtomicBool, so the control-state task and capture thread stay
+    // in sync without any additional locking.
+    let capture_show_cursor = pairwire_capture::ShowCursorFlag::new(true);
+
     let auto_grant = args.allow_remote_control;
     let host_ctrl_outbound_for_task = host_ctrl_outbound_tx.clone();
     let mut host_ctrl_inbound_for_task = host_ctrl_handle.subscribe();
+    let host_capture_show_cursor = capture_show_cursor.clone();
 
     let host_ctrl_state_task = tokio::spawn(async move {
         host_ctrl_state_task_fn(
@@ -312,6 +319,7 @@ pub async fn run_host(
             &mut host_tray_action_rx,
             &host_ctrl_outbound_for_task,
             &host_perm_handle,
+            host_capture_show_cursor,
         )
         .await;
     });
@@ -327,7 +335,8 @@ pub async fn run_host(
             // Start capture only when the encoder/publisher are about to consume
             // frames. Starting it while waiting for a guest just fills the small
             // bounded channel and emits noisy "dropping frame" logs.
-            let (capture_thread, frame_rx) = start_capture(capture_config.clone())?;
+            let (capture_thread, frame_rx) =
+                start_capture(capture_config.clone(), capture_show_cursor.clone())?;
 
             let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
                 capture_config.clone(),
@@ -969,16 +978,21 @@ fn scale_cursor_to_frame(
 }
 
 /// Start screen capture — real (scap) when `capture` feature is enabled, fake otherwise.
+///
+/// The `show_cursor` flag is forwarded to the capture thread; toggling it at
+/// runtime causes the thread to rebuild the underlying capturer so the cursor
+/// appears or disappears in subsequent frames.
 #[cfg(feature = "encode")]
 fn start_capture(
     config: CaptureConfig,
+    show_cursor: pairwire_capture::ShowCursorFlag,
 ) -> Result<(
     CaptureThread,
     std::sync::mpsc::Receiver<pairwire_capture::RawFrame>,
 )> {
     #[cfg(feature = "capture")]
     {
-        match CaptureThread::start(config.clone()) {
+        match CaptureThread::start(config.clone(), show_cursor.clone()) {
             Ok(pair) => return Ok(pair),
             Err(e) => {
                 tracing::warn!(
@@ -989,7 +1003,7 @@ fn start_capture(
             }
         }
     }
-    CaptureThread::start_fake(config).context("failed to start fake capture")
+    CaptureThread::start_fake(config, show_cursor).context("failed to start fake capture")
 }
 
 /// Start audio capture — real (cpal) when `audio` feature is enabled, fake sine otherwise.
@@ -1090,6 +1104,7 @@ pub(crate) async fn host_ctrl_state_task_fn(
     tray_rx: &mut tokio::sync::mpsc::Receiver<crate::control_state::ControlAction>,
     outbound_tx: &tokio::sync::mpsc::Sender<pairwire_protocol::ControlMessage>,
     perm_handle: &Option<Arc<pairwire_input::AtomicPermission>>,
+    show_cursor: pairwire_capture::ShowCursorFlag,
 ) {
     use crate::control_state::{ControlAction, RuntimeControlState};
     use pairwire_protocol::{ControlGrant, ControlMessage, ControlRevoke};
@@ -1115,6 +1130,9 @@ pub(crate) async fn host_ctrl_state_task_fn(
                         if auto_grant {
                             state.apply(ControlAction::Grant);
                             apply_permission(perm_handle, state);
+                            // Hide the host cursor so the guest's overlay arrow is
+                            // the only cursor visible in the streamed frames.
+                            show_cursor.set(false);
                             let _ = outbound_tx
                                 .send(ControlMessage::ControlGrant(ControlGrant {
                                     peer_id: req.peer_id,
@@ -1141,6 +1159,8 @@ pub(crate) async fn host_ctrl_state_task_fn(
                         apply_permission(perm_handle, state);
                         match action {
                             ControlAction::Grant => {
+                                // Hide the host cursor while the guest has control.
+                                show_cursor.set(false);
                                 let _ = outbound_tx
                                     .send(ControlMessage::ControlGrant(ControlGrant {
                                         peer_id,
@@ -1149,6 +1169,9 @@ pub(crate) async fn host_ctrl_state_task_fn(
                                 tracing::info!("host granted control via tray");
                             }
                             ControlAction::Revoke => {
+                                // Restore the host cursor now that the guest no longer
+                                // has control.
+                                show_cursor.set(true);
                                 let _ = outbound_tx
                                     .send(ControlMessage::ControlRevoke(ControlRevoke {
                                         peer_id,
@@ -1285,12 +1308,14 @@ mod tests {
     }
 
     /// Integration test: when auto_grant=true, a ControlRequest from the guest side
-    /// causes the host state machine to emit ControlGrant and flip AtomicPermission
-    /// to FullControl — driven purely in-process via broadcast channel stubs.
+    /// causes the host state machine to emit ControlGrant, flip AtomicPermission
+    /// to FullControl, and set the ShowCursorFlag to false — driven purely
+    /// in-process via broadcast channel stubs.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn host_auto_grant_on_control_request() {
         use std::sync::Arc;
 
+        use pairwire_capture::ShowCursorFlag;
         use pairwire_input::AtomicPermission;
         use pairwire_protocol::{ControlGrant, ControlMessage, ControlRequest};
         use tokio::sync::mpsc;
@@ -1300,6 +1325,10 @@ mod tests {
         // perm handle: what we'll inspect after the task runs
         let atomic_perm = Arc::new(AtomicPermission::default());
         let perm_handle = Some(Arc::clone(&atomic_perm));
+
+        // cursor visibility flag: starts visible, should flip to hidden on grant
+        let show_cursor = ShowCursorFlag::new(true);
+        let show_cursor_check = show_cursor.clone();
 
         let auto_grant = true;
         let (tray_action_tx, mut tray_action_rx) =
@@ -1321,6 +1350,7 @@ mod tests {
             &mut tray_action_rx,
             &host_ctrl_outbound_tx,
             &perm_handle,
+            show_cursor,
         )
         .await;
 
@@ -1329,6 +1359,12 @@ mod tests {
             atomic_perm.load_permission(),
             pairwire_input::InputPermission::FullControl,
             "permission should be FullControl after auto-grant"
+        );
+
+        // The cursor should have been hidden when control was granted.
+        assert!(
+            !show_cursor_check.get(),
+            "show_cursor flag should be false after guest is granted control"
         );
 
         // The host should have sent a ControlGrant on the outbound channel.

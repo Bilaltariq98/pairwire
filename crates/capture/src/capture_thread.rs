@@ -18,9 +18,9 @@ use std::{
 use pairwire_core::{Error, Result, config::CaptureConfig, diagnostics::DropCounter};
 use tracing::info;
 #[cfg(feature = "capture")]
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
-use crate::frame::RawFrame;
+use crate::{ShowCursorFlag, frame::RawFrame};
 
 const CAPTURE_CHANNEL_CAPACITY: usize = 4;
 
@@ -34,8 +34,14 @@ impl CaptureThread {
     /// Start capturing from the primary display using scap.
     ///
     /// Requires the `capture` feature and display hardware with OS permissions.
+    ///
+    /// The `show_cursor` flag can be toggled at runtime; the capture thread
+    /// checks it every 15 frames and rebuilds the capturer on a transition.
     #[cfg(feature = "capture")]
-    pub fn start(config: CaptureConfig) -> Result<(Self, mpsc::Receiver<RawFrame>)> {
+    pub fn start(
+        config: CaptureConfig,
+        show_cursor: ShowCursorFlag,
+    ) -> Result<(Self, mpsc::Receiver<RawFrame>)> {
         use scap::{
             capturer::{Capturer, Options, Resolution},
             frame::{Frame, FrameType},
@@ -61,19 +67,13 @@ impl CaptureThread {
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = Arc::clone(&stop_flag);
+        let show_cursor_thread = show_cursor.clone();
 
         let handle = thread::Builder::new()
             .name("pairwire-capture".into())
             .spawn(move || {
-                let options = Options {
-                    fps: config.fps,
-                    show_cursor: true,
-                    show_highlight: false,
-                    target: None,
-                    output_type: FrameType::BGRAFrame,
-                    output_resolution: Resolution::Captured,
-                    ..Default::default()
-                };
+                let mut current_show_cursor = show_cursor_thread.get();
+                let options = build_options(&config, current_show_cursor);
 
                 let mut capturer = match Capturer::build(options) {
                     Ok(c) => c,
@@ -87,8 +87,35 @@ impl CaptureThread {
                 info!("capture thread started");
 
                 let drops = DropCounter::new("capture_frame_drops");
+                // Start at 14 so the first wrapping_add(1) produces 15,
+                // which fires the cursor-flag poll immediately on iteration 1.
+                let mut tick: u32 = 14;
 
                 while !stop_flag_thread.load(Ordering::Relaxed) {
+                    tick = tick.wrapping_add(1);
+                    if tick.is_multiple_of(15) {
+                        let want = show_cursor_thread.get();
+                        if want != current_show_cursor {
+                            debug!(show_cursor = want, "rebuilding capturer for cursor toggle");
+                            capturer.stop_capture();
+                            let opts = build_options(&config, want);
+                            match Capturer::build(opts) {
+                                Ok(c) => {
+                                    capturer = c;
+                                    capturer.start_capture();
+                                    current_show_cursor = want;
+                                }
+                                Err(e) => {
+                                    // scap does not allow resuming a stopped capturer, so we
+                                    // cannot fall through to get_next_frame on a dead channel.
+                                    // Log at error level and exit the loop cleanly.
+                                    error!(error = %e, "failed to rebuild capturer after stop; aborting capture thread");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     match capturer.get_next_frame() {
                         Ok(Frame::Video(vf)) => {
                             if let Some(raw) = video_frame_to_raw(vf) {
@@ -135,11 +162,17 @@ impl CaptureThread {
     /// Generates synthetic BGRA frames at the configured FPS.
     /// Available without the `capture` feature — use in tests and CI.
     ///
+    /// The `show_cursor` flag is accepted for API symmetry with [`Self::start`]
+    /// but is ignored — the fake source never renders a cursor.
+    ///
     /// # Errors
     ///
     /// Returns an error if the OS thread cannot be spawned.
-    #[allow(clippy::needless_pass_by_value)] // config is moved into the thread closure
-    pub fn start_fake(config: CaptureConfig) -> Result<(Self, mpsc::Receiver<RawFrame>)> {
+    #[allow(clippy::needless_pass_by_value)] // config and show_cursor are moved or ignored
+    pub fn start_fake(
+        config: CaptureConfig,
+        _show_cursor: ShowCursorFlag,
+    ) -> Result<(Self, mpsc::Receiver<RawFrame>)> {
         use pairwire_core::test_utils::FakeFrameSource;
 
         let (tx, rx) = mpsc::sync_channel(CAPTURE_CHANNEL_CAPACITY);
@@ -227,6 +260,27 @@ pub fn into_async_receiver(
     rx
 }
 
+/// Build a `scap` [`Options`] struct from the capture config and cursor flag.
+///
+/// Extracted so the same construction is shared between the initial capturer
+/// and any rebuild triggered by a cursor-visibility toggle at runtime.
+#[cfg(feature = "capture")]
+fn build_options(config: &CaptureConfig, show_cursor: bool) -> scap::capturer::Options {
+    use scap::{
+        capturer::{Options, Resolution},
+        frame::FrameType,
+    };
+    Options {
+        fps: config.fps,
+        show_cursor,
+        show_highlight: false,
+        target: None,
+        output_type: FrameType::BGRAFrame,
+        output_resolution: Resolution::Captured,
+        ..Default::default()
+    }
+}
+
 #[cfg(feature = "capture")]
 fn video_frame_to_raw(frame: scap::frame::VideoFrame) -> Option<RawFrame> {
     use bytes::Bytes;
@@ -298,7 +352,8 @@ mod tests {
             height: 240,
             ..Default::default()
         };
-        let (thread, rx) = CaptureThread::start_fake(config.clone()).unwrap();
+        let show_cursor = crate::ShowCursorFlag::new(true);
+        let (thread, rx) = CaptureThread::start_fake(config.clone(), show_cursor).unwrap();
 
         let mut frames = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_millis(200);
@@ -332,7 +387,8 @@ mod tests {
             height: 64,
             ..Default::default()
         };
-        let (thread, rx) = CaptureThread::start_fake(config).unwrap();
+        let show_cursor = crate::ShowCursorFlag::new(true);
+        let (thread, rx) = CaptureThread::start_fake(config, show_cursor).unwrap();
 
         let mut timestamps = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_millis(150);
