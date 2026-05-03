@@ -211,3 +211,21 @@ Each entry should include:
 - **What**: moq-lite internally calls `accept_uni()` on the connection. Any other code that also calls `accept_uni()` races with it and steals streams non-deterministically. However, moq-lite does NOT call `accept_bi()`. Bidirectional streams are a separate accept path and safe to use.
 - **Resolution**: Use bidi streams (`open_control_stream()` / `accept_bi()`) for the input forwarding channel. Open it after the handshake but before moq-lite starts, to ensure reliable stream establishment.
 - **Key insight**: The safe primitives alongside moq-lite are: (1) datagrams (moq-lite never reads them), (2) bidi streams (moq-lite never accepts them), (3) the control bidi opened before moq-lite starts. Do NOT open or accept uni streams outside moq-lite.
+
+### 2026-04-30 — scap requires capturer rebuild to toggle show_cursor — no live API
+- **Area**: scap, capture, cursor visibility
+- **What**: scap 0.1.0-beta has no API to toggle cursor visibility on a running capturer. The `Options` struct accepts a `show_cursor: bool` field but it is consumed at capturer construction; there is no equivalent of `setCapturesCursor` on the live `Capturer` handle.
+- **Resolution**: Implemented `CursorVisibilityManager` in `crates/capture/src/cursor_visibility.rs` which stops the current capture thread, drops the old capturer, and spawns a new one with the updated `show_cursor` setting. The new capturer is swapped in via a `watch` channel signalled from `capture_thread.rs`. See `crates/capture/src/capture_thread.rs` for the restart logic.
+- **Key insight**: Expect a ~33–500ms video hitch each time control is granted or revoked — this is the scap teardown + ScreenCaptureKit re-authorisation window. On an M-series Mac the hitch is typically under 100ms. There is no way to avoid it without patching scap to expose a live cursor toggle on the underlying `SCStreamConfiguration`.
+
+### 2026-04-30 — tokio broadcast recv() returns Lagged — must continue, not break
+- **Area**: tokio, async, broadcast channel
+- **What**: `tokio::sync::broadcast::Receiver::recv()` returns `Err(RecvError::Lagged(n))` when the consumer falls behind and some messages are dropped. In the HUD control-state relay task (T7), the initial implementation treated any `Err` as a fatal channel-closed signal and broke out of the receive loop — causing the HUD to freeze in whatever state it was in before the lag.
+- **Resolution**: Match `Err(RecvError::Lagged(_))` explicitly and `continue` the loop; only `break` on `Err(RecvError::Closed)`. Pattern used in `crates/app/src/hud.rs` and the host-side tray-state relay.
+- **Key insight**: Broadcast channels are lossy by design — a slow consumer will skip messages. For UI state (HUD labels, tray item enable/disable), skipping intermediate transitions is fine as long as the loop survives and picks up the next update. Breaking on lag causes the UI to silently diverge from actual session state.
+
+### 2026-04-30 — iroh open_bi does not announce the stream until the opener writes
+- **Area**: iroh, transport, control channel
+- **What**: Calling `conn.open_bi()` on the guest side allocates a QUIC stream ID but does NOT send any data to the network. The host's `accept_bi()` does not unblock until the opener actually writes bytes into the send half. This is a QUIC-level behaviour: stream IDs are assigned locally and only become visible to the peer on the first `STREAM` frame.
+- **Resolution**: After opening the persistent control bidi stream (`ControlChannel::spawn`), the guest immediately sends an initial `ControlMessage::SetSharing` flush. This forces the first write and unblocks the host's `accept_bi`. See `crates/transport/src/control_channel.rs` for the flush logic and `crates/app/src/session.rs` for the call site.
+- **Key insight**: Whenever you open a bidi or uni stream and then `await` something on the remote side, ensure you write at least one byte first. The 250ms `sleep` guard in `session.rs` is a belt-and-suspenders fallback for this; the real fix is the initial write.

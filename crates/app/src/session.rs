@@ -35,6 +35,8 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::cli::{HostArgs, JoinArgs};
+use crate::guest_ctrl::guest_ctrl_state_task_fn;
+use crate::host_ctrl::host_ctrl_state_task_fn;
 
 type GuestAudioSenderParts = (
     Option<AudioCaptureThread>,
@@ -128,6 +130,19 @@ pub async fn run_host(
     let host_ctrl_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, host_ctrl_outbound_rx);
     info!("control channel accepted");
 
+    // Signal the guest that the host has entered its post-handshake accept loop
+    // and is ready to accept follow-up bidi streams. This replaces the 250 ms
+    // timing guard on the guest side (see `run_join`).
+    host_ctrl_outbound_tx
+        .send(pairwire_protocol::ControlMessage::HostReady)
+        .await
+        .context("failed to send HostReady ack")?;
+    info!("host ready ack sent");
+
+    // Probe stamped by the input receiver after each successful injection — used by
+    // the auto-revoke watcher below to distinguish guest- vs. host-driven cursor motion.
+    let host_inject_probe = Arc::new(pairwire_input::InjectProbe::default());
+
     // Accept the input bidi stream opened by the guest (before moq-lite starts).
     // Permission starts as Denied; the host control-state task grants FullControl
     // when a ControlRequest arrives (auto_grant=true) or when the host clicks
@@ -142,7 +157,9 @@ pub async fn run_host(
                 let cb_receiver = ClipboardReceiver::new(clipboard_sync_rx);
                 clipboard_recv_handle = Some(cb_receiver.spawn());
 
-                let receiver = InputReceiver::new(input_recv).with_clipboard(clipboard_sync_tx);
+                let receiver = InputReceiver::new(input_recv)
+                    .with_clipboard(clipboard_sync_tx)
+                    .with_inject_probe(Arc::clone(&host_inject_probe));
                 let handle = receiver.spawn();
                 info!("input receiver started — permission: Denied (state machine will grant)");
                 Some(handle)
@@ -287,19 +304,21 @@ pub async fn run_host(
         .as_ref()
         .map(pairwire_input::InputReceiverHandle::permission_handle);
 
-    // tray_action_rx is provided by run_host's caller (see main.rs).
-    // When no tray is attached, we synthesize an immediately-closed receiver —
-    // the sender is dropped at the end of this expression so the receiver yields
-    // `None` on first poll, which sets the `tray_closed` guard in
-    // `host_ctrl_state_task_fn` and disables the tray arm of the select.
-    let (host_tray_default_tx, host_tray_default_rx) =
-        tokio::sync::mpsc::channel::<crate::control_state::ControlAction>(1);
-    let mut host_tray_action_rx = if let Some(rx) = tray_action_rx {
-        rx
-    } else {
-        drop(host_tray_default_tx);
-        host_tray_default_rx
-    };
+    // Merged action channel: feeds ControlActions from the optional tray and from
+    // the auto-revoke watcher (see below) into a single receiver consumed by
+    // `host_ctrl_state_task_fn`.
+    let (host_action_tx, mut host_action_rx) =
+        tokio::sync::mpsc::channel::<crate::control_state::ControlAction>(8);
+    if let Some(mut tray_rx) = tray_action_rx {
+        let forward_tx = host_action_tx.clone();
+        tokio::spawn(async move {
+            while let Some(action) = tray_rx.recv().await {
+                if forward_tx.send(action).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
     // Cursor-visibility flag — starts visible (true); flipped to false when the
     // guest is granted control and back to true on revoke. All clones share the
@@ -312,11 +331,54 @@ pub async fn run_host(
     let mut host_ctrl_inbound_for_task = host_ctrl_handle.subscribe();
     let host_capture_show_cursor = capture_show_cursor.clone();
 
+    // Auto-revoke watcher: while the guest holds control, poll the host cursor
+    // position and revoke if it moves without a recent injection (i.e. the host
+    // physically moved their mouse, signalling they want their machine back).
+    if let Some(ref perm) = host_perm_handle {
+        let perm = Arc::clone(perm);
+        let probe = Arc::clone(&host_inject_probe);
+        let revoke_tx = host_action_tx.clone();
+        tokio::spawn(async move {
+            use crate::control_state::ControlAction;
+            use pairwire_input::InputPermission;
+            // Threshold after which a cursor delta is attributed to the host
+            // rather than to a queued injection.
+            const QUIET_MS: u64 = 250;
+            let mut last_pos = pairwire_input::current_cursor_position().ok();
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let cur = match pairwire_input::current_cursor_position() {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let guest_has_control = perm.load_permission() != InputPermission::Denied;
+                if !guest_has_control {
+                    last_pos = Some(cur);
+                    continue;
+                }
+                let moved = last_pos.is_some_and(|prev| prev != cur);
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+                let quiet = now_ms.saturating_sub(probe.last_ms()) > QUIET_MS;
+                if moved && quiet {
+                    tracing::info!("host cursor moved during guest control — auto-revoking");
+                    if revoke_tx.send(ControlAction::Revoke).await.is_err() {
+                        break;
+                    }
+                }
+                last_pos = Some(cur);
+            }
+        });
+    }
+
     let host_ctrl_state_task = tokio::spawn(async move {
         host_ctrl_state_task_fn(
             auto_grant,
             &mut host_ctrl_inbound_for_task,
-            &mut host_tray_action_rx,
+            &mut host_action_rx,
             &host_ctrl_outbound_for_task,
             &host_perm_handle,
             host_capture_show_cursor,
@@ -469,19 +531,10 @@ pub async fn run_join(
         "handshake complete"
     );
 
-    // Give the host a short turn to finish its handshake path and enter its
-    // post-handshake accept loop before the guest opens annotation/moq streams.
-    // On same-machine runs, opening follow-up bidi streams immediately after
-    // the guest handshake can intermittently leave the host stuck waiting for
-    // the handshake response while the viewer sits at "Connecting…".
-    // TODO: replace this timing guard with an explicit host-ready control ack
-    // once the control plane has a persistent session-management stream.
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-
     // Persistent control channel — must be the first post-handshake bidi open so
     // the ordinal position matches the host's `accept_bi` sequence above.
-    // T5 will wire up a real consumer for `_guest_ctrl_inbound`.
-    // guest_ctrl_outbound_tx is used below to flush the stream; T5 will add more senders.
+    // guest_ctrl_outbound_tx is used below to flush the stream and to forward
+    // ControlRequest messages from the viewer.
     let (guest_ctrl_outbound_tx, guest_ctrl_outbound_rx) =
         tokio::sync::mpsc::channel::<pairwire_protocol::ControlMessage>(32);
     let (ctrl_send, ctrl_recv) = conn
@@ -492,8 +545,8 @@ pub async fn run_join(
 
     // Force the QUIC bidi stream open by sending an initial message — open_bi
     // alone doesn't announce the stream to the remote's accept_bi until the first
-    // STREAM frame is written. SetSharing is used as a no-op flush for now;
-    // T5 can introduce a dedicated ChannelReady variant later.
+    // STREAM frame is written. SetSharing is used as the flush trigger so the host's
+    // accept_bi can return and the host can proceed to send HostReady.
     guest_ctrl_outbound_tx
         .send(pairwire_protocol::ControlMessage::SetSharing {
             screen: true,
@@ -502,6 +555,35 @@ pub async fn run_join(
         .await
         .ok();
     info!("control channel opened");
+
+    // Await the host's HostReady ack before opening follow-up bidi streams.
+    // This replaces the former 250 ms timing guard with an explicit handshake.
+    // A 5-second timeout preserves backward-compatibility with older host builds
+    // that do not emit HostReady — we log a warning and proceed anyway.
+    {
+        use tokio::sync::broadcast::error::RecvError;
+        let mut ready_rx = guest_ctrl_handle.subscribe();
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ready_rx.recv().await {
+                    Ok(pairwire_protocol::ControlMessage::HostReady) => return Ok(()),
+                    Ok(_) => continue, // ignore other messages while waiting
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => {
+                        return Err(anyhow::anyhow!("control channel closed before HostReady"));
+                    }
+                }
+            }
+        })
+        .await;
+        match ready {
+            Ok(Ok(())) => info!("received host ready ack"),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                warn!("HostReady timed out after 5s — proceeding anyway (host may be old build)")
+            }
+        }
+    }
 
     // Guest control-state machine: mirrors the host's ControlGrant / ControlRevoke
     // messages and updates a watch channel so the viewer can reflect the state.
@@ -1061,12 +1143,17 @@ fn host_capabilities() -> Vec<Capability> {
         vec![
             Capability::Screen,
             Capability::Audio,
+            Capability::RemoteControl,
             Capability::Annotations,
         ]
     }
     #[cfg(not(feature = "audio"))]
     {
-        vec![Capability::Screen, Capability::Annotations]
+        vec![
+            Capability::Screen,
+            Capability::RemoteControl,
+            Capability::Annotations,
+        ]
     }
 }
 
@@ -1090,167 +1177,9 @@ fn guest_capabilities() -> Vec<Capability> {
     }
 }
 
-/// Update the `AtomicPermission` to match the current control state.
-///
-/// Called whenever the host control state transitions so that the input
-/// receiver immediately reflects the new gating without a lock.
-fn apply_permission(
-    perm: &Option<Arc<pairwire_input::AtomicPermission>>,
-    state: crate::control_state::RuntimeControlState,
-) {
-    if let Some(p) = perm {
-        p.set(state.input_permission());
-    }
-}
-
-/// Host control-state machine loop.
-///
-/// Drives `RuntimeControlState` from inbound `ControlMessage`s (guest-initiated)
-/// and tray `ControlAction`s (host-initiated). Updates `AtomicPermission` in-place
-/// and sends `ControlGrant` / `ControlRevoke` back to the guest.
-///
-/// Exits when both the inbound broadcast channel and the tray action channel
-/// are closed (i.e., after session teardown).
-///
-/// Extracted as a free function so tests can drive it without a full session.
-pub(crate) async fn host_ctrl_state_task_fn(
-    auto_grant: bool,
-    inbound: &mut tokio::sync::broadcast::Receiver<pairwire_protocol::ControlMessage>,
-    tray_rx: &mut tokio::sync::mpsc::Receiver<crate::control_state::ControlAction>,
-    outbound_tx: &tokio::sync::mpsc::Sender<pairwire_protocol::ControlMessage>,
-    perm_handle: &Option<Arc<pairwire_input::AtomicPermission>>,
-    show_cursor: pairwire_capture::ShowCursorFlag,
-) {
-    use crate::control_state::{ControlAction, RuntimeControlState};
-    use pairwire_protocol::{ControlGrant, ControlMessage, ControlRevoke};
-
-    let mut state = RuntimeControlState::HostActive;
-    // Track whether each source has been permanently closed.
-    // The task exits only when the inbound control channel closes;
-    // the tray channel is optional and its closure is not a terminal condition.
-    let mut tray_closed = false;
-    // Remember the most-recent requesting peer so tray-initiated Grant/Revoke
-    // can address the right guest. Falls back to 1 for unsolicited grants where
-    // the host clicks "Allow" before the guest has sent a ControlRequest.
-    let mut pending_peer_id: Option<u16> = None;
-
-    loop {
-        tokio::select! {
-            msg = inbound.recv() => {
-                match msg {
-                    Ok(ControlMessage::ControlRequest(req)) => {
-                        state.apply(ControlAction::Request);
-                        pending_peer_id = Some(req.peer_id);
-                        tracing::info!(peer_id = req.peer_id, "guest requested control");
-                        if auto_grant {
-                            state.apply(ControlAction::Grant);
-                            apply_permission(perm_handle, state);
-                            // Hide the host cursor so the guest's overlay arrow is
-                            // the only cursor visible in the streamed frames.
-                            show_cursor.set(false);
-                            let _ = outbound_tx
-                                .send(ControlMessage::ControlGrant(ControlGrant {
-                                    peer_id: req.peer_id,
-                                }))
-                                .await;
-                            tracing::info!("auto-granted control to guest");
-                        }
-                    }
-                    Ok(_) => {} // other control messages not handled by host state machine
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::debug!(n, "host ctrl inbound lagged — continuing");
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-            action = tray_rx.recv(), if !tray_closed => {
-                match action {
-                    Some(action) => {
-                        // Use the most-recently seen requester; fall back to 1 for
-                        // single-guest sessions where the host grants before any request.
-                        let peer_id = pending_peer_id.unwrap_or(1);
-                        state.apply(action);
-                        apply_permission(perm_handle, state);
-                        match action {
-                            ControlAction::Grant => {
-                                // Hide the host cursor while the guest has control.
-                                show_cursor.set(false);
-                                let _ = outbound_tx
-                                    .send(ControlMessage::ControlGrant(ControlGrant {
-                                        peer_id,
-                                    }))
-                                    .await;
-                                tracing::info!("host granted control via tray");
-                            }
-                            ControlAction::Revoke => {
-                                // Restore the host cursor now that the guest no longer
-                                // has control.
-                                show_cursor.set(true);
-                                let _ = outbound_tx
-                                    .send(ControlMessage::ControlRevoke(ControlRevoke {
-                                        peer_id,
-                                    }))
-                                    .await;
-                                tracing::info!("host revoked control via tray");
-                            }
-                            ControlAction::Request => {} // host never requests
-                        }
-                    }
-                    None => {
-                        // Tray sender dropped — disable this arm, continue on inbound.
-                        tray_closed = true;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Guest control-state machine loop.
-///
-/// Mirrors `ControlGrant` / `ControlRevoke` messages sent by the host and
-/// forwards the new [`RuntimeControlState`] to a watch channel so the viewer
-/// can reflect the current control state without polling.
-///
-/// Exits when the inbound broadcast channel closes (i.e., after session teardown).
-///
-/// Extracted as a free function so tests can drive it without a full session.
-pub(crate) async fn guest_ctrl_state_task_fn(
-    mut inbound: tokio::sync::broadcast::Receiver<pairwire_protocol::ControlMessage>,
-    state_tx: tokio::sync::watch::Sender<crate::control_state::RuntimeControlState>,
-) {
-    use crate::control_state::{ControlAction, RuntimeControlState};
-    use pairwire_protocol::ControlMessage;
-
-    let mut state = RuntimeControlState::HostActive;
-    loop {
-        match inbound.recv().await {
-            Ok(ControlMessage::ControlGrant(_)) => {
-                state.apply(ControlAction::Grant);
-                let _ = state_tx.send(state);
-                tracing::debug!("control granted by host");
-            }
-            Ok(ControlMessage::ControlRevoke(_)) => {
-                state.apply(ControlAction::Revoke);
-                let _ = state_tx.send(state);
-                tracing::debug!("control revoked by host");
-            }
-            Ok(_) => {} // other messages not relevant to guest control state
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                tracing::debug!(n, "guest ctrl inbound lagged — continuing");
-                continue;
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        guest_ctrl_state_task_fn, host_ctrl_state_task_fn, run_cursor_poll, scale_cursor_to_frame,
-    };
+    use super::{run_cursor_poll, scale_cursor_to_frame};
 
     #[test]
     fn scale_cursor_maps_into_frame_space() {
@@ -1320,123 +1249,5 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         handle.abort();
         let _ = handle.await;
-    }
-
-    /// Integration test: when auto_grant=true, a ControlRequest from the guest side
-    /// causes the host state machine to emit ControlGrant, flip AtomicPermission
-    /// to FullControl, and set the ShowCursorFlag to false — driven purely
-    /// in-process via broadcast channel stubs.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn host_auto_grant_on_control_request() {
-        use std::sync::Arc;
-
-        use pairwire_capture::ShowCursorFlag;
-        use pairwire_input::AtomicPermission;
-        use pairwire_protocol::{ControlGrant, ControlMessage, ControlRequest};
-        use tokio::sync::mpsc;
-
-        let (host_ctrl_outbound_tx, host_ctrl_outbound_rx) = mpsc::channel::<ControlMessage>(8);
-
-        // perm handle: what we'll inspect after the task runs
-        let atomic_perm = Arc::new(AtomicPermission::default());
-        let perm_handle = Some(Arc::clone(&atomic_perm));
-
-        // cursor visibility flag: starts visible, should flip to hidden on grant
-        let show_cursor = ShowCursorFlag::new(true);
-        let show_cursor_check = show_cursor.clone();
-
-        let auto_grant = true;
-        let (tray_action_tx, mut tray_action_rx) =
-            mpsc::channel::<crate::control_state::ControlAction>(8);
-        drop(tray_action_tx); // no tray actions in this test
-
-        // Simulate the guest sending a ControlRequest to the host inbound.
-        // Pre-load the ControlRequest then drop the sender so the task exits
-        // when the channel becomes empty and closed.
-        let (bcast_tx, mut host_inbound_rx) = tokio::sync::broadcast::channel::<ControlMessage>(8);
-        let _ = bcast_tx.send(ControlMessage::ControlRequest(ControlRequest {
-            peer_id: 1,
-        }));
-        drop(bcast_tx);
-
-        host_ctrl_state_task_fn(
-            auto_grant,
-            &mut host_inbound_rx,
-            &mut tray_action_rx,
-            &host_ctrl_outbound_tx,
-            &perm_handle,
-            show_cursor,
-        )
-        .await;
-
-        // The permission should have been flipped to FullControl.
-        assert_eq!(
-            atomic_perm.load_permission(),
-            pairwire_input::InputPermission::FullControl,
-            "permission should be FullControl after auto-grant"
-        );
-
-        // The cursor should have been hidden when control was granted.
-        assert!(
-            !show_cursor_check.get(),
-            "show_cursor flag should be false after guest is granted control"
-        );
-
-        // The host should have sent a ControlGrant on the outbound channel.
-        drop(host_ctrl_outbound_tx);
-        let mut received_grant = false;
-        let mut rx = host_ctrl_outbound_rx;
-        while let Some(msg) = rx.recv().await {
-            if matches!(
-                msg,
-                ControlMessage::ControlGrant(ControlGrant { peer_id: 1 })
-            ) {
-                received_grant = true;
-            }
-        }
-        assert!(received_grant, "host should have sent ControlGrant");
-    }
-
-    /// Guest state machine: ControlGrant → GuestActive (watch emits); ControlRevoke → HostActive.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn guest_ctrl_state_task_grant_then_revoke() {
-        use crate::control_state::RuntimeControlState;
-        use pairwire_protocol::{ControlGrant, ControlMessage, ControlRevoke};
-
-        let (bcast_tx, inbound_rx) = tokio::sync::broadcast::channel::<ControlMessage>(8);
-        let (state_tx, state_rx) = tokio::sync::watch::channel(RuntimeControlState::HostActive);
-
-        // Pre-load Grant then Revoke; drop the broadcast sender so the task exits
-        // when it drains the channel and then receives the Closed error.
-        let _ = bcast_tx.send(ControlMessage::ControlGrant(ControlGrant { peer_id: 1 }));
-        let _ = bcast_tx.send(ControlMessage::ControlRevoke(ControlRevoke { peer_id: 1 }));
-        drop(bcast_tx);
-
-        // Run the guest state machine to completion (state_tx is moved in and dropped on exit).
-        guest_ctrl_state_task_fn(inbound_rx, state_tx).await;
-
-        // After Grant → Revoke, the final state should be back to HostActive.
-        assert_eq!(
-            *state_rx.borrow(),
-            RuntimeControlState::HostActive,
-            "state should return to HostActive after revoke"
-        );
-
-        // The watch sender was dropped when the task exited — has_changed() returns
-        // Err(RecvError) in that case, which means the channel is closed but the
-        // receiver can still read the last value (asserted above). This is expected.
-        // We separately test the intermediate GuestActive transition via a spawn:
-        let (bcast_tx2, inbound_rx2) = tokio::sync::broadcast::channel::<ControlMessage>(8);
-        let (state_tx2, mut state_rx2) =
-            tokio::sync::watch::channel(RuntimeControlState::HostActive);
-        let _ = bcast_tx2.send(ControlMessage::ControlGrant(ControlGrant { peer_id: 1 }));
-        drop(bcast_tx2);
-        guest_ctrl_state_task_fn(inbound_rx2, state_tx2).await;
-        // After a lone Grant the watch should emit GuestActive.
-        assert_eq!(
-            *state_rx2.borrow(),
-            RuntimeControlState::GuestActive,
-            "state should be GuestActive after lone Grant"
-        );
     }
 }

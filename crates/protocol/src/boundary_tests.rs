@@ -403,8 +403,16 @@ mod tests {
 
     #[test]
     fn invalid_control_message_discriminant_fails() {
-        // ControlMessage has 4 variants (0..3). Byte 0xFF should be invalid.
+        // ControlMessage has 10 variants (0..9). Byte 0xFF should be invalid.
         assert!(from_bytes::<ControlMessage>(&[0xFF]).is_err());
+    }
+
+    #[test]
+    fn control_message_host_ready_round_trip() {
+        let msg = ControlMessage::HostReady;
+        let bytes = to_allocvec(&msg).unwrap();
+        let decoded: ControlMessage = from_bytes(&bytes).unwrap();
+        assert_eq!(msg, decoded);
     }
 
     #[test]

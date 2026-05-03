@@ -2,8 +2,9 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicU8, AtomicU64, Ordering},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use iroh::endpoint::RecvStream;
 use pairwire_core::{Error, Result};
@@ -59,6 +60,32 @@ impl AtomicPermission {
     }
 }
 
+/// Records the wall-clock millis of the most recent successful input injection.
+///
+/// Used by the host's auto-revoke watcher to distinguish guest-driven cursor
+/// motion (which is closely preceded by an injection) from host-driven motion
+/// (no recent injection). Shareable via `Arc`; reads are lock-free.
+#[derive(Default)]
+pub struct InjectProbe {
+    last_ms: AtomicU64,
+}
+
+impl InjectProbe {
+    /// Stamp the probe with the current wall-clock millis.
+    pub fn mark_now(&self) {
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        self.last_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// Wall-clock millis of the most recent injection (0 if never marked).
+    #[must_use]
+    pub fn last_ms(&self) -> u64 {
+        self.last_ms.load(Ordering::Relaxed)
+    }
+}
+
 /// Spawned task handle for the input receiver.
 pub struct InputReceiverHandle {
     permission: Arc<AtomicPermission>,
@@ -95,6 +122,9 @@ pub struct InputReceiver {
     stream: RecvStream,
     /// If set, `InputMessage::Clipboard` payloads are forwarded here instead of injected.
     clipboard_tx: Option<mpsc::Sender<ClipboardSync>>,
+    /// If set, stamped on every successful injection so external watchers can
+    /// distinguish guest-driven activity from host-driven activity.
+    inject_probe: Option<Arc<InjectProbe>>,
 }
 
 impl InputReceiver {
@@ -103,6 +133,7 @@ impl InputReceiver {
         Self {
             stream,
             clipboard_tx: None,
+            inject_probe: None,
         }
     }
 
@@ -111,6 +142,13 @@ impl InputReceiver {
     #[must_use]
     pub fn with_clipboard(mut self, tx: mpsc::Sender<ClipboardSync>) -> Self {
         self.clipboard_tx = Some(tx);
+        self
+    }
+
+    /// Attach an `InjectProbe` that gets stamped after every successful injection.
+    #[must_use]
+    pub fn with_inject_probe(mut self, probe: Arc<InjectProbe>) -> Self {
+        self.inject_probe = Some(probe);
         self
     }
 
@@ -125,6 +163,7 @@ impl InputReceiver {
         let perm_clone = Arc::clone(&permission);
         let mut stream = self.stream;
         let clipboard_tx = self.clipboard_tx;
+        let inject_probe = self.inject_probe;
 
         let join = tokio::spawn(async move {
             info!("input receiver started");
@@ -163,8 +202,13 @@ impl InputReceiver {
                                             continue;
                                         }
                                         debug!(event = ?other, ?perm, "injecting input event");
-                                        if let Err(e) = inject_event(&other, perm) {
-                                            warn!(error = %e, "input injection failed");
+                                        match inject_event(&other, perm) {
+                                            Ok(()) => {
+                                                if let Some(ref probe) = inject_probe {
+                                                    probe.mark_now();
+                                                }
+                                            }
+                                            Err(e) => warn!(error = %e, "input injection failed"),
                                         }
                                     }
                                 }

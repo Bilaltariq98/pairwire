@@ -15,6 +15,7 @@ pub fn inject(event: &InputMessage, _permission: InputPermission) -> Result<()> 
             InputMessage::Key(_) => "key",
             InputMessage::Click(_) => "click",
             InputMessage::Scroll(_) => "scroll",
+            InputMessage::Move(_) => "move",
             InputMessage::Clipboard(_) => "clipboard",
         },
         "input injection not implemented on this platform"

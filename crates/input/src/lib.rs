@@ -35,7 +35,7 @@ pub use clipboard::{
 pub use cursor_macos::{current_cursor_position, current_cursor_state, main_display_physical_size};
 #[cfg(not(target_os = "macos"))]
 pub use cursor_stub::{current_cursor_position, current_cursor_state, main_display_physical_size};
-pub use receiver::{AtomicPermission, InputReceiver, InputReceiverHandle};
+pub use receiver::{AtomicPermission, InjectProbe, InputReceiver, InputReceiverHandle};
 pub use sender::{InputSender, InputSenderHandle};
 
 /// Permission state for input injection on the host.
