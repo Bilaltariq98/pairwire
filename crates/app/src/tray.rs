@@ -47,6 +47,10 @@ mod inner {
         Disconnect,
         /// User clicked "Quit".
         Quit,
+        /// User clicked "Allow Remote Control".
+        GrantControl,
+        /// User clicked "Revoke Control".
+        RevokeControl,
     }
 
     /// Owns the tray icon and menu item IDs. Must be kept alive for the icon to remain visible.
@@ -58,6 +62,13 @@ mod inner {
         disconnect_id: tray_icon::menu::MenuId,
         quit_id: tray_icon::menu::MenuId,
         invite_url: Option<String>,
+        // T5 will call set_control_granted; suppress dead_code until then.
+        #[allow(dead_code)]
+        grant_item: MenuItem,
+        grant_id: tray_icon::menu::MenuId,
+        #[allow(dead_code)]
+        revoke_item: MenuItem,
+        revoke_id: tray_icon::menu::MenuId,
     }
 
     impl TrayHandle {
@@ -81,16 +92,27 @@ mod inner {
             }
 
             let copy_item = MenuItem::new("Copy Invite Link", invite_url.is_some(), None);
+            let grant_item = MenuItem::new("Allow Remote Control", true, None);
+            let revoke_item = MenuItem::new("Revoke Control", false, None);
             let disconnect_item = MenuItem::new("Disconnect", true, None);
             let separator = PredefinedMenuItem::separator();
             let quit_item = MenuItem::new("Quit pairwire", true, None);
 
             let copy_id = copy_item.id().clone();
+            let grant_id = grant_item.id().clone();
+            let revoke_id = revoke_item.id().clone();
             let disconnect_id = disconnect_item.id().clone();
             let quit_id = quit_item.id().clone();
 
             let menu = Menu::new();
-            menu.append_items(&[&copy_item, &disconnect_item, &separator, &quit_item])?;
+            menu.append_items(&[
+                &copy_item,
+                &grant_item,
+                &revoke_item,
+                &disconnect_item,
+                &separator,
+                &quit_item,
+            ])?;
 
             // 16×16 RGBA checkerboard as a minimal placeholder icon.
             // In a real build this would be replaced with a proper PNG asset.
@@ -112,6 +134,10 @@ mod inner {
                 disconnect_id,
                 quit_id,
                 invite_url,
+                grant_item,
+                grant_id,
+                revoke_item,
+                revoke_id,
             })
         }
 
@@ -119,6 +145,17 @@ mod inner {
         pub fn set_invite_url(&mut self, url: String) {
             self.invite_url = Some(url);
             self.copy_item.set_enabled(true);
+        }
+
+        /// Toggle the Grant / Revoke menu items based on whether control is granted.
+        ///
+        /// When `granted` is `true`, "Allow Remote Control" is disabled and
+        /// "Revoke Control" is enabled, and vice versa.
+        // T5 will call this method; suppress dead_code until then.
+        #[allow(dead_code)]
+        pub fn set_control_granted(&mut self, granted: bool) {
+            self.grant_item.set_enabled(!granted);
+            self.revoke_item.set_enabled(granted);
         }
 
         /// Poll for a pending menu event. Returns `None` if the queue is empty.
@@ -143,11 +180,22 @@ mod inner {
                             warn!("tray: CopyInvite clicked but no invite URL set");
                             None
                         }
+                    } else if id == &self.grant_id {
+                        debug!("tray: GrantControl");
+                        Some(TrayAction::GrantControl)
+                    } else if id == &self.revoke_id {
+                        debug!("tray: RevokeControl");
+                        Some(TrayAction::RevokeControl)
                     } else {
                         None
                     }
                 }
-                Err(_) => None,
+                Err(err) => {
+                    if err.is_disconnected() {
+                        warn!("tray menu event channel disconnected");
+                    }
+                    None
+                }
             }
         }
     }
