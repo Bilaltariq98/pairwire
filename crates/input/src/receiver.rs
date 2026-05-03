@@ -18,8 +18,12 @@ use crate::InputPermission;
 /// Atomic encoding of `InputPermission` for lock-free reads.
 ///
 /// 0 = Denied, 1 = `FullControl`, 2 = `KeyboardOnly`
+///
+/// Made public so the host control-state task can share the same
+/// `Arc<AtomicPermission>` that drives injection without holding
+/// an `InputReceiverHandle` (which consumes `self` on stop).
 #[derive(Default)]
-struct AtomicPermission(AtomicU8);
+pub struct AtomicPermission(AtomicU8);
 
 impl AtomicPermission {
     fn load(&self) -> InputPermission {
@@ -30,6 +34,13 @@ impl AtomicPermission {
         }
     }
 
+    /// Public alias for `load` — used by external consumers such as the
+    /// host control-state task that holds an `Arc<AtomicPermission>`.
+    #[must_use]
+    pub fn load_permission(&self) -> InputPermission {
+        self.load()
+    }
+
     fn store(&self, p: InputPermission) {
         let v = match p {
             InputPermission::Denied => 0,
@@ -37,6 +48,14 @@ impl AtomicPermission {
             InputPermission::KeyboardOnly => 2,
         };
         self.0.store(v, Ordering::Relaxed);
+    }
+
+    /// Public alias for `store` — sets the permission atomically.
+    ///
+    /// Used by the host control-state task to flip input gating without
+    /// going through `InputReceiverHandle` (which consumes `self` on stop).
+    pub fn set(&self, p: InputPermission) {
+        self.store(p);
     }
 }
 
@@ -51,6 +70,14 @@ impl InputReceiverHandle {
     /// Grant or revoke input injection permission at runtime.
     pub fn set_permission(&self, p: InputPermission) {
         self.permission.store(p);
+    }
+
+    /// Return a cloneable handle to the permission atomic so that an external
+    /// task (e.g. the host control-state machine) can flip gating independently
+    /// without consuming the receiver handle.
+    #[must_use]
+    pub fn permission_handle(&self) -> Arc<AtomicPermission> {
+        Arc::clone(&self.permission)
     }
 
     /// Signal the receiver to stop and wait for it to finish.
@@ -189,5 +216,17 @@ mod tests {
 
         ap.store(InputPermission::Denied);
         assert_eq!(ap.load(), InputPermission::Denied);
+    }
+
+    #[test]
+    fn atomic_permission_public_set_and_load() {
+        let ap = AtomicPermission::default();
+        assert_eq!(ap.load_permission(), InputPermission::Denied);
+
+        ap.set(InputPermission::FullControl);
+        assert_eq!(ap.load_permission(), InputPermission::FullControl);
+
+        ap.set(InputPermission::KeyboardOnly);
+        assert_eq!(ap.load_permission(), InputPermission::KeyboardOnly);
     }
 }

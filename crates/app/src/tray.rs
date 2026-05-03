@@ -62,11 +62,8 @@ mod inner {
         disconnect_id: tray_icon::menu::MenuId,
         quit_id: tray_icon::menu::MenuId,
         invite_url: Option<String>,
-        // T5 will call set_control_granted; suppress dead_code until then.
-        #[allow(dead_code)]
         grant_item: MenuItem,
         grant_id: tray_icon::menu::MenuId,
-        #[allow(dead_code)]
         revoke_item: MenuItem,
         revoke_id: tray_icon::menu::MenuId,
     }
@@ -151,8 +148,6 @@ mod inner {
         ///
         /// When `granted` is `true`, "Allow Remote Control" is disabled and
         /// "Revoke Control" is enabled, and vice versa.
-        // T5 will call this method; suppress dead_code until then.
-        #[allow(dead_code)]
         pub fn set_control_granted(&mut self, granted: bool) {
             self.grant_item.set_enabled(!granted);
             self.revoke_item.set_enabled(granted);

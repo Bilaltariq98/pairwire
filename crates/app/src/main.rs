@@ -48,7 +48,7 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
     #[cfg(not(feature = "tray"))]
     {
         // Without the tray feature, run the session directly on the async runtime.
-        rt.block_on(session::run_host(args, None))
+        rt.block_on(session::run_host(args, None, None))
     }
 
     #[cfg(feature = "tray")]
@@ -60,7 +60,17 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
         let (invite_tx, invite_rx) = tokio::sync::oneshot::channel::<String>();
         let mut tray_handle = tray::TrayHandle::new(None)?;
 
-        let session_handle = rt.spawn(session::run_host(args, Some(invite_tx)));
+        // Bridge tray GrantControl / RevokeControl events into the session's
+        // control-state machine. The mpsc channel is created here (on the main
+        // thread) and the receiver is passed into run_host.
+        let (tray_action_tx, tray_action_rx) =
+            tokio::sync::mpsc::channel::<control_state::ControlAction>(8);
+
+        let session_handle = rt.spawn(session::run_host(
+            args,
+            Some(invite_tx),
+            Some(tray_action_rx),
+        ));
 
         // Block until the invite URL arrives, then update the tray item.
         if let Ok(url) = rt.block_on(invite_rx) {
@@ -88,8 +98,16 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
                         session_handle.abort();
                         std::process::exit(0);
                     }
-                    // T4: exposed but not yet wired — wiring happens in T5.
-                    TrayAction::GrantControl | TrayAction::RevokeControl => {}
+                    TrayAction::GrantControl => {
+                        let _ = tray_action_tx.try_send(control_state::ControlAction::Grant);
+                        tray_handle.set_control_granted(true);
+                        info!("tray: grant control forwarded to session");
+                    }
+                    TrayAction::RevokeControl => {
+                        let _ = tray_action_tx.try_send(control_state::ControlAction::Revoke);
+                        tray_handle.set_control_granted(false);
+                        info!("tray: revoke control forwarded to session");
+                    }
                 }
             }
 
