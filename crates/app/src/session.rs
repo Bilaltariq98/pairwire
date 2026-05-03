@@ -25,9 +25,9 @@ use pairwire_core::{
 use pairwire_input::{ClipboardReceiver, ClipboardSender, InputReceiver, InputSender};
 use pairwire_protocol::{Capability, CursorUpdate, VideoCodec};
 use pairwire_transport::{
-    AudioStreamConfig, CursorReceiver, CursorSender, DatagramChannels, DrawingReceiver,
-    DrawingSender, MoqSessionSubscriber, NegotiatedSession, QualityMonitor, TAG_GUEST_AUDIO,
-    Transport, datagram_router, guest_handshake, host_handshake, local_handshake,
+    AudioStreamConfig, ControlChannel, CursorReceiver, CursorSender, DatagramChannels,
+    DrawingReceiver, DrawingSender, MoqSessionSubscriber, NegotiatedSession, QualityMonitor,
+    TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake, host_handshake, local_handshake,
 };
 #[cfg(feature = "encode")]
 use pairwire_transport::{MoqSessionPublisher, VideoStreamConfig};
@@ -111,6 +111,21 @@ pub async fn run_host(
         video_codec = ?session.video_codec,
         "handshake complete"
     );
+
+    // Persistent control channel — must be the first post-handshake bidi accept so
+    // the ordinal position matches the guest's `open_control_stream` sequence below.
+    // T5 will wire up a real consumer for `_host_ctrl_inbound`.
+    let (_host_ctrl_outbound_tx, host_ctrl_outbound_rx) =
+        tokio::sync::mpsc::channel::<pairwire_protocol::ControlMessage>(32);
+    let (ctrl_send, ctrl_recv) = conn
+        .accept_bi()
+        .await
+        .context("failed to accept control channel stream")?
+        .ok_or_else(|| anyhow::anyhow!("connection closed before control channel"))?;
+    let host_ctrl_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, host_ctrl_outbound_rx);
+    // T5 replaces this underscore-prefixed binding with a real consumer.
+    let _host_ctrl_inbound = host_ctrl_handle.subscribe();
+    info!("control channel accepted");
 
     // Accept the input bidi stream opened by the guest (before moq-lite starts).
     // Auto-grant FullControl when allow_remote_control is true (default: false).
@@ -348,6 +363,7 @@ pub async fn run_host(
     cursor_poll_task.abort();
     let _ = cursor_poll_task.await;
     quality_handle.stop().await;
+    host_ctrl_handle.stop().await;
     router.stop().await;
     cursor_send_handle.stop().await;
     if let Some(handle) = host_drawing_send_handle {
@@ -434,6 +450,33 @@ pub async fn run_join(
     // TODO: replace this timing guard with an explicit host-ready control ack
     // once the control plane has a persistent session-management stream.
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    // Persistent control channel — must be the first post-handshake bidi open so
+    // the ordinal position matches the host's `accept_bi` sequence above.
+    // T5 will wire up a real consumer for `_guest_ctrl_inbound`.
+    // guest_ctrl_outbound_tx is used below to flush the stream; T5 will add more senders.
+    let (guest_ctrl_outbound_tx, guest_ctrl_outbound_rx) =
+        tokio::sync::mpsc::channel::<pairwire_protocol::ControlMessage>(32);
+    let (ctrl_send, ctrl_recv) = conn
+        .open_control_stream()
+        .await
+        .context("failed to open control channel stream")?;
+    let guest_ctrl_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, guest_ctrl_outbound_rx);
+    // T5 replaces this underscore-prefixed binding with a real consumer.
+    let _guest_ctrl_inbound = guest_ctrl_handle.subscribe();
+
+    // Force the QUIC bidi stream open by sending an initial message — open_bi
+    // alone doesn't announce the stream to the remote's accept_bi until the first
+    // STREAM frame is written. SetSharing is used as a no-op flush for now;
+    // T5 can introduce a dedicated ChannelReady variant later.
+    guest_ctrl_outbound_tx
+        .send(pairwire_protocol::ControlMessage::SetSharing {
+            screen: true,
+            audio: true,
+        })
+        .await
+        .ok();
+    info!("control channel opened");
 
     // Quality monitor on the guest side — drives the HUD quality dot.
     // Uses a dummy CaptureConfig since the guest doesn't encode; we only need the tier.
@@ -643,6 +686,7 @@ pub async fn run_join(
 
     sub_handle.stop().await;
     guest_quality_handle.stop().await;
+    guest_ctrl_handle.stop().await;
     router.stop().await;
     cursor_forward_task.abort();
     let _ = cursor_forward_task.await;
