@@ -8,7 +8,7 @@ mod inner {
     use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2};
     use pairwire_capture::DecodedFrame;
     use pairwire_protocol::drawing::{DrawMode, DrawPoint, DrawStroke};
-    use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseScroll};
+    use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseMove, MouseScroll};
     use pairwire_protocol::{ControlMessage, ControlRequest, CursorUpdate};
     use pairwire_transport::{DrawingEvent, QualityTier};
     use tokio::sync::{broadcast, watch};
@@ -38,6 +38,106 @@ mod inner {
             1 => "Guest".to_string(),
             n => format!("Peer {n}"),
         }
+    }
+
+    /// Translate an `egui::Key` to a macOS virtual key code (`kVK_*`).
+    ///
+    /// egui's `Key` enum discriminants are arbitrary and do not match any platform's
+    /// scan codes. The host injects via `CGEvent` which expects `kVK_*` codes, so we
+    /// map here. Returns `None` for keys we don't translate (those events are dropped).
+    #[allow(clippy::too_many_lines)]
+    fn egui_key_to_mac_keycode(key: egui::Key) -> Option<u32> {
+        use egui::Key;
+        Some(match key {
+            // Letters
+            Key::A => 0,
+            Key::S => 1,
+            Key::D => 2,
+            Key::F => 3,
+            Key::H => 4,
+            Key::G => 5,
+            Key::Z => 6,
+            Key::X => 7,
+            Key::C => 8,
+            Key::V => 9,
+            Key::B => 11,
+            Key::Q => 12,
+            Key::W => 13,
+            Key::E => 14,
+            Key::R => 15,
+            Key::Y => 16,
+            Key::T => 17,
+            Key::O => 31,
+            Key::U => 32,
+            Key::I => 34,
+            Key::P => 35,
+            Key::L => 37,
+            Key::J => 38,
+            Key::K => 40,
+            Key::N => 45,
+            Key::M => 46,
+            // Digits
+            Key::Num1 => 18,
+            Key::Num2 => 19,
+            Key::Num3 => 20,
+            Key::Num4 => 21,
+            Key::Num6 => 22,
+            Key::Num5 => 23,
+            Key::Num9 => 25,
+            Key::Num7 => 26,
+            Key::Num8 => 28,
+            Key::Num0 => 29,
+            // Punctuation
+            Key::Equals => 24,
+            Key::Minus => 27,
+            Key::CloseBracket => 30,
+            Key::OpenBracket => 33,
+            Key::Quote => 39,
+            Key::Semicolon => 41,
+            Key::Backslash => 42,
+            Key::Comma => 43,
+            Key::Slash => 44,
+            Key::Period => 47,
+            Key::Backtick => 50,
+            // Control
+            Key::Enter => 36,
+            Key::Tab => 48,
+            Key::Space => 49,
+            Key::Backspace => 51,
+            Key::Escape => 53,
+            Key::Delete => 117,
+            // Navigation
+            Key::Home => 115,
+            Key::End => 119,
+            Key::PageUp => 116,
+            Key::PageDown => 121,
+            Key::ArrowLeft => 123,
+            Key::ArrowRight => 124,
+            Key::ArrowDown => 125,
+            Key::ArrowUp => 126,
+            // Function keys
+            Key::F1 => 122,
+            Key::F2 => 120,
+            Key::F3 => 99,
+            Key::F4 => 118,
+            Key::F5 => 96,
+            Key::F6 => 97,
+            Key::F7 => 98,
+            Key::F8 => 100,
+            Key::F9 => 101,
+            Key::F10 => 109,
+            Key::F11 => 103,
+            Key::F12 => 111,
+            Key::F13 => 105,
+            Key::F14 => 107,
+            Key::F15 => 113,
+            Key::F16 => 106,
+            Key::F17 => 64,
+            Key::F18 => 79,
+            Key::F19 => 80,
+            Key::F20 => 90,
+            _ => return None,
+        })
     }
 
     fn hsv_to_rgb(h: f32, s: f32, v: f32) -> egui::Color32 {
@@ -98,6 +198,10 @@ mod inner {
         /// Whether the guest has sent a ControlRequest and is awaiting host approval.
         /// Cleared when `control_rx` changes to a new state (Grant or no-op).
         has_pending_request: bool,
+        /// Bitmask of mouse buttons currently held by the guest pointer
+        /// (0x01=left, 0x02=right, 0x04=middle). Used to stamp `MouseMove`
+        /// events with the correct button state for drag injection.
+        held_buttons: u8,
     }
 
     impl ViewerApp {
@@ -137,6 +241,7 @@ mod inner {
                 peer_id: 1,
                 muted: false,
                 has_pending_request: false,
+                held_buttons: 0,
             }
         }
 
@@ -774,8 +879,11 @@ mod inner {
                         if modifiers.mac_cmd || modifiers.command {
                             mods |= pairwire_protocol::input::MOD_META;
                         }
+                        let Some(key_code) = egui_key_to_mac_keycode(*key) else {
+                            continue;
+                        };
                         self.send_input(InputMessage::Key(KeyEvent {
-                            key_code: *key as u32,
+                            key_code,
                             modifiers: mods,
                             pressed: *pressed,
                             timestamp_ms: now_ms,
@@ -818,17 +926,36 @@ mod inner {
                         }
 
                         if let Some((hx, hy)) = self.map_pointer_to_host(*pos) {
-                            let btn = match button {
-                                egui::PointerButton::Primary => 0,
-                                egui::PointerButton::Secondary => 1,
-                                egui::PointerButton::Middle => 2,
-                                _ => 0,
+                            let (btn, mask) = match button {
+                                egui::PointerButton::Primary => (0u8, 0x01u8),
+                                egui::PointerButton::Secondary => (1u8, 0x02u8),
+                                egui::PointerButton::Middle => (2u8, 0x04u8),
+                                _ => (0u8, 0x01u8),
                             };
+                            if *pressed {
+                                self.held_buttons |= mask;
+                            } else {
+                                self.held_buttons &= !mask;
+                            }
                             self.send_input(InputMessage::Click(MouseClick {
                                 x: hx,
                                 y: hy,
                                 button: btn,
                                 pressed: *pressed,
+                                timestamp_ms: now_ms,
+                            }));
+                        }
+                    }
+
+                    egui::Event::PointerMoved(pos) => {
+                        if self.drawing_mode {
+                            continue;
+                        }
+                        if let Some((hx, hy)) = self.map_pointer_to_host(*pos) {
+                            self.send_input(InputMessage::Move(MouseMove {
+                                x: hx,
+                                y: hy,
+                                buttons: self.held_buttons,
                                 timestamp_ms: now_ms,
                             }));
                         }

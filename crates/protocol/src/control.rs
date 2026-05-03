@@ -122,6 +122,11 @@ pub enum ControlMessage {
     DrawClear(crate::drawing::DrawClear),
     /// A completed drawing stroke from either peer.
     DrawStroke(crate::drawing::DrawStroke),
+    /// Sent by host on the persistent control channel after the host has
+    /// entered its post-handshake accept loop. Guest waits for this message
+    /// before opening follow-up bidi streams (input, drawing, moq tracks).
+    /// Replaces the prior 250 ms timing guard.
+    HostReady,
 }
 
 /// Diagnostic heartbeat sent periodically on the control stream.
@@ -159,6 +164,14 @@ mod tests {
             "Heartbeat serialized to {} bytes, must be < 50",
             bytes.len()
         );
+    }
+
+    #[test]
+    fn host_ready_round_trip() {
+        let msg = super::ControlMessage::HostReady;
+        let bytes = to_allocvec(&msg).unwrap();
+        let decoded: super::ControlMessage = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(msg, decoded);
     }
 
     #[test]

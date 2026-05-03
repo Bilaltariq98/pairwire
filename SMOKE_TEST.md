@@ -213,3 +213,48 @@ Key log lines and what they mean:
 | `audio capture thread started` | Mic capture active |
 | `guest audio pipeline started` | Host is decoding + playing guest audio |
 | `host disconnected` / `guest disconnected` | Clean session end |
+
+---
+
+## UX Polish Epic — Manual Verification
+
+Run host (without auto-grant):
+
+```bash
+cargo run --features encode,capture,audio,gui,tray -- host
+```
+
+Run guest (separate machine or process):
+
+```bash
+cargo run --features encode,capture,audio,gui,tray -- join "<invite>"
+```
+
+**Note:** Guest cursor position is logged at `debug!` level, not `info!`. Use the following env var when grepping for cursor events:
+
+```bash
+RUST_LOG=pairwire_app=debug cargo run --features encode,capture,audio,gui,tray -- host
+```
+
+Then grep for `guest cursor` in the host output.
+
+**Verify:**
+
+- [ ] Guest cursor logged on host (`RUST_LOG=pairwire_app=debug` shows `guest cursor peer_id=… x=… y=…`).
+- [ ] Tray menu has `Allow Remote Control` (enabled) and `Revoke Control` (disabled, greyed out).
+- [ ] Guest viewer HUD shows `View only` initially.
+- [ ] `Cmd+Shift+R` on guest viewer → host log shows `guest requested control`; guest HUD switches to `Awaiting host approval…`. Press `Esc` to cancel a pending request.
+- [ ] Click tray `Allow Remote Control` on host → guest HUD switches to `You have control`; guest can drive host mouse/keyboard.
+- [ ] Captured stream shows no system cursor while control is granted (only the guest's own cursor overlay arrow is visible — host system cursor is hidden by rebuilding the scap capturer with `show_cursor=false`).
+- [ ] Click tray `Revoke Control` on host → guest HUD returns to `View only`; host system cursor reappears in the captured stream.
+- [ ] Run host with `--allow-remote-control` flag — first `Cmd+Shift+R` from the guest is auto-granted without a tray click.
+
+**Expected tray state machine:**
+
+| Control state | `Allow Remote Control` | `Revoke Control` |
+|---|---|---|
+| Idle (no request) | enabled | disabled |
+| Pending (guest requested) | enabled | disabled |
+| Granted | disabled | enabled |
+
+**Known transition behaviour:** granting/revoking control triggers a scap capturer rebuild (~33–500ms depending on machine) which may cause a brief hitch in the video stream. This is expected.

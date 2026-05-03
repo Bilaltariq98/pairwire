@@ -14,7 +14,7 @@ use core_graphics::{
     geometry::CGPoint,
 };
 use pairwire_core::{Error, Result};
-use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseScroll};
+use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseMove, MouseScroll};
 
 use crate::InputPermission;
 
@@ -32,6 +32,12 @@ pub fn inject(event: &InputMessage, permission: InputPermission) -> Result<()> {
                 return Ok(());
             }
             inject_scroll(e)
+        }
+        InputMessage::Move(e) => {
+            if permission == InputPermission::KeyboardOnly {
+                return Ok(());
+            }
+            inject_move(e)
         }
         // Clipboard is handled separately via the clipboard sync path.
         InputMessage::Clipboard(_) => Ok(()),
@@ -98,6 +104,26 @@ fn inject_click(e: &MouseClick) -> Result<()> {
     let event_type = if e.pressed { down_type } else { up_type };
     let event = CGEvent::new_mouse_event(source, event_type, pos, button)
         .map_err(|()| Error::PermissionDenied("CGEvent mouse creation failed".into()))?;
+    event.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+fn inject_move(e: &MouseMove) -> Result<()> {
+    let source = event_source()?;
+    let pos = CGPoint::new(f64::from(e.x), f64::from(e.y));
+
+    let (event_type, button) = if e.buttons & 0x01 != 0 {
+        (CGEventType::LeftMouseDragged, CGMouseButton::Left)
+    } else if e.buttons & 0x02 != 0 {
+        (CGEventType::RightMouseDragged, CGMouseButton::Right)
+    } else if e.buttons & 0x04 != 0 {
+        (CGEventType::OtherMouseDragged, CGMouseButton::Center)
+    } else {
+        (CGEventType::MouseMoved, CGMouseButton::Left)
+    };
+
+    let event = CGEvent::new_mouse_event(source, event_type, pos, button)
+        .map_err(|()| Error::PermissionDenied("CGEvent mouse move creation failed".into()))?;
     event.post(CGEventTapLocation::HID);
     Ok(())
 }

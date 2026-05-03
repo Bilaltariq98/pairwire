@@ -243,6 +243,50 @@ mod tests {
         guest_handle.stop().await;
     }
 
+    /// Verify that `HostReady` serialises, transmits over a loopback channel, and
+    /// is received intact — covers the new protocol variant end-to-end.
+    #[tokio::test]
+    async fn control_channel_round_trips_host_ready() {
+        use std::time::Duration;
+
+        let (peer_a, peer_b) = crate::test_utils::loopback_pair().await;
+
+        // Pre-queue HostReady so A's send task writes the first STREAM frame,
+        // which unblocks B's accept_bi.
+        let (a_outbound_tx, a_outbound_rx) = mpsc::channel(8);
+        a_outbound_tx.send(ControlMessage::HostReady).await.unwrap();
+
+        let (a_send, a_recv) = peer_a.open_control_stream().await.unwrap();
+        let a_handle = ControlChannel::spawn(a_send, a_recv, a_outbound_rx);
+
+        let (b_send, b_recv) = tokio::time::timeout(Duration::from_secs(2), async {
+            peer_b
+                .accept_bi()
+                .await
+                .unwrap()
+                .expect("connection closed before stream opened")
+        })
+        .await
+        .expect("accept_bi timed out");
+
+        let (_b_outbound_tx, b_outbound_rx) = mpsc::channel(8);
+        let b_handle = ControlChannel::spawn(b_send, b_recv, b_outbound_rx);
+
+        let mut b_inbound = b_handle.subscribe();
+        let msg = tokio::time::timeout(Duration::from_secs(2), b_inbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            matches!(msg, ControlMessage::HostReady),
+            "expected HostReady, got {msg:?}"
+        );
+
+        a_handle.stop().await;
+        b_handle.stop().await;
+    }
+
     #[tokio::test]
     async fn control_channel_stops_cleanly() {
         let (peer_a, peer_b) = crate::test_utils::loopback_pair().await;

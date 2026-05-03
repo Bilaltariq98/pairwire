@@ -6,6 +6,8 @@
 
 mod cli;
 mod control_state;
+mod guest_ctrl;
+mod host_ctrl;
 mod reconnect;
 mod session;
 mod tray;

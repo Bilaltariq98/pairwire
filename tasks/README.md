@@ -11,6 +11,7 @@ Per-phase task tracking. Each phase gets its own file.
 | `phase-2.md` | Protocol layer + remote control | 🔲 Not started |
 | `phase-3.md` | Audio + polish | 🔲 Not started |
 | `phase-4.md` | Differentiation (terminal, editor, AI) | 🔲 Not started |
+| `epic-ux-polish.md` | UX Polish — cursor + control + capture polish | ✅ Complete |
 
 ## Status Key
 

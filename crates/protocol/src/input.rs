@@ -39,6 +39,20 @@ pub struct MouseClick {
     pub timestamp_ms: u64,
 }
 
+/// A mouse move (or drag) event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MouseMove {
+    /// X position in host display pixels.
+    pub x: u16,
+    /// Y position in host display pixels.
+    pub y: u16,
+    /// Bitmask of buttons currently held (0x01=left, 0x02=right, 0x04=middle).
+    /// Used to decide between `MouseMoved` and `*MouseDragged` on the host.
+    pub buttons: u8,
+    /// Monotonic timestamp in milliseconds.
+    pub timestamp_ms: u64,
+}
+
 /// A mouse scroll wheel event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseScroll {
@@ -80,6 +94,7 @@ pub enum InputMessage {
     Click(MouseClick),
     Scroll(MouseScroll),
     Clipboard(ClipboardSync),
+    Move(MouseMove),
 }
 
 #[cfg(test)]
