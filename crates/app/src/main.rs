@@ -179,6 +179,14 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     // Quality tier: session publishes current connection quality, viewer shows HUD dot.
     let (quality_tx_for_session, quality_rx) =
         tokio::sync::watch::channel(pairwire_transport::QualityTier::Full);
+    // Control state: session publishes the current RuntimeControlState, viewer shows HUD label.
+    let (control_state_tx_for_session, control_state_rx) =
+        tokio::sync::watch::channel(crate::control_state::RuntimeControlState::HostActive);
+    // Control request: viewer sends ControlRequest messages, session forwards to host.
+    // Uses broadcast so each reconnect attempt can subscribe independently.
+    let (control_request_tx, _) =
+        tokio::sync::broadcast::channel::<pairwire_protocol::ControlMessage>(8);
+    let control_request_tx_for_session = control_request_tx.clone();
 
     #[cfg(not(feature = "gui"))]
     let _ = (
@@ -192,6 +200,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
         &mute_rx_for_session,
         &quality_tx_for_session,
         &quality_rx,
+        &control_state_rx,
+        &control_request_tx,
     );
 
     let no_gui = args.no_gui;
@@ -206,9 +216,11 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
             let args = args.clone();
             let mute_rx = mute_rx_for_session.clone();
             let quality_tx = quality_tx_for_session.clone();
+            let control_state_tx = control_state_tx_for_session.clone();
             // Each reconnect gets a fresh broadcast subscriber → mpsc bridge.
             let mut input_broadcast_rx = input_tx_for_session.subscribe();
             let mut drawing_broadcast_rx = drawing_event_tx_for_session.subscribe();
+            let mut control_request_broadcast_rx = control_request_tx_for_session.subscribe();
             async move {
                 let (input_bridge_tx, input_bridge_rx) =
                     tokio::sync::mpsc::channel::<pairwire_protocol::input::InputMessage>(32);
@@ -230,6 +242,16 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                         }
                     }
                 });
+                // Bridge control request broadcast → mpsc for this session attempt.
+                let (control_request_bridge_tx, control_request_bridge_rx) =
+                    tokio::sync::mpsc::channel::<pairwire_protocol::ControlMessage>(8);
+                tokio::spawn(async move {
+                    while let Ok(msg) = control_request_broadcast_rx.recv().await {
+                        if control_request_bridge_tx.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                });
                 session::run_join(
                     args,
                     frame_tx,
@@ -239,6 +261,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                     mute_rx,
                     quality_tx,
                     input_bridge_rx,
+                    control_state_tx,
+                    control_request_bridge_rx,
                 )
                 .await
             }
@@ -266,6 +290,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                 drawing_event_tx,
                 mute_tx,
                 quality_rx,
+                control_state_rx,
+                control_request_tx,
                 "pairwire",
             );
 
