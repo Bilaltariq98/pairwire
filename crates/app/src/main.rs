@@ -9,6 +9,7 @@ mod control_state;
 mod guest_ctrl;
 mod host_ctrl;
 mod host_overlay;
+mod host_overlay_transparent;
 mod reconnect;
 mod session;
 mod tray;
@@ -51,6 +52,8 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
     let _no_overlay = args.no_overlay;
     #[cfg(feature = "gui")]
     let no_overlay = _no_overlay;
+    #[cfg(feature = "gui")]
+    let transparent_overlay = args.transparent_overlay;
 
     #[cfg(not(feature = "tray"))]
     {
@@ -68,7 +71,16 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
                 tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
             let session_handle = rt.spawn(session::run_host(args, None, None, Some(overlay_tx)));
             if let Ok(channels) = rt.block_on(overlay_rx) {
-                let _ = host_overlay::run_host_overlay(channels);
+                if transparent_overlay {
+                    // Spike: use the transparent fullscreen overlay.
+                    // capture_size defaults to 0 — the overlay will use the
+                    // strokes_rx-inferred coords. For now we pass a sentinel so
+                    // the compile path is exercised; real wiring would pass the
+                    // actual capture resolution from session channels.
+                    let _ = host_overlay_transparent::run_transparent_host_overlay(channels, 0, 0);
+                } else {
+                    let _ = host_overlay::run_host_overlay(channels);
+                }
             }
             session_handle.abort();
             match rt.block_on(session_handle) {
@@ -130,7 +142,13 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
         let overlay_thread = if let Some(rx) = overlay_rx_opt {
             match rt.block_on(rx) {
                 Ok(channels) => Some(std::thread::spawn(move || {
-                    if let Err(e) = host_overlay::run_host_overlay(channels) {
+                    let result = if transparent_overlay {
+                        // Spike: transparent overlay path.
+                        host_overlay_transparent::run_transparent_host_overlay(channels, 0, 0)
+                    } else {
+                        host_overlay::run_host_overlay(channels)
+                    };
+                    if let Err(e) = result {
                         tracing::warn!(error = %e, "host overlay exited with error");
                     }
                 })),

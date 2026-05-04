@@ -67,6 +67,12 @@ pub struct HostArgs {
     /// feature is compiled in. Useful for headless deployments, CI, or when the
     /// host prefers a pure tray-icon workflow.
     pub no_overlay: bool,
+    /// When set (and `gui` feature is on), use the experimental transparent
+    /// fullscreen overlay instead of the mirror-window overlay. The transparent
+    /// overlay sits over the host's desktop and draws strokes directly on top;
+    /// the host can use Cmd+Shift+D to enter/exit drawing mode, with click-through
+    /// enabled when not drawing.
+    pub transparent_overlay: bool,
 }
 
 impl Default for HostArgs {
@@ -76,6 +82,7 @@ impl Default for HostArgs {
             resolution: ResolutionPreset::default(),
             allow_remote_control: false,
             no_overlay: false,
+            transparent_overlay: false,
         }
     }
 }
@@ -117,6 +124,9 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
                     }
                     "--no-overlay" => {
                         a.no_overlay = true;
+                    }
+                    "--transparent-overlay" => {
+                        a.transparent_overlay = true;
                     }
                     flag => anyhow::bail!("unknown flag: {flag}"),
                 }

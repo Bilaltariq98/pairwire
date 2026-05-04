@@ -33,6 +33,9 @@ mod inner {
     use tokio::sync::{broadcast, watch};
     use tracing::{debug, info};
 
+    /// Per-peer fading trail: host-coordinate point + arrival time.
+    type LiveTrails = HashMap<u8, Vec<((u16, u16), Instant)>>;
+
     use crate::session::HostOverlayChannels;
 
     /// Derive the host-blue color (peer_id=0).
@@ -97,7 +100,7 @@ mod inner {
         last_fps_time: Instant,
         fps: f32,
         /// Per-peer trail of recently received live `DrawPoint`s.
-        live_trails: HashMap<u8, Vec<((u16, u16), Instant)>>,
+        live_trails: LiveTrails,
         /// Last `DrawPoint` routed into `live_trails`.
         last_live_point: Option<DrawPoint>,
         /// Last time we emitted a live `DrawPoint` datagram (epoch ms).
@@ -541,28 +544,27 @@ mod inner {
 
             // Sample pointer each frame while drawing to build strokes and send live points.
             const LIVE_POINT_MIN_GAP_MS: u64 = 16;
-            if self.drawing_mode && self.drawing_active && pointer_down {
-                if let Some(pos) = latest_pos {
-                    if let Some((hx, hy)) = self.map_pointer_to_host(pos) {
-                        let last = self.current_stroke.last().copied();
-                        let moved = last.map_or(true, |(lx, ly)| {
-                            let dx = (hx as i32 - lx as i32).abs();
-                            let dy = (hy as i32 - ly as i32).abs();
-                            dx >= 2 || dy >= 2
-                        });
-                        if moved {
-                            self.current_stroke.push((hx, hy));
-                            if now_ms.saturating_sub(self.last_live_send_ms)
-                                >= LIVE_POINT_MIN_GAP_MS
-                            {
-                                self.last_live_send_ms = now_ms;
-                                self.send_drawing(DrawingEvent::Point(DrawPoint {
-                                    peer_id: self.peer_id,
-                                    x: hx,
-                                    y: hy,
-                                }));
-                            }
-                        }
+            if self.drawing_mode
+                && self.drawing_active
+                && pointer_down
+                && let Some(pos) = latest_pos
+                && let Some((hx, hy)) = self.map_pointer_to_host(pos)
+            {
+                let last = self.current_stroke.last().copied();
+                let moved = last.is_none_or(|(lx, ly)| {
+                    let dx = (hx as i32 - lx as i32).abs();
+                    let dy = (hy as i32 - ly as i32).abs();
+                    dx >= 2 || dy >= 2
+                });
+                if moved {
+                    self.current_stroke.push((hx, hy));
+                    if now_ms.saturating_sub(self.last_live_send_ms) >= LIVE_POINT_MIN_GAP_MS {
+                        self.last_live_send_ms = now_ms;
+                        self.send_drawing(DrawingEvent::Point(DrawPoint {
+                            peer_id: self.peer_id,
+                            x: hx,
+                            y: hy,
+                        }));
                     }
                 }
             }
