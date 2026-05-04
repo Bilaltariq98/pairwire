@@ -8,6 +8,7 @@ mod cli;
 mod control_state;
 mod guest_ctrl;
 mod host_ctrl;
+mod host_overlay;
 mod reconnect;
 mod session;
 mod tray;
@@ -47,10 +48,35 @@ fn main() -> Result<()> {
 }
 
 fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    let _no_overlay = args.no_overlay;
+    #[cfg(feature = "gui")]
+    let no_overlay = _no_overlay;
+
     #[cfg(not(feature = "tray"))]
     {
         // Without the tray feature, run the session directly on the async runtime.
-        rt.block_on(session::run_host(args, None, None, None))
+        #[cfg(not(feature = "gui"))]
+        return rt.block_on(session::run_host(args, None, None, None));
+
+        #[cfg(feature = "gui")]
+        {
+            if no_overlay {
+                return rt.block_on(session::run_host(args, None, None, None));
+            }
+            // With gui: spawn session in background, run overlay on main thread.
+            let (overlay_tx, overlay_rx) =
+                tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
+            let session_handle = rt.spawn(session::run_host(args, None, None, Some(overlay_tx)));
+            if let Ok(channels) = rt.block_on(overlay_rx) {
+                let _ = host_overlay::run_host_overlay(channels);
+            }
+            session_handle.abort();
+            match rt.block_on(session_handle) {
+                Ok(Ok(())) | Err(_) => {}
+                Ok(Err(e)) => eprintln!("session error: {e}"),
+            }
+            return Ok(());
+        }
     }
 
     #[cfg(feature = "tray")]
@@ -68,17 +94,54 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
         let (tray_action_tx, tray_action_rx) =
             tokio::sync::mpsc::channel::<control_state::ControlAction>(8);
 
+        // When the gui feature is on and the overlay is not suppressed, create
+        // the oneshot channel so run_host can send us the overlay channels.
+        #[cfg(feature = "gui")]
+        let (overlay_send_opt, overlay_rx_opt) = if no_overlay {
+            (None, None)
+        } else {
+            let (tx, rx) = tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
+            (Some(tx), Some(rx))
+        };
+        #[cfg(not(feature = "gui"))]
+        let overlay_send_opt: Option<()> = None;
+
         let session_handle = rt.spawn(session::run_host(
             args,
             Some(invite_tx),
             Some(tray_action_rx),
-            None, // overlay_tx: no host overlay in tray-only mode
+            overlay_send_opt,
         ));
 
         // Block until the invite URL arrives, then update the tray item.
         if let Ok(url) = rt.block_on(invite_rx) {
             tray_handle.set_invite_url(url);
         }
+
+        // When the overlay is requested, wait for the overlay channels and launch
+        // the overlay window on a background thread. The tray event loop continues
+        // on the main thread. On macOS, eframe/winit requires that each window is
+        // created on the main thread; however the tray also requires the main thread.
+        // The practical resolution for v1: the overlay runs on a non-main thread.
+        // winit on macOS can handle this via the Dispatch mechanism if
+        // NSApplication is already initialised (which the tray does). If this fails
+        // in a future winit version, the fallback is --no-overlay with the tray.
+        #[cfg(feature = "gui")]
+        let overlay_thread = if let Some(rx) = overlay_rx_opt {
+            match rt.block_on(rx) {
+                Ok(channels) => Some(std::thread::spawn(move || {
+                    if let Err(e) = host_overlay::run_host_overlay(channels) {
+                        tracing::warn!(error = %e, "host overlay exited with error");
+                    }
+                })),
+                Err(_) => {
+                    tracing::warn!("session ended before sending overlay channels");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Poll tray events on the main thread until the session ends.
         loop {
@@ -151,6 +214,12 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
             Ok(Err(e)) => eprintln!("session error: {e}"),
             Err(e) if e.is_cancelled() => {}
             Err(e) => eprintln!("task panic: {e}"),
+        }
+
+        // Wait for the overlay thread if it was launched.
+        #[cfg(feature = "gui")]
+        if let Some(handle) = overlay_thread {
+            let _ = handle.join();
         }
 
         Ok(())

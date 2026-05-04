@@ -63,6 +63,10 @@ pub struct HostArgs {
     /// `ControlRequest`. When unset, the host must click "Allow Remote Control" in
     /// the tray menu to grant.
     pub allow_remote_control: bool,
+    /// When set, skip the host annotation overlay window even when the `gui`
+    /// feature is compiled in. Useful for headless deployments, CI, or when the
+    /// host prefers a pure tray-icon workflow.
+    pub no_overlay: bool,
 }
 
 impl Default for HostArgs {
@@ -71,6 +75,7 @@ impl Default for HostArgs {
             fps: 30,
             resolution: ResolutionPreset::default(),
             allow_remote_control: false,
+            no_overlay: false,
         }
     }
 }
@@ -109,6 +114,9 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
                     }
                     "--allow-remote-control" => {
                         a.allow_remote_control = true;
+                    }
+                    "--no-overlay" => {
+                        a.no_overlay = true;
                     }
                     flag => anyhow::bail!("unknown flag: {flag}"),
                 }
@@ -208,6 +216,25 @@ mod tests {
             panic!("expected Host")
         };
         assert!(a.allow_remote_control);
+    }
+
+    #[test]
+    fn parse_host_no_overlay() {
+        let cmd = parse(&["host", "--no-overlay"]).unwrap();
+        let Command::Host(a) = cmd else {
+            panic!("expected Host")
+        };
+        assert!(a.no_overlay);
+        assert!(!a.allow_remote_control);
+    }
+
+    #[test]
+    fn parse_host_defaults_no_overlay_false() {
+        let cmd = parse(&["host"]).unwrap();
+        let Command::Host(a) = cmd else {
+            panic!("expected Host")
+        };
+        assert!(!a.no_overlay);
     }
 
     #[test]

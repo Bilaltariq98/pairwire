@@ -517,8 +517,7 @@ pub async fn run_host(
             // host overlay can render a live mirror without a second capturer instance.
             // The tee task runs on a dedicated OS thread to avoid blocking tokio.
             #[cfg(feature = "gui")]
-            let (preview_frame_tx, preview_frame_rx) =
-                watch::channel::<Option<DecodedFrame>>(None);
+            let (preview_frame_tx, preview_frame_rx) = watch::channel::<Option<DecodedFrame>>(None);
             // Bridge channel from tee thread to encode thread.
             let (tee_to_encode_tx, tee_to_encode_rx) =
                 std::sync::mpsc::sync_channel::<pairwire_capture::RawFrame>(4);
