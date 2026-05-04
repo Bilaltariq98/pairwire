@@ -141,7 +141,7 @@ mod inner {
     /// callback.
     #[cfg(target_os = "macos")]
     fn set_window_ignores_mouse_events(frame: &eframe::Frame, ignores: bool) {
-        use objc2_app_kit::{NSView, NSWindow};
+        use objc2_app_kit::NSView;
 
         let handle = match frame.window_handle() {
             Ok(h) => h,
@@ -167,17 +167,9 @@ mod inner {
                 .expect("ns_view pointer was null — should not happen in eframe")
         };
 
-        let ns_window: &NSWindow = match ns_view.window() {
-            Some(ref w) => {
-                // Extend the borrow's lifetime inside this scope.
-                // SAFETY: The NSWindow lives at least as long as the NSView (and
-                // the NSView lives for the entire update() call).
-                unsafe { &*(w.as_ref() as *const NSWindow) }
-            }
-            None => {
-                warn!("NSView has no NSWindow — overlay not yet installed in a window");
-                return;
-            }
+        let Some(ns_window) = ns_view.window() else {
+            warn!("NSView has no NSWindow — overlay not yet installed in a window");
+            return;
         };
 
         ns_window.setIgnoresMouseEvents(ignores);

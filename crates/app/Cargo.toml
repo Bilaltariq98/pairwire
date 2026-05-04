@@ -26,7 +26,7 @@ arboard = { workspace = true, optional = true }
 [features]
 default = ["tray"]
 # Enable the graphical viewer. Requires a display and GPU.
-gui = ["dep:egui", "dep:eframe", "dep:raw-window-handle"]
+gui = ["dep:egui", "dep:eframe", "dep:raw-window-handle", "dep:objc2-app-kit"]
 # Enable the macOS menu bar / system tray icon.
 tray = ["dep:tray-icon", "dep:arboard", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # Enable H.264 encode/decode. Requires system FFmpeg libraries.
