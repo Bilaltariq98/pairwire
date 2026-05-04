@@ -312,6 +312,13 @@ mod inner {
         live_trails: LiveTrails,
         /// Last `DrawPoint` routed into `live_trails`.
         last_live_point: Option<DrawPoint>,
+        /// Per-peer time of the most recent `DrawPoint` arrival. Used to keep the
+        /// in-progress preview solid (no fade) while the peer is still drawing.
+        last_live_arrival: HashMap<u8, Instant>,
+        /// Per-peer most-recent stroke `received_at` we have observed in the
+        /// stroke cache. When a newer stroke arrives, the live preview for that
+        /// peer is cleared — the completed stroke now owns the fade timeline.
+        last_stroke_seen: HashMap<u8, Instant>,
         /// Last time we emitted a live `DrawPoint` datagram (epoch ms).
         last_live_send_ms: u64,
         /// The pixel dimensions of the host screen capture (u16 coordinates used
@@ -337,6 +344,8 @@ mod inner {
                 peer_id: 0,
                 live_trails: HashMap::new(),
                 last_live_point: None,
+                last_live_arrival: HashMap::new(),
+                last_stroke_seen: HashMap::new(),
                 last_live_send_ms: 0,
                 capture_size: (capture_width as f32, capture_height as f32),
                 click_through_init: false,
@@ -434,20 +443,36 @@ mod inner {
                 }
             }
 
-            // Fading live-trail polylines for remote peers.
+            // Live-trail polylines for remote peers.
+            //
+            // While the peer is actively drawing (last point arrived within
+            // ACTIVE_DRAW_GRACE_MS) the entire trail renders at a solid alpha
+            // so the host sees the same in-progress stroke the guest sees.
+            // Once the peer stops sending points the trail starts fading; it is
+            // also cleared outright in `pump_live_points` when the completed
+            // stroke arrives over the reliable channel.
             const LIVE_TRAIL_MS: u128 = 700;
+            const ACTIVE_DRAW_GRACE_MS: u128 = 250;
+            const PREVIEW_ALPHA: u8 = 200;
             for (peer, trail) in self.live_trails.iter() {
                 if trail.len() < 2 {
                     continue;
                 }
+                let actively_drawing = self.last_live_arrival.get(peer).is_some_and(|t| {
+                    now.saturating_duration_since(*t).as_millis() < ACTIVE_DRAW_GRACE_MS
+                });
                 let base = peer_color(*peer);
                 for window in trail.windows(2) {
-                    let age_ms = now.saturating_duration_since(window[1].1).as_millis();
-                    if age_ms >= LIVE_TRAIL_MS {
-                        continue;
-                    }
-                    let frac = 1.0 - (age_ms as f32 / LIVE_TRAIL_MS as f32);
-                    let alpha = (200.0 * frac).clamp(0.0, 255.0) as u8;
+                    let alpha = if actively_drawing {
+                        PREVIEW_ALPHA
+                    } else {
+                        let age_ms = now.saturating_duration_since(window[1].1).as_millis();
+                        if age_ms >= LIVE_TRAIL_MS {
+                            continue;
+                        }
+                        let frac = 1.0 - (age_ms as f32 / LIVE_TRAIL_MS as f32);
+                        (PREVIEW_ALPHA as f32 * frac).clamp(0.0, 255.0) as u8
+                    };
                     let color =
                         Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
                     let a = to_screen(window[0].0.0, window[0].0.1);
@@ -459,18 +484,55 @@ mod inner {
 
         fn pump_live_points(&mut self) {
             const LIVE_TRAIL_MS: u128 = 700;
+            let now = Instant::now();
+
+            // 1. Ingest the latest live point datagram (if changed).
             let current = *self.live_point_rx.borrow();
             if current != self.last_live_point {
                 self.last_live_point = current;
                 if let Some(pt) = current {
                     let trail = self.live_trails.entry(pt.peer_id).or_default();
-                    trail.push(((pt.x, pt.y), Instant::now()));
+                    trail.push(((pt.x, pt.y), now));
+                    self.last_live_arrival.insert(pt.peer_id, now);
                 }
             }
-            let now = Instant::now();
-            for trail in self.live_trails.values_mut() {
-                trail
-                    .retain(|(_, t)| now.saturating_duration_since(*t).as_millis() < LIVE_TRAIL_MS);
+
+            // 2. Detect newly-arrived completed strokes and retire that peer's
+            //    live preview — the stroke now owns the fade timeline.
+            {
+                let strokes = self.strokes_rx.borrow();
+                for ts in strokes.iter() {
+                    let peer = ts.stroke.peer_id;
+                    let prev = self.last_stroke_seen.get(&peer).copied();
+                    if prev.is_none_or(|p| ts.received_at > p) {
+                        self.last_stroke_seen.insert(peer, ts.received_at);
+                        // Only clear preview if the stroke is genuinely newer
+                        // than the live points that built the preview. Without
+                        // this guard, replaying cached strokes on first frame
+                        // would wipe an in-progress preview from another peer.
+                        let preview_arrival = self.last_live_arrival.get(&peer).copied();
+                        if preview_arrival.is_some_and(|a| ts.received_at >= a) {
+                            self.live_trails.remove(&peer);
+                            self.last_live_arrival.remove(&peer);
+                        }
+                    }
+                }
+            }
+
+            // 3. Fade out preview points only when the peer has stopped sending
+            //    new ones (i.e. they've paused or lifted the pen). While they
+            //    are still actively drawing, the trail stays solid so the host
+            //    sees the same in-progress stroke the guest sees.
+            const ACTIVE_DRAW_GRACE_MS: u128 = 250;
+            for (peer, trail) in self.live_trails.iter_mut() {
+                let actively_drawing = self.last_live_arrival.get(peer).is_some_and(|t| {
+                    now.saturating_duration_since(*t).as_millis() < ACTIVE_DRAW_GRACE_MS
+                });
+                if !actively_drawing {
+                    trail.retain(|(_, t)| {
+                        now.saturating_duration_since(*t).as_millis() < LIVE_TRAIL_MS
+                    });
+                }
             }
             self.live_trails.retain(|_, trail| !trail.is_empty());
         }
