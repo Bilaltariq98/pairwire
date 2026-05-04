@@ -248,7 +248,11 @@ pub async fn run_host(
                 // stored. DrawClear commands are also applied to keep the cache
                 // consistent with the whiteboard state.
                 let (recv_handle, strokes_rx, live_rx) = DrawingReceiver::new(annot_recv)
-                    .spawn_with_cache(draw_pt_rx, Arc::clone(&stroke_cache));
+                    .spawn_with_cache_and_echo(
+                        draw_pt_rx,
+                        Arc::clone(&stroke_cache),
+                        draw_event_tx.clone(),
+                    );
 
                 // When the gui feature is enabled, forward the receiver watches to the
                 // overlay watch channels and bridge the overlay broadcast into the mpsc.

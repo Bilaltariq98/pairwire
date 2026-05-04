@@ -306,7 +306,7 @@ impl DrawingReceiver {
         watch::Receiver<Vec<TimedStroke>>,
         watch::Receiver<Option<DrawPoint>>,
     ) {
-        self.spawn_inner(point_rx, None)
+        self.spawn_inner(point_rx, None, None)
     }
 
     /// Spawn the receiver task with a shared `StrokeCache`.
@@ -324,13 +324,35 @@ impl DrawingReceiver {
         watch::Receiver<Vec<TimedStroke>>,
         watch::Receiver<Option<DrawPoint>>,
     ) {
-        self.spawn_inner(point_rx, Some(cache))
+        self.spawn_inner(point_rx, Some(cache), None)
+    }
+
+    /// Spawn the receiver task with a shared cache and an echo channel.
+    ///
+    /// `echo_tx` receives every incoming `DrawStroke`/`DrawClear` re-wrapped as
+    /// a `DrawingEvent`. Wire this to the same mpsc that feeds `DrawingSender`
+    /// to make the host fan out received strokes back to all connected guests
+    /// (including the originator, which otherwise never sees its own strokes
+    /// committed because the viewer clears `current_stroke` on pen-up).
+    #[must_use]
+    pub fn spawn_with_cache_and_echo(
+        self,
+        point_rx: mpsc::Receiver<Bytes>,
+        cache: Arc<StrokeCache>,
+        echo_tx: mpsc::Sender<DrawingEvent>,
+    ) -> (
+        DrawingReceiverHandle,
+        watch::Receiver<Vec<TimedStroke>>,
+        watch::Receiver<Option<DrawPoint>>,
+    ) {
+        self.spawn_inner(point_rx, Some(cache), Some(echo_tx))
     }
 
     fn spawn_inner(
         self,
         mut point_rx: mpsc::Receiver<Bytes>,
         cache: Option<Arc<StrokeCache>>,
+        echo_tx: Option<mpsc::Sender<DrawingEvent>>,
     ) -> (
         DrawingReceiverHandle,
         watch::Receiver<Vec<TimedStroke>>,
@@ -375,6 +397,13 @@ impl DrawingReceiver {
                                     if let Some(ref c) = cache {
                                         c.insert(stroke.clone());
                                     }
+                                    // Echo back to the sender so all connected guests
+                                    // (including the originator) see the committed stroke.
+                                    if let Some(ref tx) = echo_tx
+                                        && tx.try_send(DrawingEvent::Stroke(stroke.clone())).is_err()
+                                    {
+                                        debug!("stroke echo dropped (channel full or closed)");
+                                    }
                                     strokes.push(TimedStroke {
                                         stroke,
                                         received_at: Instant::now(),
@@ -400,6 +429,11 @@ impl DrawingReceiver {
                                     debug!(peer = ?clear.peer_id, "draw clear received");
                                     if let Some(ref c) = cache {
                                         c.apply_clear(&clear);
+                                    }
+                                    if let Some(ref tx) = echo_tx
+                                        && tx.try_send(DrawingEvent::Clear(clear.clone())).is_err()
+                                    {
+                                        debug!("clear echo dropped (channel full or closed)");
                                     }
                                     match clear.peer_id {
                                         Some(id) => strokes.retain(|t| t.stroke.peer_id != id),
