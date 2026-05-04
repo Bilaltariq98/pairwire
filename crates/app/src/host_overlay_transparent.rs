@@ -641,6 +641,17 @@ mod inner {
     }
 
     impl eframe::App for TransparentHostOverlayApp {
+        /// Clear the wgpu surface with a fully-transparent color every frame.
+        ///
+        /// `eframe`'s default returns the egui visuals' window fill (opaque dark
+        /// gray), which causes the entire desktop to look dimmed under the
+        /// overlay even though `viewport.transparent = true` and the central
+        /// panel frame is `Color32::TRANSPARENT`. Returning [0, 0, 0, 0] here
+        /// preserves the alpha channel so the desktop shows through cleanly.
+        fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+            [0.0, 0.0, 0.0, 0.0]
+        }
+
         fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
             ctx.request_repaint();
             self.pump_live_points();
