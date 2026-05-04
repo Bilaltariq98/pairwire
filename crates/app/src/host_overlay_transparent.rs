@@ -126,6 +126,103 @@ mod inner {
         Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
     }
 
+    // ── NSApplication / NSScreen helpers ───────────────────────────────────────
+
+    /// Set the app's activation policy to `.accessory` so the overlay process
+    /// does NOT appear in the Dock and does NOT install a menu bar with the app
+    /// name. This is what makes Tuple-style overlays feel like part of the OS
+    /// rather than a foreground app.
+    ///
+    /// Must be called on the main thread before `eframe::run_native`.
+    #[cfg(target_os = "macos")]
+    fn set_accessory_activation_policy() {
+        use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+        use objc2_foundation::MainThreadMarker;
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            warn!("set_accessory_activation_policy called off main thread — skipping");
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let ok = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        debug!(
+            ok,
+            "transparent overlay: set NSApplication activation policy = Accessory"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn set_accessory_activation_policy() {}
+
+    /// Return the primary display's logical size in points, or `None` if it
+    /// cannot be determined.
+    #[cfg(target_os = "macos")]
+    fn primary_screen_size() -> Option<(f32, f32)> {
+        use objc2_app_kit::NSScreen;
+        use objc2_foundation::MainThreadMarker;
+
+        let mtm = MainThreadMarker::new()?;
+        let screen = NSScreen::mainScreen(mtm)?;
+        let frame = screen.frame();
+        Some((frame.size.width as f32, frame.size.height as f32))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn primary_screen_size() -> Option<(f32, f32)> {
+        None
+    }
+
+    /// Once the NSWindow exists, raise its level above normal windows and let it
+    /// follow the user across Spaces / fullscreen apps. This is what makes the
+    /// overlay feel "stuck to the screen" rather than a regular app window.
+    #[cfg(target_os = "macos")]
+    fn configure_overlay_window_chrome(frame: &eframe::Frame) {
+        use objc2_app_kit::{NSView, NSWindowCollectionBehavior};
+
+        let handle = match frame.window_handle() {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(error = %e, "could not obtain window handle for chrome setup");
+                return;
+            }
+        };
+        let RawWindowHandle::AppKit(appkit_handle) = handle.as_raw() else {
+            return;
+        };
+        // SAFETY: eframe guarantees the pointer is a valid NSView for the lifetime
+        // of App::update.
+        let ns_view: &NSView = unsafe {
+            appkit_handle
+                .ns_view
+                .as_ptr()
+                .cast::<NSView>()
+                .as_ref()
+                .expect("ns_view pointer was null")
+        };
+        let Some(ns_window) = ns_view.window() else {
+            return;
+        };
+
+        // NSStatusWindowLevel = 25 — sits above normal windows and most floating
+        // panels but below screen-saver/menu-bar. Matches the "always on top of
+        // everything except OS chrome" feel that Tuple uses.
+        const NS_STATUS_WINDOW_LEVEL: isize = 25;
+        ns_window.setLevel(NS_STATUS_WINDOW_LEVEL);
+
+        // Show on every Space, ride along when the user enters another app's
+        // fullscreen, and don't participate in window cycling (Cmd+`).
+        let behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle;
+        ns_window.setCollectionBehavior(behavior);
+
+        debug!("transparent overlay: configured window level + collection behavior");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn configure_overlay_window_chrome(_frame: &eframe::Frame) {}
+
     // ── NSWindow click-through helper ──────────────────────────────────────────
 
     /// Toggle `NSWindow.setIgnoresMouseEvents` on the macOS window behind `frame`.
@@ -223,6 +320,8 @@ mod inner {
         capture_size: (f32, f32),
         /// Tracks whether click-through was applied correctly after the first frame.
         click_through_init: bool,
+        /// Tracks whether NSWindow level / collection behavior were applied.
+        chrome_init: bool,
     }
 
     impl TransparentHostOverlayApp {
@@ -241,6 +340,7 @@ mod inner {
                 last_live_send_ms: 0,
                 capture_size: (capture_width as f32, capture_height as f32),
                 click_through_init: false,
+                chrome_init: false,
             }
         }
 
@@ -548,6 +648,10 @@ mod inner {
             // On the first frame, ensure the overlay starts in click-through mode.
             // We do this here rather than at construction because the NSWindow
             // pointer is not valid until the first update() call.
+            if !self.chrome_init {
+                configure_overlay_window_chrome(frame);
+                self.chrome_init = true;
+            }
             if !self.click_through_init {
                 set_window_ignores_mouse_events(frame, true);
                 self.click_through_init = true;
@@ -603,17 +707,34 @@ mod inner {
             capture_height, "transparent host overlay starting"
         );
 
+        // Hide from Dock + suppress menu-bar app name BEFORE the window opens.
+        // Otherwise macOS briefly shows "pairwire" in the menu bar and a Dock
+        // icon, breaking the "feels like part of the OS" illusion.
+        set_accessory_activation_policy();
+
+        // Size the window to the primary display in logical points. We avoid
+        // `with_fullscreen(true)` because that puts the overlay into macOS true
+        // fullscreen mode (own Space, dock auto-hide, app-name menu bar) — which
+        // is exactly the "feels like an app" experience we want to avoid.
+        let (w, h) = primary_screen_size().unwrap_or((1440.0, 900.0));
+
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_title("pairwire — Transparent Overlay")
+                .with_title("pairwire-overlay")
                 // Transparent: winit calls NSWindow.setOpaque(NO) + setBackgroundColor(clear).
                 .with_transparent(true)
                 // No title bar or chrome.
                 .with_decorations(false)
                 // Always on top so it sits above other windows.
                 .with_always_on_top()
-                // Fullscreen covers the primary display.
-                .with_fullscreen(true),
+                // Borderless window matching the primary display, anchored at
+                // (0, 0). Combined with the NSWindow level + collection-behavior
+                // tweaks applied on first frame, this gives a Tuple-style overlay
+                // that floats above every Space without taking one over.
+                .with_inner_size([w, h])
+                .with_position([0.0, 0.0])
+                .with_resizable(false)
+                .with_taskbar(false),
             // The wgpu renderer must also be set up for transparency.
             // This passes `transparent = true` to `Painter::new`.
             ..Default::default()
