@@ -15,6 +15,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Instant;
 
 use bytes::Bytes;
 use iroh::endpoint::{RecvStream, SendStream};
@@ -126,9 +127,21 @@ impl DrawingSenderHandle {
 
 // ── Receiver ──────────────────────────────────────────────────────────────────
 
+/// Maximum strokes retained per peer. Older strokes are evicted FIFO.
+/// Prevents unbounded memory growth in long sessions with persistent ink.
+pub const STROKES_PER_PEER_CAP: usize = 200;
+
+/// A stroke tagged with the local time it was received.
+/// Used by the viewer to time-fade laser strokes.
+#[derive(Clone, Debug)]
+pub struct TimedStroke {
+    pub stroke: DrawStroke,
+    pub received_at: Instant,
+}
+
 /// Receives drawing events from the remote peer.
 ///
-/// Publishes accumulated strokes via `watch::Receiver<Vec<DrawStroke>>` and
+/// Publishes accumulated strokes via `watch::Receiver<Vec<TimedStroke>>` and
 /// live draw points via `watch::Receiver<Option<DrawPoint>>`.
 pub struct DrawingReceiver {
     stream: RecvStream,
@@ -151,7 +164,7 @@ impl DrawingReceiver {
         mut point_rx: mpsc::Receiver<Bytes>,
     ) -> (
         DrawingReceiverHandle,
-        watch::Receiver<Vec<DrawStroke>>,
+        watch::Receiver<Vec<TimedStroke>>,
         watch::Receiver<Option<DrawPoint>>,
     ) {
         let (strokes_tx, strokes_rx) = watch::channel(Vec::new());
@@ -161,7 +174,7 @@ impl DrawingReceiver {
 
         let handle = tokio::spawn(async move {
             info!("drawing receiver started");
-            let mut strokes: Vec<DrawStroke> = Vec::new();
+            let mut strokes: Vec<TimedStroke> = Vec::new();
 
             loop {
                 tokio::select! {
@@ -187,13 +200,32 @@ impl DrawingReceiver {
                                         peer = stroke.peer_id,
                                         "draw stroke received"
                                     );
-                                    strokes.push(stroke);
+                                    let peer = stroke.peer_id;
+                                    strokes.push(TimedStroke {
+                                        stroke,
+                                        received_at: Instant::now(),
+                                    });
+                                    // Per-peer FIFO cap: evict oldest from this peer
+                                    // until we're at or below the cap.
+                                    let count = strokes.iter().filter(|t| t.stroke.peer_id == peer).count();
+                                    if count > STROKES_PER_PEER_CAP {
+                                        let to_remove = count - STROKES_PER_PEER_CAP;
+                                        let mut removed = 0;
+                                        strokes.retain(|t| {
+                                            if removed < to_remove && t.stroke.peer_id == peer {
+                                                removed += 1;
+                                                false
+                                            } else {
+                                                true
+                                            }
+                                        });
+                                    }
                                     let _ = strokes_tx.send(strokes.clone());
                                 }
                                 ControlMessage::DrawClear(clear) => {
                                     debug!(peer = ?clear.peer_id, "draw clear received");
                                     match clear.peer_id {
-                                        Some(id) => strokes.retain(|s| s.peer_id != id),
+                                        Some(id) => strokes.retain(|t| t.stroke.peer_id != id),
                                         None => strokes.clear(),
                                     }
                                     let _ = strokes_tx.send(strokes.clone());

@@ -165,7 +165,10 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     let (conn_tx, conn_rx) = tokio::sync::watch::channel(ConnectionState::Connected);
     // Drawing strokes watch: session publishes accumulated strokes, viewer renders them.
     let (drawing_strokes_tx, drawing_strokes_rx) =
-        tokio::sync::watch::channel::<Vec<pairwire_protocol::drawing::DrawStroke>>(Vec::new());
+        tokio::sync::watch::channel::<Vec<pairwire_transport::TimedStroke>>(Vec::new());
+    // Live DrawPoint preview: receiver publishes the latest in-flight point per peer.
+    let (live_point_tx, live_point_rx) =
+        tokio::sync::watch::channel::<Option<pairwire_protocol::drawing::DrawPoint>>(None);
     // Input channel: viewer sends InputMessage events, session forwards to host.
     // Uses broadcast so each reconnect attempt can subscribe independently.
     let (input_tx, _) =
@@ -198,6 +201,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
         &input_tx,
         &drawing_event_tx,
         &drawing_strokes_rx,
+        &live_point_rx,
         &mute_tx,
         &mute_rx_for_session,
         &quality_tx_for_session,
@@ -215,6 +219,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
             let frame_tx = frame_tx.clone();
             let cursor_tx = cursor_tx.clone();
             let drawing_strokes_tx = drawing_strokes_tx.clone();
+            let live_point_tx = live_point_tx.clone();
             let args = args.clone();
             let mute_rx = mute_rx_for_session.clone();
             let quality_tx = quality_tx_for_session.clone();
@@ -259,6 +264,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                     frame_tx,
                     cursor_tx,
                     drawing_strokes_tx,
+                    live_point_tx,
                     drawing_bridge_rx,
                     mute_rx,
                     quality_tx,
@@ -289,6 +295,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                 conn_rx,
                 input_tx,
                 drawing_strokes_rx,
+                live_point_rx,
                 drawing_event_tx,
                 mute_tx,
                 quality_rx,

@@ -497,7 +497,8 @@ pub async fn run_join(
     args: JoinArgs,
     frame_tx: watch::Sender<Option<DecodedFrame>>,
     cursor_tx: watch::Sender<Option<CursorUpdate>>,
-    drawing_tx: watch::Sender<Vec<pairwire_protocol::drawing::DrawStroke>>,
+    drawing_tx: watch::Sender<Vec<pairwire_transport::TimedStroke>>,
+    live_point_tx: watch::Sender<Option<pairwire_protocol::drawing::DrawPoint>>,
     drawing_event_rx: tokio::sync::mpsc::Receiver<pairwire_transport::DrawingEvent>,
     mute_rx: watch::Receiver<bool>,
     quality_tx: watch::Sender<pairwire_transport::QualityTier>,
@@ -676,7 +677,7 @@ pub async fn run_join(
             Ok((annot_send, annot_recv)) => {
                 let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
                 let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
-                let (recv_handle, strokes_rx, _live_rx) =
+                let (recv_handle, strokes_rx, live_rx) =
                     DrawingReceiver::new(annot_recv).spawn(draw_pt_rx);
 
                 // Forward received strokes to the viewer's drawing watch channel.
@@ -688,6 +689,18 @@ pub async fn run_join(
                             break;
                         }
                         let _ = drawing_fwd_tx.send(rx.borrow().clone());
+                    }
+                });
+
+                // Forward live DrawPoint datagrams to the viewer for in-progress preview.
+                let live_fwd_tx = live_point_tx.clone();
+                tokio::spawn(async move {
+                    let mut rx = live_rx;
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let _ = live_fwd_tx.send(*rx.borrow());
                     }
                 });
 

@@ -24,6 +24,7 @@ pub use datagram_router::{
 };
 pub use drawing::{
     DrawingEvent, DrawingReceiver, DrawingReceiverHandle, DrawingSender, DrawingSenderHandle,
+    STROKES_PER_PEER_CAP, TimedStroke,
 };
 pub use handshake::{NegotiatedSession, guest_handshake, host_handshake, local_handshake};
 pub use invite::InviteLink;

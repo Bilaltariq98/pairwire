@@ -17,7 +17,7 @@ pub enum DrawMode {
 /// A single point in a drawing stroke, sent via datagram for real-time preview.
 ///
 /// Must be < 20 bytes serialized for QUIC datagram budget.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DrawPoint {
     /// Session-local peer ID (who is drawing).
     pub peer_id: u8,
