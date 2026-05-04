@@ -50,7 +50,7 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
     #[cfg(not(feature = "tray"))]
     {
         // Without the tray feature, run the session directly on the async runtime.
-        rt.block_on(session::run_host(args, None, None))
+        rt.block_on(session::run_host(args, None, None, None))
     }
 
     #[cfg(feature = "tray")]
@@ -72,6 +72,7 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
             args,
             Some(invite_tx),
             Some(tray_action_rx),
+            None, // overlay_tx: no host overlay in tray-only mode
         ));
 
         // Block until the invite URL arrives, then update the tray item.
