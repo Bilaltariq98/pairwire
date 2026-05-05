@@ -79,7 +79,7 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
 
 #[cfg(any(feature = "gui", not(feature = "tray")))]
 fn run_host_no_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
-    rt.block_on(session::run_host(args, None, None, None))
+    rt.block_on(session::run_host(args, None, None, None, None))
 }
 
 #[cfg(feature = "gui")]
@@ -88,7 +88,14 @@ fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> R
     // the overlay channels, then launch the transparent overlay (which owns
     // the main thread for the rest of the session).
     let (overlay_tx, overlay_rx) = tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
-    let session_handle = rt.spawn(session::run_host(args, None, None, Some(overlay_tx)));
+    let (host_shutdown_tx, host_shutdown_rx) = tokio::sync::watch::channel(false);
+    let session_handle = rt.spawn(session::run_host(
+        args,
+        None,
+        None,
+        Some(overlay_tx),
+        Some(host_shutdown_rx),
+    ));
 
     match rt.block_on(overlay_rx) {
         Ok(channels) => {
@@ -104,7 +111,9 @@ fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> R
         }
     }
 
-    session_handle.abort();
+    // Signal `run_host` to shut down gracefully so it can call
+    // `transport.close().await` before the tokio runtime is dropped.
+    let _ = host_shutdown_tx.send(true);
     match rt.block_on(session_handle) {
         Ok(Ok(())) | Err(_) => {}
         Ok(Err(e)) => eprintln!("session error: {e}"),
@@ -126,6 +135,7 @@ fn run_host_with_tray(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Resu
         args,
         Some(invite_tx),
         Some(tray_action_rx),
+        None,
         None,
     ));
 
@@ -239,6 +249,10 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     let (control_request_tx, _) =
         tokio::sync::broadcast::channel::<pairwire_protocol::ControlMessage>(8);
     let control_request_tx_for_session = control_request_tx.clone();
+    // Graceful-shutdown channel: the GUI sets this to `true` when the window
+    // closes so `run_join` can run its normal teardown (including
+    // `transport.close().await`) instead of being aborted mid-flight.
+    let (shutdown_tx, shutdown_rx_for_session) = tokio::sync::watch::channel(false);
 
     #[cfg(not(feature = "gui"))]
     let _ = (
@@ -255,6 +269,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
         &quality_rx,
         &control_state_rx,
         &control_request_tx,
+        &shutdown_tx,
     );
 
     let no_gui = args.no_gui;
@@ -271,6 +286,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
             let mute_rx = mute_rx_for_session.clone();
             let quality_tx = quality_tx_for_session.clone();
             let control_state_tx = control_state_tx_for_session.clone();
+            let shutdown_rx = shutdown_rx_for_session.clone();
             // Each reconnect gets a fresh broadcast subscriber → mpsc bridge.
             let mut input_broadcast_rx = input_tx_for_session.subscribe();
             let mut drawing_broadcast_rx = drawing_event_tx_for_session.subscribe();
@@ -318,6 +334,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                     input_bridge_rx,
                     control_state_tx,
                     control_request_bridge_rx,
+                    shutdown_rx,
                 )
                 .await
             }
@@ -351,10 +368,12 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                 "pairwire",
             );
 
-            // The GUI owns the foreground lifetime. When the window closes, stop
-            // the background network task before dropping the Tokio runtime;
-            // otherwise iroh's Endpoint is dropped without `Endpoint::close()`.
-            session_handle.abort();
+            // The GUI owns the foreground lifetime. When the window closes,
+            // signal `run_join` to shut down gracefully so it can call
+            // `transport.close().await` before the tokio runtime is dropped.
+            // This ensures the peer receives a proper QUIC CONNECTION_CLOSE
+            // frame instead of relying on the idle-timeout to detect the drop.
+            let _ = shutdown_tx.send(true);
             rt.block_on(async {
                 match session_handle.await {
                     Ok(Ok(())) => {}
