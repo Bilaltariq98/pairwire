@@ -229,3 +229,28 @@ Each entry should include:
 - **What**: Calling `conn.open_bi()` on the guest side allocates a QUIC stream ID but does NOT send any data to the network. The host's `accept_bi()` does not unblock until the opener actually writes bytes into the send half. This is a QUIC-level behaviour: stream IDs are assigned locally and only become visible to the peer on the first `STREAM` frame.
 - **Resolution**: After opening the persistent control bidi stream (`ControlChannel::spawn`), the guest immediately sends an initial `ControlMessage::SetSharing` flush. This forces the first write and unblocks the host's `accept_bi`. See `crates/transport/src/control_channel.rs` for the flush logic and `crates/app/src/session.rs` for the call site.
 - **Key insight**: Whenever you open a bidi or uni stream and then `await` something on the remote side, ensure you write at least one byte first. The 250ms `sleep` guard in `session.rs` is a belt-and-suspenders fallback for this; the real fix is the initial write.
+
+### 2026-05-04 — Host overlay: transparent egui windows not practical; mirror window chosen
+- **Area**: egui, eframe, macOS, host overlay
+- **What**: eframe/winit do not expose the `NSWindow` flags needed for per-pixel transparency (e.g. `setOpaque(NO)` + `setBackgroundColor(NSColor.clear)`) without forking the crate. Attempts to set window level or transparency via `ViewportBuilder` do not produce a fully transparent canvas over the desktop.
+- **Resolution**: Use a "mirror window" design: the capture thread's raw frames are teed (via a `std::sync::mpsc::sync_channel` bridge) into both the encode pipeline and a `watch::Sender<Option<DecodedFrame>>`. The overlay window renders this preview frame and draws annotation strokes on top — identical to the guest viewer. The host sees their own screen inside the overlay and annotates there.
+- **Key insight**: `RawFrame` (BGRA) can be converted directly to `DecodedFrame` (also BGRA) without encoding/decoding. The tee does a `clone()` of `Bytes` which is cheap (Arc refcount bump, no copy).
+
+### 2026-05-04 — eframe windows on non-main threads with macOS tray
+- **Area**: eframe, winit, macOS, tray
+- **What**: The macOS tray event loop requires the main thread for NSApplication event dispatch. eframe/winit also prefer the main thread for window creation. When both are needed, the overlay window is launched on a secondary OS thread. This works because by the time `run_host_overlay` is called, the tray has already initialised NSApplication via `NSApplication::sharedApplication(mtm)`, so winit can attach its window to the existing application without needing to be first on the main thread.
+- **Resolution**: Launch overlay via `std::thread::spawn`. If a future winit version breaks this, add `--no-overlay` to the tray mode and document it.
+- **Key insight**: `with_always_on_top()` in `ViewportBuilder` keeps the overlay above other windows, which is important for annotating a shared screen.
+
+### 2026-05-04 — #[cfg(feature = "gui")] function parameters with run_host
+- **Area**: Rust, cfg, function signatures
+- **What**: Adding `#[cfg(feature = "gui")]` to a function parameter compiles correctly in Rust — callers must wrap the argument with the same cfg attribute. This is less ergonomic than having two separate functions but avoids code duplication.
+- **Resolution**: Used this pattern for `overlay_tx` in `run_host`. The `#[cfg(not(feature = "gui"))] _overlay_tx: Option<()>` fallback parameter keeps the call sites symmetric.
+- **Key insight**: Prefer this pattern over feature-gating entire functions when the function is large and only one parameter varies by feature.
+
+### 2026-05-04 — Host does not support guest reconnect today; iroh connection is 1:1 per `run_host` invocation
+- **Area**: reconnect, session, drawing
+- **What**: The guest has a full reconnect loop (`reconnect.rs` / `with_reconnect`) that re-calls `run_join` on disconnect. The host has NO equivalent loop — `run_host` calls `transport.accept()` exactly once, processes one guest, then returns. When the guest reconnects after a drop, it dials a new iroh connection to the same endpoint. The host endpoint (iroh `Endpoint`) does stay alive after the first guest disconnects (the `Endpoint` is not closed until `transport.close()` at the end of `run_host`), but `run_host` never calls `accept()` a second time, so the reconnecting guest's TCP-style SYN goes unacknowledged and the reconnect fails.
+- **Impact**: The stroke cache (`StrokeCache`) built in feat/drawing-replay-on-reconnect is fully correct and ready: strokes are accumulated persistently across the session, `replay_persistent_strokes` fires immediately on the first (and currently only) guest connect, and the cache+replay path is wired such that a future host-reconnect loop needs zero changes to the cache itself.
+- **Resolution / Next step**: Wrap the `accept → handshake → session` block in a `loop` inside `run_host`. The `stroke_cache` variable is declared above the loop so it naturally survives across iterations. After accepting the annotation stream on each new guest, call `replay_persistent_strokes(&stroke_cache, &draw_event_tx).await` — the call is already there and the doc comment in `drawing.rs` spells out exactly where.
+- **Key insight**: iroh's `Endpoint` is reusable — calling `endpoint.accept().await` again after the first connection closes is perfectly valid and will accept the next inbound connection. No re-bind needed.

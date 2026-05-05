@@ -27,7 +27,8 @@ use pairwire_protocol::{Capability, CursorUpdate, VideoCodec};
 use pairwire_transport::{
     AudioStreamConfig, ControlChannel, CursorReceiver, CursorSender, DatagramChannels,
     DrawingReceiver, DrawingSender, MoqSessionSubscriber, NegotiatedSession, QualityMonitor,
-    TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake, host_handshake, local_handshake,
+    StrokeCache, TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake, host_handshake,
+    local_handshake, replay_persistent_strokes,
 };
 #[cfg(feature = "encode")]
 use pairwire_transport::{MoqSessionPublisher, VideoStreamConfig};
@@ -44,6 +45,27 @@ type GuestAudioSenderParts = (
     Option<tokio::task::JoinHandle<()>>,
 );
 
+/// Channels sent from `run_host` to the host overlay window.
+///
+/// Created after the annotation stream and capture pipeline are set up and
+/// forwarded to the main thread so `run_host_overlay` can launch the GUI.
+///
+/// Only available when the `gui` feature is compiled in.
+#[cfg(feature = "gui")]
+pub struct HostOverlayChannels {
+    /// Accumulated strokes from `DrawingReceiver` (both peers).
+    pub strokes_rx: watch::Receiver<Vec<pairwire_transport::TimedStroke>>,
+    /// Live in-progress `DrawPoint`s from the remote peer.
+    pub live_point_rx: watch::Receiver<Option<pairwire_protocol::drawing::DrawPoint>>,
+    /// The overlay sends drawing events here; the session bridges them into
+    /// the `DrawingSender` mpsc and out to the guest.
+    pub drawing_event_tx: tokio::sync::broadcast::Sender<pairwire_transport::DrawingEvent>,
+    /// Encoded capture resolution. Strokes from the guest are in this coordinate
+    /// space, so the overlay needs it to map host-coord → screen-pixel correctly.
+    pub capture_width: u32,
+    pub capture_height: u32,
+}
+
 /// Run as host: capture screen, accept one connection, handshake, stream frames.
 ///
 /// `invite_tx` receives the invite URL as soon as it is generated, before the
@@ -51,10 +73,16 @@ type GuestAudioSenderParts = (
 ///
 /// `tray_action_rx` receives `ControlAction` events from the tray menu (Grant /
 /// Revoke). Pass `None` when running without a tray (tests, non-tray builds).
+///
+/// `overlay_tx` receives the channels the host overlay window needs, once the
+/// annotation stream and capture pipeline are established. Pass `None` to run
+/// headlessly (e.g. `--no-overlay` or the `gui` feature is not compiled).
 pub async fn run_host(
     args: HostArgs,
     invite_tx: Option<tokio::sync::oneshot::Sender<String>>,
     tray_action_rx: Option<tokio::sync::mpsc::Receiver<crate::control_state::ControlAction>>,
+    #[cfg(feature = "gui")] overlay_tx: Option<tokio::sync::oneshot::Sender<HostOverlayChannels>>,
+    #[cfg(not(feature = "gui"))] _overlay_tx: Option<()>,
 ) -> Result<()> {
     let transport = Transport::bind()
         .await
@@ -100,6 +128,12 @@ pub async fn run_host(
     AudioConfig::default()
         .validate()
         .context("invalid audio config")?;
+
+    // Long-lived stroke cache: survives across guest disconnects so strokes can be
+    // replayed to a reconnecting guest. Created here (before `accept`) so it lives
+    // for the entire host session even when `run_host` is eventually extended to
+    // loop across multiple successive guest connections.
+    let stroke_cache = Arc::new(StrokeCache::new());
 
     let conn = Arc::new(
         transport
@@ -187,8 +221,24 @@ pub async fn run_host(
     // draw_point_tx feeds live DrawPoint datagrams from the router into DrawingReceiver.
     let mut host_drawing_send_handle = None;
     let mut host_drawing_recv_handle = None;
-    let mut _host_draw_event_tx = None;
+    // Kept alive so the host's annotation send half stays open.
+    let mut _host_draw_event_tx: Option<
+        tokio::sync::mpsc::Sender<pairwire_transport::DrawingEvent>,
+    > = None;
     let mut host_draw_point_tx = None;
+
+    // Broadcast sender for the host overlay window to emit drawing events.
+    // Bridged into the mpsc that feeds DrawingSender so overlay strokes reach the guest.
+    #[cfg(feature = "gui")]
+    let (overlay_drawing_bcast_tx, _overlay_drawing_rx0) =
+        tokio::sync::broadcast::channel::<pairwire_transport::DrawingEvent>(32);
+    // Watch channels so the overlay can render accumulated strokes and live points.
+    #[cfg(feature = "gui")]
+    let (host_strokes_watch_tx, host_strokes_watch_rx) =
+        watch::channel::<Vec<pairwire_transport::TimedStroke>>(Vec::new());
+    #[cfg(feature = "gui")]
+    let (host_live_pt_watch_tx, host_live_pt_watch_rx) =
+        watch::channel::<Option<pairwire_protocol::drawing::DrawPoint>>(None);
 
     if session.has_capability(&Capability::Annotations) {
         match conn.accept_bi().await {
@@ -196,15 +246,84 @@ pub async fn run_host(
                 let (draw_event_tx, draw_event_rx) = tokio::sync::mpsc::channel(32);
                 let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
                 let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
-                let (recv_handle, _strokes_rx, _live_rx) =
-                    DrawingReceiver::new(annot_recv).spawn(draw_pt_rx);
+                // Wire the long-lived cache so every incoming persistent stroke is
+                // stored. DrawClear commands are also applied to keep the cache
+                // consistent with the whiteboard state.
+                let (recv_handle, strokes_rx, live_rx) = DrawingReceiver::new(annot_recv)
+                    .spawn_with_cache_and_echo(
+                        draw_pt_rx,
+                        Arc::clone(&stroke_cache),
+                        draw_event_tx.clone(),
+                    );
+
+                // When the gui feature is enabled, forward the receiver watches to the
+                // overlay watch channels and bridge the overlay broadcast into the mpsc.
+                #[cfg(feature = "gui")]
+                {
+                    let fwd_strokes_tx = host_strokes_watch_tx.clone();
+                    tokio::spawn(async move {
+                        let mut rx = strokes_rx;
+                        loop {
+                            if rx.changed().await.is_err() {
+                                break;
+                            }
+                            let _ = fwd_strokes_tx.send(rx.borrow().clone());
+                        }
+                    });
+                    let fwd_live_tx = host_live_pt_watch_tx.clone();
+                    tokio::spawn(async move {
+                        let mut rx = live_rx;
+                        loop {
+                            if rx.changed().await.is_err() {
+                                break;
+                            }
+                            let _ = fwd_live_tx.send(*rx.borrow());
+                        }
+                    });
+                    // Bridge overlay broadcast -> mpsc so host strokes reach DrawingSender.
+                    let mpsc_tx_for_overlay = draw_event_tx.clone();
+                    let mut overlay_bcast_rx = overlay_drawing_bcast_tx.subscribe();
+                    tokio::spawn(async move {
+                        loop {
+                            match overlay_bcast_rx.recv().await {
+                                Ok(event) => {
+                                    if mpsc_tx_for_overlay.send(event).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                    continue;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                    });
+                }
+                // Suppress unused-variable warnings when gui feature is off.
+                #[cfg(not(feature = "gui"))]
+                let _ = (strokes_rx, live_rx);
+
+                // Replay any pre-existing persistent strokes before the sender
+                // begins consuming live events. This ensures the guest sees the
+                // full whiteboard immediately on first connect (or reconnect once
+                // the host accept loop is extended — see RECONNECT NOTE below).
+                //
+                // RECONNECT NOTE: `run_host` currently calls `transport.accept()`
+                // once and exits after `conn.closed()`. To support guest reconnects:
+                // 1. Wrap the accept->handshake->session block in a loop.
+                // 2. The `stroke_cache` (created above) naturally persists across
+                //    iterations because it is owned by the outer `run_host` frame.
+                // 3. Call `replay_persistent_strokes` here (same as below) on each
+                //    new annotation stream -- no other changes required.
+                replay_persistent_strokes(&stroke_cache, &draw_event_tx).await;
                 host_drawing_send_handle = Some(sender.spawn(draw_event_rx));
                 host_drawing_recv_handle = Some(recv_handle);
                 _host_draw_event_tx = Some(draw_event_tx);
                 host_draw_point_tx = Some(draw_pt_tx);
-                // draw_event_tx is kept alive so the host's annotation send half
-                // stays open even though the headless host has no local drawing UI yet.
-                info!("annotation stream accepted");
+                info!(
+                    "annotation stream accepted; persistent stroke cache has {} strokes",
+                    stroke_cache.len()
+                );
             }
             Ok(None) => warn!("connection closed before annotation stream"),
             Err(e) => warn!(error = %e, "failed to accept annotation stream"),
@@ -392,17 +511,50 @@ pub async fn run_host(
         use pairwire_capture::EncodeThread;
 
         if session.video_codec.is_none() {
-            warn!("no common video codec — not sending frames");
+            warn!("no common video codec -- not sending frames");
         } else {
             // Start capture only when the encoder/publisher are about to consume
             // frames. Starting it while waiting for a guest just fills the small
             // bounded channel and emits noisy "dropping frame" logs.
-            let (capture_thread, frame_rx) =
+            let (capture_thread, raw_frame_rx) =
                 start_capture(capture_config.clone(), capture_show_cursor.clone())?;
+
+            // Bridge channel from raw capture to encode thread.
+            let (raw_to_encode_tx, raw_to_encode_rx) =
+                std::sync::mpsc::sync_channel::<pairwire_capture::RawFrame>(4);
+
+            #[cfg(feature = "gui")]
+            {
+                // Send overlay channels now that we have all the pieces.
+                if let Some(tx) = overlay_tx {
+                    let channels = HostOverlayChannels {
+                        strokes_rx: host_strokes_watch_rx,
+                        live_point_rx: host_live_pt_watch_rx,
+                        drawing_event_tx: overlay_drawing_bcast_tx.clone(),
+                        capture_width: capture_config.width,
+                        capture_height: capture_config.height,
+                    };
+                    if tx.send(channels).is_err() {
+                        warn!("host overlay receiver dropped before channels were sent");
+                    } else {
+                        info!("host overlay channels sent to main thread");
+                    }
+                }
+            }
+
+            // Forward raw frames from capture to encode. (No tee — the transparent
+            // overlay does not need a preview frame, only stroke channels.)
+            let forward_thread = std::thread::spawn(move || {
+                while let Ok(raw) = raw_frame_rx.recv() {
+                    if raw_to_encode_tx.send(raw).is_err() {
+                        break;
+                    }
+                }
+            });
 
             let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
                 capture_config.clone(),
-                frame_rx,
+                raw_to_encode_rx,
                 Some(quality_rx),
             )
             .context("failed to start encoder")?;
@@ -428,12 +580,24 @@ pub async fn run_host(
             pub_handle.stop().await;
             encode_thread.stop();
             capture_thread.stop();
+            let _ = forward_thread.join();
         }
     }
 
     #[cfg(not(feature = "encode"))]
     {
-        warn!("encode feature not enabled — handshake done but not sending frames");
+        warn!("encode feature not enabled -- handshake done but not sending frames");
+        #[cfg(feature = "gui")]
+        if let Some(tx) = overlay_tx {
+            let channels = HostOverlayChannels {
+                strokes_rx: host_strokes_watch_rx,
+                live_point_rx: host_live_pt_watch_rx,
+                drawing_event_tx: overlay_drawing_bcast_tx.clone(),
+                capture_width: capture_config.width,
+                capture_height: capture_config.height,
+            };
+            let _ = tx.send(channels);
+        }
         conn.closed().await;
         info!("guest disconnected");
     }
