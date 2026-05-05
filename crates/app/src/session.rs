@@ -45,6 +45,23 @@ type GuestAudioSenderParts = (
     Option<tokio::task::JoinHandle<()>>,
 );
 
+/// The current state of the host session, published via a watch channel so
+/// the overlay can display a status banner.
+///
+/// Lives in `app` rather than `core` because it is only meaningful in the
+/// context of the host overlay UI.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostSessionState {
+    /// No guest is connected; the host is waiting for an inbound connection.
+    Waiting,
+    /// A guest is actively connected.
+    Connected {
+        /// First 8 hex characters of the guest's `EndpointId` (public key).
+        peer_id_short: String,
+    },
+}
+
 /// Channels sent from `run_host` to the host overlay window.
 ///
 /// Created after the annotation stream and capture pipeline are set up and
@@ -64,19 +81,30 @@ pub struct HostOverlayChannels {
     /// space, so the overlay needs it to map host-coord → screen-pixel correctly.
     pub capture_width: u32,
     pub capture_height: u32,
+    /// Current host session state — updated before each `accept()` (Waiting)
+    /// and after a successful handshake (Connected). When the sender is dropped
+    /// (run_host returning), the overlay treats it as a shutdown signal and
+    /// closes its window.
+    pub state_rx: watch::Receiver<HostSessionState>,
 }
 
-/// Run as host: capture screen, accept one connection, handshake, stream frames.
+/// Run as host: capture screen, accept connections in a loop, handshake, stream frames.
+///
+/// The host runs an accept loop so a guest that disconnects can reconnect to the
+/// same host without the host needing to re-launch. Each iteration covers one
+/// guest connection from `transport.accept()` through teardown. Long-lived state
+/// (stroke cache, capture pipeline, overlay channels) is created once before the
+/// loop and survives across reconnects.
 ///
 /// `invite_tx` receives the invite URL as soon as it is generated, before the
-/// blocking `accept()` call. Pass `None` if you don't need the URL out-of-band.
+/// first blocking `accept()` call. Pass `None` if you don't need the URL out-of-band.
 ///
 /// `tray_action_rx` receives `ControlAction` events from the tray menu (Grant /
 /// Revoke). Pass `None` when running without a tray (tests, non-tray builds).
 ///
 /// `overlay_tx` receives the channels the host overlay window needs, once the
-/// annotation stream and capture pipeline are established. Pass `None` to run
-/// headlessly (e.g. `--no-overlay` or the `gui` feature is not compiled).
+/// capture pipeline is established. Only sent on the first iteration. Pass `None`
+/// to run headlessly (e.g. `--no-overlay` or the `gui` feature is not compiled).
 ///
 /// `shutdown_rx` is an optional watch channel that becomes `true` when the
 /// caller wants a graceful teardown (e.g. the host overlay window was closed).
@@ -137,132 +165,27 @@ pub async fn run_host(
         .validate()
         .context("invalid audio config")?;
 
-    // Long-lived stroke cache: survives across guest disconnects so strokes can be
-    // replayed to a reconnecting guest. Created here (before `accept`) so it lives
-    // for the entire host session even when `run_host` is eventually extended to
-    // loop across multiple successive guest connections.
+    // ── Long-lived state (survives across reconnects) ──────────────────────────
+
+    // Stroke cache: persists across guest disconnects so strokes are replayed to
+    // a reconnecting guest. Declared before the loop so it lives for the entire
+    // host session. See LEARNINGS.md 2026-05-04 for details.
     let stroke_cache = Arc::new(StrokeCache::new());
 
-    // Wait for an incoming guest connection, or bail early if shutdown fires
-    // (e.g. host closes the overlay window before any guest connects).
-    let accepted = if let Some(ref mut srx) = shutdown_rx {
-        // Spin on changed() until either accept yields or shutdown is true.
-        // We cannot use wait_for() across an .await because RwLockReadGuard is !Send.
-        let shutdown_fut = async {
-            loop {
-                if srx.changed().await.is_err() {
-                    // Sender dropped — treat as permanent shutdown.
-                    return;
-                }
-                if *srx.borrow() {
-                    return;
-                }
-            }
-        };
-        tokio::select! {
-            result = transport.accept() => result.context("accept failed")?,
-            () = shutdown_fut => {
-                info!("shutdown requested before guest connected — closing host");
-                transport.close().await;
-                return Ok(());
-            }
-        }
-    } else {
-        transport.accept().await.context("accept failed")?
-    };
-    let conn =
-        Arc::new(accepted.ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?);
-    info!(peer = %conn.remote_id(), "guest connected");
-
-    // Perform handshake before starting media.
-    let session = perform_host_handshake(&conn, &capture_config, session_token).await?;
-    info!(
-        capabilities = ?session.capabilities,
-        video_codec = ?session.video_codec,
-        "handshake complete"
-    );
-
-    // Persistent control channel — must be the first post-handshake bidi accept so
-    // the ordinal position matches the guest's `open_control_stream` sequence below.
-    let (host_ctrl_outbound_tx, host_ctrl_outbound_rx) =
-        tokio::sync::mpsc::channel::<pairwire_protocol::ControlMessage>(32);
-    let (ctrl_send, ctrl_recv) = conn
-        .accept_bi()
-        .await
-        .context("failed to accept control channel stream")?
-        .ok_or_else(|| anyhow::anyhow!("connection closed before control channel"))?;
-    let host_ctrl_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, host_ctrl_outbound_rx);
-    info!("control channel accepted");
-
-    // Signal the guest that the host has entered its post-handshake accept loop
-    // and is ready to accept follow-up bidi streams. This replaces the 250 ms
-    // timing guard on the guest side (see `run_join`).
-    host_ctrl_outbound_tx
-        .send(pairwire_protocol::ControlMessage::HostReady)
-        .await
-        .context("failed to send HostReady ack")?;
-    info!("host ready ack sent");
-
-    // Probe stamped by the input receiver after each successful injection — used by
-    // the auto-revoke watcher below to distinguish guest- vs. host-driven cursor motion.
-    let host_inject_probe = Arc::new(pairwire_input::InjectProbe::default());
-
-    // Accept the input bidi stream opened by the guest (before moq-lite starts).
-    // Permission starts as Denied; the host control-state task grants FullControl
-    // when a ControlRequest arrives (auto_grant=true) or when the host clicks
-    // "Allow Remote Control" in the tray.
-    let mut clipboard_recv_handle = None;
-    let input_recv_handle = if session.has_capability(&Capability::RemoteControl) {
-        match conn.accept_bi().await {
-            Ok(Some((_input_send, input_recv))) => {
-                // Clipboard messages arriving on the input stream are routed to
-                // ClipboardReceiver, which writes them to the host OS clipboard.
-                let (clipboard_sync_tx, clipboard_sync_rx) = tokio::sync::mpsc::channel(8);
-                let cb_receiver = ClipboardReceiver::new(clipboard_sync_rx);
-                clipboard_recv_handle = Some(cb_receiver.spawn());
-
-                let receiver = InputReceiver::new(input_recv)
-                    .with_clipboard(clipboard_sync_tx)
-                    .with_inject_probe(Arc::clone(&host_inject_probe));
-                let handle = receiver.spawn();
-                info!("input receiver started — permission: Denied (state machine will grant)");
-                Some(handle)
-            }
-            Ok(None) => {
-                warn!("connection closed before input stream");
-                None
-            }
-            Err(e) => {
-                warn!(error = %e, "failed to accept input stream");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Clipboard sync is currently guest→host only: the guest's ClipboardSender pushes
-    // InputMessage::Clipboard onto the input stream; InputReceiver routes it to
-    // ClipboardReceiver above. Host→guest requires a reverse send path (bidi input
-    // stream or a separate stream) — deferred.
-
-    // Accept the annotation bidi stream opened by the guest (before moq-lite starts).
-    // Used for DrawStroke / DrawClear messages in both directions.
-    // draw_point_tx feeds live DrawPoint datagrams from the router into DrawingReceiver.
-    let mut host_drawing_send_handle = None;
-    let mut host_drawing_recv_handle = None;
-    // Kept alive so the host's annotation send half stays open.
-    let mut _host_draw_event_tx: Option<
-        tokio::sync::mpsc::Sender<pairwire_transport::DrawingEvent>,
-    > = None;
-    let mut host_draw_point_tx = None;
+    // Session-state watch: overlay subscribes to this to show the status banner.
+    // Dropping `state_tx` (when run_host returns) signals the overlay to close.
+    #[cfg(feature = "gui")]
+    let (session_state_tx, session_state_rx) =
+        watch::channel::<HostSessionState>(HostSessionState::Waiting);
 
     // Broadcast sender for the host overlay window to emit drawing events.
     // Bridged into the mpsc that feeds DrawingSender so overlay strokes reach the guest.
+    // Created once so the overlay's subscription stays alive across reconnects.
     #[cfg(feature = "gui")]
     let (overlay_drawing_bcast_tx, _overlay_drawing_rx0) =
         tokio::sync::broadcast::channel::<pairwire_transport::DrawingEvent>(32);
     // Watch channels so the overlay can render accumulated strokes and live points.
+    // Created outside the loop so the overlay's receivers keep working across reconnects.
     #[cfg(feature = "gui")]
     let (host_strokes_watch_tx, host_strokes_watch_rx) =
         watch::channel::<Vec<pairwire_transport::TimedStroke>>(Vec::new());
@@ -270,404 +193,65 @@ pub async fn run_host(
     let (host_live_pt_watch_tx, host_live_pt_watch_rx) =
         watch::channel::<Option<pairwire_protocol::drawing::DrawPoint>>(None);
 
-    if session.has_capability(&Capability::Annotations) {
-        match conn.accept_bi().await {
-            Ok(Some((annot_send, annot_recv))) => {
-                let (draw_event_tx, draw_event_rx) = tokio::sync::mpsc::channel(32);
-                let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
-                let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
-                // Wire the long-lived cache so every incoming persistent stroke is
-                // stored. DrawClear commands are also applied to keep the cache
-                // consistent with the whiteboard state.
-                let (recv_handle, strokes_rx, live_rx) = DrawingReceiver::new(annot_recv)
-                    .spawn_with_cache_and_echo(
-                        draw_pt_rx,
-                        Arc::clone(&stroke_cache),
-                        draw_event_tx.clone(),
-                    );
-
-                // When the gui feature is enabled, forward the receiver watches to the
-                // overlay watch channels and bridge the overlay broadcast into the mpsc.
-                #[cfg(feature = "gui")]
-                {
-                    let fwd_strokes_tx = host_strokes_watch_tx.clone();
-                    tokio::spawn(async move {
-                        let mut rx = strokes_rx;
-                        loop {
-                            if rx.changed().await.is_err() {
-                                break;
-                            }
-                            let _ = fwd_strokes_tx.send(rx.borrow().clone());
-                        }
-                    });
-                    let fwd_live_tx = host_live_pt_watch_tx.clone();
-                    tokio::spawn(async move {
-                        let mut rx = live_rx;
-                        loop {
-                            if rx.changed().await.is_err() {
-                                break;
-                            }
-                            let _ = fwd_live_tx.send(*rx.borrow());
-                        }
-                    });
-                    // Bridge overlay broadcast -> mpsc so host strokes reach DrawingSender.
-                    let mpsc_tx_for_overlay = draw_event_tx.clone();
-                    let mut overlay_bcast_rx = overlay_drawing_bcast_tx.subscribe();
-                    tokio::spawn(async move {
-                        loop {
-                            match overlay_bcast_rx.recv().await {
-                                Ok(event) => {
-                                    if mpsc_tx_for_overlay.send(event).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                    continue;
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                            }
-                        }
-                    });
-                }
-                // Suppress unused-variable warnings when gui feature is off.
-                #[cfg(not(feature = "gui"))]
-                let _ = (strokes_rx, live_rx);
-
-                // Replay any pre-existing persistent strokes before the sender
-                // begins consuming live events. This ensures the guest sees the
-                // full whiteboard immediately on first connect (or reconnect once
-                // the host accept loop is extended — see RECONNECT NOTE below).
-                //
-                // RECONNECT NOTE: `run_host` currently calls `transport.accept()`
-                // once and exits after `conn.closed()`. To support guest reconnects:
-                // 1. Wrap the accept->handshake->session block in a loop.
-                // 2. The `stroke_cache` (created above) naturally persists across
-                //    iterations because it is owned by the outer `run_host` frame.
-                // 3. Call `replay_persistent_strokes` here (same as below) on each
-                //    new annotation stream -- no other changes required.
-                replay_persistent_strokes(&stroke_cache, &draw_event_tx).await;
-                host_drawing_send_handle = Some(sender.spawn(draw_event_rx));
-                host_drawing_recv_handle = Some(recv_handle);
-                _host_draw_event_tx = Some(draw_event_tx);
-                host_draw_point_tx = Some(draw_pt_tx);
-                info!(
-                    "annotation stream accepted; persistent stroke cache has {} strokes",
-                    stroke_cache.len()
-                );
-            }
-            Ok(None) => warn!("connection closed before annotation stream"),
-            Err(e) => warn!(error = %e, "failed to accept annotation stream"),
-        }
-    }
-
-    let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
-    let (guest_audio_chan_tx, guest_audio_chan_rx) = tokio::sync::mpsc::channel(64);
-    let router = datagram_router::start(
-        conn.raw_conn().clone(),
-        DatagramChannels {
-            cursor_tx: cursor_chan_tx,
-            guest_audio_tx: Some(guest_audio_chan_tx),
-            draw_point_tx: host_draw_point_tx,
-            reaction_tx: None,
-        },
-    );
-
-    let cursor_send = CursorSender::new(Arc::clone(&conn));
-    let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(1);
-    let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
-    let cursor_frame_width = u16::try_from(capture_config.width).unwrap_or(u16::MAX);
-    let cursor_frame_height = u16::try_from(capture_config.height).unwrap_or(u16::MAX);
-    let cursor_poll_task =
-        run_cursor_poll(cursor_update_tx, 0, cursor_frame_width, cursor_frame_height);
-
-    let (host_cursor_recv_handle, mut host_cursor_watch) = CursorReceiver::spawn(cursor_chan_rx);
-    let host_cursor_log_task = tokio::spawn(async move {
-        while host_cursor_watch.changed().await.is_ok() {
-            if let Some(update) = host_cursor_watch.borrow().clone() {
-                tracing::debug!(
-                    peer_id = update.peer_id,
-                    x = update.x,
-                    y = update.y,
-                    "guest cursor"
-                );
-            }
-        }
-    });
-
-    // Audio capture + encode pipeline (feeds into unified moq session).
-    let (audio_capture_handle, audio_encode_handle, _audio_pkt_rx, _audio_stream_config) =
-        start_host_audio(&session)?;
+    // Capture pipeline — started once and kept warm across reconnects.
+    // The tee thread forwards raw frames to the encode pipeline (per-connection)
+    // and to the preview watch (overlay). When no guest is connected, the encode
+    // receiver is dropped and the tee just drops frames silently (channel full =
+    // back-pressure pauses capture callback naturally).
+    //
+    // We use an `Option<std::sync::mpsc::SyncSender<RawFrame>>` that is swapped
+    // in on each new connection and dropped on teardown. The tee thread reads
+    // from the capture rx and forwards to `encode_tx_slot` if it is Some.
     #[cfg(feature = "encode")]
-    let (audio_pkt_rx, audio_stream_config) = (_audio_pkt_rx, _audio_stream_config);
-
-    let mut guest_audio_decode_handle = None;
-    let mut guest_audio_playback_handle = None;
-    let guest_audio_forward_task = if session.has_capability(&Capability::Audio) {
-        let audio_config = AudioConfig::default();
-        let (guest_audio_decode_tx, guest_audio_decode_rx) = tokio::sync::mpsc::channel(64);
-        let (guest_audio_decode, guest_audio_frame_rx) =
-            AudioDecodeThread::start(audio_config.clone(), guest_audio_decode_rx)
-                .context("failed to start guest audio decoder")?;
-        let guest_audio_playback = AudioPlaybackThread::start(audio_config, guest_audio_frame_rx)
-            .context("failed to start guest audio playback")?;
-        guest_audio_decode_handle = Some(guest_audio_decode);
-        guest_audio_playback_handle = Some(guest_audio_playback);
-        let task = tokio::spawn(async move {
-            const FRAME_DURATION_US: u64 = 20_000; // 20ms Opus frames
-            let mut guest_audio_chan_rx = guest_audio_chan_rx;
-            let mut timestamp_us: u64 = 0;
-            while let Some(data) = guest_audio_chan_rx.recv().await {
-                let packet = pairwire_audio::OpusPacket {
-                    data,
-                    timestamp_us,
-                    duration_ms: 20,
-                };
-                timestamp_us = timestamp_us.wrapping_add(FRAME_DURATION_US);
-                if guest_audio_decode_tx.send(packet).await.is_err() {
-                    break;
-                }
-            }
-        });
-        info!("guest audio pipeline started (host)");
-        Some(task)
-    } else {
-        warn!("no Audio capability — not receiving guest audio");
-        Some(tokio::spawn(async move {
-            let mut guest_audio_chan_rx = guest_audio_chan_rx;
-            while guest_audio_chan_rx.recv().await.is_some() {}
-        }))
-    };
-
-    // Quality monitor — polls connection health and emits adapted configs.
-    let quality_monitor =
-        QualityMonitor::new(Arc::new(conn.raw_conn().clone()), capture_config.clone());
-    let (quality_handle, _quality_rx, _quality_tier_rx) = quality_monitor.spawn();
-    #[cfg(feature = "encode")]
-    let quality_rx = _quality_rx;
-
-    // Host control-state machine: receives ControlRequest from the guest (via the
-    // ControlChannel inbound broadcast) and tray actions (Grant / Revoke) from
-    // the main thread, then updates the AtomicPermission and sends ControlGrant /
-    // ControlRevoke back to the guest.
-    let host_perm_handle = input_recv_handle
-        .as_ref()
-        .map(pairwire_input::InputReceiverHandle::permission_handle);
-
-    // Merged action channel: feeds ControlActions from the optional tray and from
-    // the auto-revoke watcher (see below) into a single receiver consumed by
-    // `host_ctrl_state_task_fn`.
-    let (host_action_tx, mut host_action_rx) =
-        tokio::sync::mpsc::channel::<crate::control_state::ControlAction>(8);
-    if let Some(mut tray_rx) = tray_action_rx {
-        let forward_tx = host_action_tx.clone();
-        tokio::spawn(async move {
-            while let Some(action) = tray_rx.recv().await {
-                if forward_tx.send(action).await.is_err() {
-                    break;
-                }
-            }
-        });
-    }
-
-    // Cursor-visibility flag — starts visible (true); flipped to false when the
-    // guest is granted control and back to true on revoke. All clones share the
-    // underlying AtomicBool, so the control-state task and capture thread stay
-    // in sync without any additional locking.
     let capture_show_cursor = pairwire_capture::ShowCursorFlag::new(true);
 
-    let auto_grant = args.allow_remote_control;
-    let host_ctrl_outbound_for_task = host_ctrl_outbound_tx.clone();
-    let mut host_ctrl_inbound_for_task = host_ctrl_handle.subscribe();
-    let host_capture_show_cursor = capture_show_cursor.clone();
+    // We use an Arc<Mutex<Option<SyncSender>>> so the tee thread can swap the
+    // encode sender each iteration without restarting.
+    #[cfg(feature = "encode")]
+    let encode_tx_slot: Arc<
+        std::sync::Mutex<Option<std::sync::mpsc::SyncSender<pairwire_capture::RawFrame>>>,
+    > = Arc::new(std::sync::Mutex::new(None));
 
-    // Auto-revoke watcher: while the guest holds control, poll the host cursor
-    // position and revoke if it moves without a recent injection (i.e. the host
-    // physically moved their mouse, signalling they want their machine back).
-    if let Some(ref perm) = host_perm_handle {
-        let perm = Arc::clone(perm);
-        let probe = Arc::clone(&host_inject_probe);
-        let revoke_tx = host_action_tx.clone();
+    // One-shot: capture + tee are started on the first loop iteration and reused.
+    #[cfg(feature = "encode")]
+    let mut capture_started = false;
+    #[cfg(feature = "encode")]
+    let mut _capture_thread_holder: Option<CaptureThread> = None;
+    #[cfg(feature = "encode")]
+    let mut _tee_thread_holder: Option<std::thread::JoinHandle<()>> = None;
+
+    // One-shot flag for sending the overlay channels (only on first iteration).
+    #[cfg(feature = "gui")]
+    let mut overlay_tx = overlay_tx;
+
+    // Tray action relay — broadcast so each loop iteration can subscribe independently.
+    // Each connection creates a fresh per-conn (action_tx, action_rx) and bridges from
+    // the broadcast rx into action_tx, which merges with the auto-revoke watcher.
+    let (tray_relay_bcast_tx, _tray_bcast_rx0) =
+        tokio::sync::broadcast::channel::<crate::control_state::ControlAction>(8);
+    if let Some(mut tray_rx) = tray_action_rx {
+        let relay_tx = tray_relay_bcast_tx.clone();
         tokio::spawn(async move {
-            use crate::control_state::ControlAction;
-            use pairwire_input::InputPermission;
-            // Threshold after which a cursor delta is attributed to the host
-            // rather than to a queued injection.
-            const QUIET_MS: u64 = 250;
-            let mut last_pos = pairwire_input::current_cursor_position().ok();
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                let cur = match pairwire_input::current_cursor_position() {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-                let guest_has_control = perm.load_permission() != InputPermission::Denied;
-                if !guest_has_control {
-                    last_pos = Some(cur);
-                    continue;
-                }
-                let moved = last_pos.is_some_and(|prev| prev != cur);
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-                let quiet = now_ms.saturating_sub(probe.last_ms()) > QUIET_MS;
-                if moved && quiet {
-                    tracing::info!("host cursor moved during guest control — auto-revoking");
-                    if revoke_tx.send(ControlAction::Revoke).await.is_err() {
-                        break;
-                    }
-                }
-                last_pos = Some(cur);
+            while let Some(action) = tray_rx.recv().await {
+                // Ignore send error — no subscribers is fine (no guest connected yet).
+                let _ = relay_tx.send(action);
             }
         });
     }
 
-    let host_ctrl_state_task = tokio::spawn(async move {
-        host_ctrl_state_task_fn(
-            auto_grant,
-            &mut host_ctrl_inbound_for_task,
-            &mut host_action_rx,
-            &host_ctrl_outbound_for_task,
-            &host_perm_handle,
-            host_capture_show_cursor,
-        )
-        .await;
-    });
+    // ── Accept loop ────────────────────────────────────────────────────────────
 
-    // Encode + unified moq publish (screen + audio in one session).
-    #[cfg(feature = "encode")]
-    {
-        use pairwire_capture::EncodeThread;
-
-        if session.video_codec.is_none() {
-            warn!("no common video codec -- not sending frames");
-        } else {
-            // Start capture only when the encoder/publisher are about to consume
-            // frames. Starting it while waiting for a guest just fills the small
-            // bounded channel and emits noisy "dropping frame" logs.
-            let (capture_thread, raw_frame_rx) =
-                start_capture(capture_config.clone(), capture_show_cursor.clone())?;
-
-            // Preview watch: tee raw frames from capture into a watch channel so the
-            // host overlay can render a live mirror without a second capturer instance.
-            // The tee task runs on a dedicated OS thread to avoid blocking tokio.
-            #[cfg(feature = "gui")]
-            let (preview_frame_tx, preview_frame_rx) = watch::channel::<Option<DecodedFrame>>(None);
-            // Bridge channel from tee thread to encode thread.
-            let (tee_to_encode_tx, tee_to_encode_rx) =
-                std::sync::mpsc::sync_channel::<pairwire_capture::RawFrame>(4);
-
-            #[cfg(feature = "gui")]
-            {
-                // Send overlay channels now that we have all the pieces.
-                if let Some(tx) = overlay_tx {
-                    let channels = HostOverlayChannels {
-                        frame_rx: preview_frame_rx,
-                        strokes_rx: host_strokes_watch_rx,
-                        live_point_rx: host_live_pt_watch_rx,
-                        drawing_event_tx: overlay_drawing_bcast_tx.clone(),
-                        capture_width: capture_config.width,
-                        capture_height: capture_config.height,
-                    };
-                    if tx.send(channels).is_err() {
-                        warn!("host overlay receiver dropped before channels were sent");
-                    } else {
-                        info!("host overlay channels sent to main thread");
-                    }
-                }
-            }
-
-            // Spawn the tee OS thread: reads raw frames, converts to DecodedFrame for
-            // the preview watch, and forwards to the encode pipeline.
-            let tee_thread = {
-                #[cfg(feature = "gui")]
-                let preview_tx = preview_frame_tx.clone();
-                std::thread::spawn(move || {
-                    while let Ok(raw) = raw_frame_rx.recv() {
-                        // Push a DecodedFrame view into the preview watch (BGRA == BGRA).
-                        #[cfg(feature = "gui")]
-                        {
-                            let decoded = DecodedFrame {
-                                data: raw.data.clone(),
-                                width: raw.width,
-                                height: raw.height,
-                                timestamp_us: raw.timestamp_us,
-                            };
-                            let _ = preview_tx.send(Some(decoded));
-                        }
-                        // Forward to encode; if encoder is gone, exit the tee.
-                        if tee_to_encode_tx.send(raw).is_err() {
-                            break;
-                        }
-                    }
-                })
-            };
-
-            let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
-                capture_config.clone(),
-                tee_to_encode_rx,
-                Some(quality_rx),
-            )
-            .context("failed to start encoder")?;
-
-            let video_stream_config = VideoStreamConfig {
-                width: capture_config.width,
-                height: capture_config.height,
-                fps: f64::from(capture_config.fps),
-                bitrate: 5_000_000,
-            };
-
-            let publisher = MoqSessionPublisher::new(Arc::clone(&conn));
-            let pub_handle = publisher.spawn(
-                video_stream_config,
-                audio_stream_config,
-                video_pkt_rx,
-                audio_pkt_rx,
-            );
-
-            if let Some(ref mut srx) = shutdown_rx {
-                let shutdown_fut = async {
-                    loop {
-                        if srx.changed().await.is_err() {
-                            return;
-                        }
-                        if *srx.borrow() {
-                            return;
-                        }
-                    }
-                };
-                tokio::select! {
-                    _ = conn.closed() => { info!("guest disconnected"); }
-                    () = shutdown_fut => { info!("shutdown requested — closing host session"); }
-                }
-            } else {
-                conn.closed().await;
-                info!("guest disconnected");
-            }
-
-            pub_handle.stop().await;
-            encode_thread.stop();
-            capture_thread.stop();
-            let _ = tee_thread.join();
-        }
-    }
-
-    #[cfg(not(feature = "encode"))]
-    {
-        warn!("encode feature not enabled -- handshake done but not sending frames");
+    loop {
+        // Publish Waiting state before every accept so the overlay banner is
+        // correct even after a guest disconnects and the loop iterates.
         #[cfg(feature = "gui")]
-        if let Some(tx) = overlay_tx {
-            let channels = HostOverlayChannels {
-                strokes_rx: host_strokes_watch_rx,
-                live_point_rx: host_live_pt_watch_rx,
-                drawing_event_tx: overlay_drawing_bcast_tx.clone(),
-                capture_width: capture_config.width,
-                capture_height: capture_config.height,
-            };
-            let _ = tx.send(channels);
-        }
-        if let Some(ref mut srx) = shutdown_rx {
+        let _ = session_state_tx.send(HostSessionState::Waiting);
+
+        info!("waiting for guest to connect…");
+
+        // Wait for an incoming guest connection, or bail early if shutdown fires
+        // (e.g. host closes the overlay window before any guest connects).
+        let accepted = if let Some(ref mut srx) = shutdown_rx {
             let shutdown_fut = async {
                 loop {
                     if srx.changed().await.is_err() {
@@ -679,57 +263,836 @@ pub async fn run_host(
                 }
             };
             tokio::select! {
-                _ = conn.closed() => { info!("guest disconnected"); }
-                () = shutdown_fut => { info!("shutdown requested — closing host session"); }
+                result = transport.accept() => result.context("accept failed")?,
+                () = shutdown_fut => {
+                    info!("shutdown requested before guest connected — closing host");
+                    transport.close().await;
+                    return Ok(());
+                }
             }
         } else {
-            conn.closed().await;
-            info!("guest disconnected");
+            transport.accept().await.context("accept failed")?
+        };
+        let conn =
+            Arc::new(accepted.ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?);
+
+        let peer_id_short = conn.remote_id().to_string()[..8].to_owned();
+        info!(peer = %conn.remote_id(), "guest connected");
+
+        // Update session-state watch so the overlay shows the connected banner.
+        #[cfg(feature = "gui")]
+        let _ = session_state_tx.send(HostSessionState::Connected {
+            peer_id_short: peer_id_short.clone(),
+        });
+
+        // ── Per-connection setup ───────────────────────────────────────────────
+
+        // Perform handshake before starting media.
+        let session = match perform_host_handshake(&conn, &capture_config, session_token).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, peer = %conn.remote_id(), "handshake failed — looping");
+                continue;
+            }
+        };
+        info!(
+            capabilities = ?session.capabilities,
+            video_codec = ?session.video_codec,
+            "handshake complete"
+        );
+
+        // Persistent control channel — must be the first post-handshake bidi accept.
+        let (host_ctrl_outbound_tx, host_ctrl_outbound_rx) =
+            tokio::sync::mpsc::channel::<pairwire_protocol::ControlMessage>(32);
+        let ctrl_bi = conn.accept_bi().await;
+        let (ctrl_send, ctrl_recv) = match ctrl_bi {
+            Ok(Some(pair)) => pair,
+            Ok(None) => {
+                warn!("connection closed before control channel — looping");
+                continue;
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to accept control channel — looping");
+                continue;
+            }
+        };
+        let host_ctrl_handle = ControlChannel::spawn(ctrl_send, ctrl_recv, host_ctrl_outbound_rx);
+        info!("control channel accepted");
+
+        // Signal the guest that the host is ready for follow-up bidi streams.
+        if let Err(e) = host_ctrl_outbound_tx
+            .send(pairwire_protocol::ControlMessage::HostReady)
+            .await
+        {
+            warn!(error = %e, "failed to send HostReady — looping");
+            host_ctrl_handle.stop().await;
+            continue;
         }
+        info!("host ready ack sent");
+
+        // Probe stamped by the input receiver after each successful injection.
+        let host_inject_probe = Arc::new(pairwire_input::InjectProbe::default());
+
+        // Accept input bidi stream.
+        let mut clipboard_recv_handle = None;
+        let input_recv_handle = if session.has_capability(&Capability::RemoteControl) {
+            match conn.accept_bi().await {
+                Ok(Some((_input_send, input_recv))) => {
+                    let (clipboard_sync_tx, clipboard_sync_rx) = tokio::sync::mpsc::channel(8);
+                    let cb_receiver = ClipboardReceiver::new(clipboard_sync_rx);
+                    clipboard_recv_handle = Some(cb_receiver.spawn());
+                    let receiver = InputReceiver::new(input_recv)
+                        .with_clipboard(clipboard_sync_tx)
+                        .with_inject_probe(Arc::clone(&host_inject_probe));
+                    let handle = receiver.spawn();
+                    info!("input receiver started — permission: Denied (state machine will grant)");
+                    Some(handle)
+                }
+                Ok(None) => {
+                    warn!("connection closed before input stream");
+                    None
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to accept input stream");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Accept annotation bidi stream.
+        let mut host_drawing_send_handle = None;
+        let mut host_drawing_recv_handle = None;
+        let mut _host_draw_event_tx: Option<
+            tokio::sync::mpsc::Sender<pairwire_transport::DrawingEvent>,
+        > = None;
+        let mut host_draw_point_tx = None;
+
+        if session.has_capability(&Capability::Annotations) {
+            // On a new connection, clear any strokes left from the previous guest
+            // so the overlay starts fresh. The cache replay below will re-populate it.
+            #[cfg(feature = "gui")]
+            let _ = host_strokes_watch_tx.send(Vec::new());
+
+            match conn.accept_bi().await {
+                Ok(Some((annot_send, annot_recv))) => {
+                    let (draw_event_tx, draw_event_rx) = tokio::sync::mpsc::channel(32);
+                    let (draw_pt_tx, draw_pt_rx) = tokio::sync::mpsc::channel(64);
+                    let sender = DrawingSender::new(Arc::clone(&conn), annot_send);
+                    let (recv_handle, strokes_rx, live_rx) = DrawingReceiver::new(annot_recv)
+                        .spawn_with_cache_and_echo(
+                            draw_pt_rx,
+                            Arc::clone(&stroke_cache),
+                            draw_event_tx.clone(),
+                        );
+
+                    // Forward per-connection watches into the long-lived overlay watches.
+                    // A fresh fwd task is spawned each connection; the previous one exits
+                    // naturally when its per-conn rx is dropped on teardown.
+                    #[cfg(feature = "gui")]
+                    {
+                        let fwd_strokes_tx = host_strokes_watch_tx.clone();
+                        tokio::spawn(async move {
+                            let mut rx = strokes_rx;
+                            loop {
+                                if rx.changed().await.is_err() {
+                                    break;
+                                }
+                                let _ = fwd_strokes_tx.send(rx.borrow().clone());
+                            }
+                        });
+                        let fwd_live_tx = host_live_pt_watch_tx.clone();
+                        tokio::spawn(async move {
+                            let mut rx = live_rx;
+                            loop {
+                                if rx.changed().await.is_err() {
+                                    break;
+                                }
+                                let _ = fwd_live_tx.send(*rx.borrow());
+                            }
+                        });
+                        // Bridge overlay broadcast → mpsc so host strokes reach DrawingSender.
+                        let mpsc_tx_for_overlay = draw_event_tx.clone();
+                        let mut overlay_bcast_rx = overlay_drawing_bcast_tx.subscribe();
+                        tokio::spawn(async move {
+                            loop {
+                                match overlay_bcast_rx.recv().await {
+                                    Ok(event) => {
+                                        if mpsc_tx_for_overlay.send(event).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                        continue;
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                }
+                            }
+                        });
+                    }
+                    #[cfg(not(feature = "gui"))]
+                    let _ = (strokes_rx, live_rx);
+
+                    replay_persistent_strokes(&stroke_cache, &draw_event_tx).await;
+                    host_drawing_send_handle = Some(sender.spawn(draw_event_rx));
+                    host_drawing_recv_handle = Some(recv_handle);
+                    _host_draw_event_tx = Some(draw_event_tx);
+                    host_draw_point_tx = Some(draw_pt_tx);
+                    info!(
+                        "annotation stream accepted; persistent stroke cache has {} strokes",
+                        stroke_cache.len()
+                    );
+                }
+                Ok(None) => warn!("connection closed before annotation stream"),
+                Err(e) => warn!(error = %e, "failed to accept annotation stream"),
+            }
+        }
+
+        let (cursor_chan_tx, cursor_chan_rx) = tokio::sync::mpsc::channel(64);
+        let (guest_audio_chan_tx, guest_audio_chan_rx) = tokio::sync::mpsc::channel(64);
+        let router = datagram_router::start(
+            conn.raw_conn().clone(),
+            DatagramChannels {
+                cursor_tx: cursor_chan_tx,
+                guest_audio_tx: Some(guest_audio_chan_tx),
+                draw_point_tx: host_draw_point_tx,
+                reaction_tx: None,
+            },
+        );
+
+        let cursor_send = CursorSender::new(Arc::clone(&conn));
+        let (cursor_update_tx, cursor_update_rx) = tokio::sync::mpsc::channel(1);
+        let cursor_send_handle = cursor_send.spawn(cursor_update_rx);
+        let cursor_frame_width = u16::try_from(capture_config.width).unwrap_or(u16::MAX);
+        let cursor_frame_height = u16::try_from(capture_config.height).unwrap_or(u16::MAX);
+        let cursor_poll_task =
+            run_cursor_poll(cursor_update_tx, 0, cursor_frame_width, cursor_frame_height);
+
+        let (host_cursor_recv_handle, mut host_cursor_watch) =
+            CursorReceiver::spawn(cursor_chan_rx);
+        let host_cursor_log_task = tokio::spawn(async move {
+            while host_cursor_watch.changed().await.is_ok() {
+                if let Some(update) = host_cursor_watch.borrow().clone() {
+                    tracing::debug!(
+                        peer_id = update.peer_id,
+                        x = update.x,
+                        y = update.y,
+                        "guest cursor"
+                    );
+                }
+            }
+        });
+
+        // Audio capture + encode pipeline (feeds into unified moq session).
+        let (audio_capture_handle, audio_encode_handle, _audio_pkt_rx, _audio_stream_config) =
+            match start_host_audio(&session) {
+                Ok(parts) => parts,
+                Err(e) => {
+                    warn!(error = %e, "audio pipeline failed — continuing without audio");
+                    (None, None, None, None)
+                }
+            };
+        #[cfg(feature = "encode")]
+        let (audio_pkt_rx, audio_stream_config) = (_audio_pkt_rx, _audio_stream_config);
+
+        let mut guest_audio_decode_handle = None;
+        let mut guest_audio_playback_handle = None;
+        let guest_audio_forward_task = if session.has_capability(&Capability::Audio) {
+            let audio_config = AudioConfig::default();
+            let (guest_audio_decode_tx, guest_audio_decode_rx) = tokio::sync::mpsc::channel(64);
+            match AudioDecodeThread::start(audio_config.clone(), guest_audio_decode_rx)
+                .context("failed to start guest audio decoder")
+            {
+                Ok((guest_audio_decode, guest_audio_frame_rx)) => {
+                    match AudioPlaybackThread::start(audio_config, guest_audio_frame_rx)
+                        .context("failed to start guest audio playback")
+                    {
+                        Ok(guest_audio_playback) => {
+                            guest_audio_decode_handle = Some(guest_audio_decode);
+                            guest_audio_playback_handle = Some(guest_audio_playback);
+                            let task = tokio::spawn(async move {
+                                const FRAME_DURATION_US: u64 = 20_000;
+                                let mut guest_audio_chan_rx = guest_audio_chan_rx;
+                                let mut timestamp_us: u64 = 0;
+                                while let Some(data) = guest_audio_chan_rx.recv().await {
+                                    let packet = pairwire_audio::OpusPacket {
+                                        data,
+                                        timestamp_us,
+                                        duration_ms: 20,
+                                    };
+                                    timestamp_us = timestamp_us.wrapping_add(FRAME_DURATION_US);
+                                    if guest_audio_decode_tx.send(packet).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                            info!("guest audio pipeline started (host)");
+                            Some(task)
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "guest audio playback failed");
+                            Some(tokio::spawn(async move {
+                                let mut guest_audio_chan_rx = guest_audio_chan_rx;
+                                while guest_audio_chan_rx.recv().await.is_some() {}
+                            }))
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "guest audio decoder failed");
+                    Some(tokio::spawn(async move {
+                        let mut guest_audio_chan_rx = guest_audio_chan_rx;
+                        while guest_audio_chan_rx.recv().await.is_some() {}
+                    }))
+                }
+            }
+        } else {
+            warn!("no Audio capability — not receiving guest audio");
+            Some(tokio::spawn(async move {
+                let mut guest_audio_chan_rx = guest_audio_chan_rx;
+                while guest_audio_chan_rx.recv().await.is_some() {}
+            }))
+        };
+
+        // Quality monitor — polls connection health and emits adapted configs.
+        let quality_monitor =
+            QualityMonitor::new(Arc::new(conn.raw_conn().clone()), capture_config.clone());
+        let (quality_handle, _quality_rx, _quality_tier_rx) = quality_monitor.spawn();
+        #[cfg(feature = "encode")]
+        let quality_rx = _quality_rx;
+
+        // Host control-state machine.
+        let host_perm_handle = input_recv_handle
+            .as_ref()
+            .map(pairwire_input::InputReceiverHandle::permission_handle);
+
+        // Per-connection action channel: merges tray relay + auto-revoke watcher.
+        let (host_action_tx, mut host_action_rx) =
+            tokio::sync::mpsc::channel::<crate::control_state::ControlAction>(8);
+        // Bridge tray broadcast → per-conn mpsc. Exits when this iteration's
+        // host_action_tx is dropped (end of connection teardown).
+        {
+            let mut tray_bcast_rx = tray_relay_bcast_tx.subscribe();
+            let per_conn_action_tx = host_action_tx.clone();
+            tokio::spawn(async move {
+                use tokio::sync::broadcast::error::RecvError;
+                loop {
+                    match tray_bcast_rx.recv().await {
+                        Ok(action) => {
+                            if per_conn_action_tx.send(action).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
+
+        #[cfg(feature = "encode")]
+        let capture_show_cursor_conn = capture_show_cursor.clone();
+        #[cfg(not(feature = "encode"))]
+        let capture_show_cursor_conn = pairwire_capture::ShowCursorFlag::new(true);
+
+        // Auto-revoke watcher.
+        if let Some(ref perm) = host_perm_handle {
+            let perm = Arc::clone(perm);
+            let probe = Arc::clone(&host_inject_probe);
+            let revoke_tx = host_action_tx.clone();
+            tokio::spawn(async move {
+                use crate::control_state::ControlAction;
+                use pairwire_input::InputPermission;
+                const QUIET_MS: u64 = 250;
+                let mut last_pos = pairwire_input::current_cursor_position().ok();
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let cur = match pairwire_input::current_cursor_position() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    let guest_has_control = perm.load_permission() != InputPermission::Denied;
+                    if !guest_has_control {
+                        last_pos = Some(cur);
+                        continue;
+                    }
+                    let moved = last_pos.is_some_and(|prev| prev != cur);
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+                    let quiet = now_ms.saturating_sub(probe.last_ms()) > QUIET_MS;
+                    if moved && quiet {
+                        tracing::info!("host cursor moved during guest control — auto-revoking");
+                        if revoke_tx.send(ControlAction::Revoke).await.is_err() {
+                            break;
+                        }
+                    }
+                    last_pos = Some(cur);
+                }
+            });
+        }
+
+        let auto_grant = args.allow_remote_control;
+        let host_ctrl_outbound_for_task = host_ctrl_outbound_tx.clone();
+        let mut host_ctrl_inbound_for_task = host_ctrl_handle.subscribe();
+        let host_capture_show_cursor = capture_show_cursor_conn.clone();
+
+        let host_ctrl_state_task = tokio::spawn(async move {
+            host_ctrl_state_task_fn(
+                auto_grant,
+                &mut host_ctrl_inbound_for_task,
+                &mut host_action_rx,
+                &host_ctrl_outbound_for_task,
+                &host_perm_handle,
+                host_capture_show_cursor,
+            )
+            .await;
+        });
+
+        // ── Encode + publish ───────────────────────────────────────────────────
+        #[cfg(feature = "encode")]
+        {
+            use pairwire_capture::EncodeThread;
+
+            if session.video_codec.is_none() {
+                warn!("no common video codec -- not sending frames");
+            } else {
+                // Start the capture pipeline on the first iteration; reuse on subsequent.
+                if !capture_started {
+                    let (capture_thread, raw_frame_rx) =
+                        start_capture(capture_config.clone(), capture_show_cursor.clone())?;
+                    _capture_thread_holder = Some(capture_thread);
+
+                    // Preview watch for the overlay.
+                    #[cfg(feature = "gui")]
+                    let (preview_frame_tx, preview_frame_rx) =
+                        watch::channel::<Option<DecodedFrame>>(None);
+
+                    // Send overlay channels now that capture is up (first iteration only).
+                    #[cfg(feature = "gui")]
+                    {
+                        if let Some(tx) = overlay_tx.take() {
+                            let channels = HostOverlayChannels {
+                                frame_rx: preview_frame_rx,
+                                strokes_rx: host_strokes_watch_rx.clone(),
+                                live_point_rx: host_live_pt_watch_rx.clone(),
+                                drawing_event_tx: overlay_drawing_bcast_tx.clone(),
+                                capture_width: capture_config.width,
+                                capture_height: capture_config.height,
+                                state_rx: session_state_rx.clone(),
+                            };
+                            if tx.send(channels).is_err() {
+                                warn!("host overlay receiver dropped before channels were sent");
+                            } else {
+                                info!("host overlay channels sent to main thread");
+                            }
+                        }
+                    }
+
+                    let encode_tx_slot_tee = Arc::clone(&encode_tx_slot);
+                    let tee_thread = {
+                        #[cfg(feature = "gui")]
+                        let preview_tx = preview_frame_tx.clone();
+                        std::thread::spawn(move || {
+                            while let Ok(raw) = raw_frame_rx.recv() {
+                                #[cfg(feature = "gui")]
+                                {
+                                    let decoded = DecodedFrame {
+                                        data: raw.data.clone(),
+                                        width: raw.width,
+                                        height: raw.height,
+                                        timestamp_us: raw.timestamp_us,
+                                    };
+                                    let _ = preview_tx.send(Some(decoded));
+                                }
+                                // Forward to encode pipeline if connected; otherwise
+                                // drop silently to keep capture warm.
+                                let slot = encode_tx_slot_tee.lock().ok();
+                                if let Some(guard) = slot {
+                                    if let Some(ref tx) = *guard {
+                                        // Try-send: if the encode channel is full, drop
+                                        // the frame. Do NOT log per-frame drops to avoid
+                                        // spamming when no guest is connected.
+                                        let _ = tx.try_send(raw);
+                                    }
+                                }
+                            }
+                        })
+                    };
+                    _tee_thread_holder = Some(tee_thread);
+                    capture_started = true;
+                }
+
+                // Create a fresh encode channel for this connection.
+                let (tee_to_encode_tx, tee_to_encode_rx) =
+                    std::sync::mpsc::sync_channel::<pairwire_capture::RawFrame>(4);
+                // Install the new sender into the slot so the tee forwards frames.
+                if let Ok(mut guard) = encode_tx_slot.lock() {
+                    *guard = Some(tee_to_encode_tx);
+                }
+
+                let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
+                    capture_config.clone(),
+                    tee_to_encode_rx,
+                    Some(quality_rx),
+                )
+                .context("failed to start encoder")?;
+
+                let video_stream_config = VideoStreamConfig {
+                    width: capture_config.width,
+                    height: capture_config.height,
+                    fps: f64::from(capture_config.fps),
+                    bitrate: 5_000_000,
+                };
+
+                let publisher = MoqSessionPublisher::new(Arc::clone(&conn));
+                let pub_handle = publisher.spawn(
+                    video_stream_config,
+                    audio_stream_config,
+                    video_pkt_rx,
+                    audio_pkt_rx,
+                );
+
+                // Wait for the guest to disconnect. While waiting, also accept and
+                // reject any second guest that tries to connect (busy host), and
+                // respond to graceful shutdown requests from the GUI.
+                // TODO(multi-guest): replace this with a proper multi-guest fan-out.
+                let mut shutdown_triggered = false;
+                loop {
+                    // Build the shutdown future from the optional receiver.
+                    let shutdown_arm = async {
+                        if let Some(ref mut srx) = shutdown_rx {
+                            loop {
+                                if srx.changed().await.is_err() {
+                                    return;
+                                }
+                                if *srx.borrow() {
+                                    return;
+                                }
+                            }
+                        } else {
+                            std::future::pending::<()>().await
+                        }
+                    };
+                    tokio::select! {
+                        _ = conn.closed() => {
+                            info!(peer = %peer_id_short, "guest disconnected");
+                            break;
+                        }
+                        () = shutdown_arm => {
+                            info!("shutdown requested — closing host session");
+                            shutdown_triggered = true;
+                            break;
+                        }
+                        new_conn = transport.accept() => {
+                            match new_conn {
+                                Ok(Some(interloper)) => {
+                                    tracing::debug!(
+                                        peer = %interloper.remote_id(),
+                                        "rejecting second guest — host busy \
+                                         (TODO(multi-guest): fan-out not yet implemented)"
+                                    );
+                                    // Drop the connection. The connecting peer will see
+                                    // a connection reset.
+                                    drop(interloper);
+                                }
+                                Ok(None) => {
+                                    // Endpoint closed — exit the accept loop entirely.
+                                    info!("transport endpoint closed");
+                                    pub_handle.stop().await;
+                                    encode_thread.stop();
+                                    if let Ok(mut guard) = encode_tx_slot.lock() {
+                                        *guard = None;
+                                    }
+                                    // Teardown per-connection resources before returning.
+                                    cursor_poll_task.abort();
+                                    let _ = cursor_poll_task.await;
+                                    host_cursor_log_task.abort();
+                                    let _ = host_cursor_log_task.await;
+                                    host_cursor_recv_handle.stop().await;
+                                    quality_handle.stop().await;
+                                    host_ctrl_state_task.abort();
+                                    let _ = host_ctrl_state_task.await;
+                                    host_ctrl_handle.stop().await;
+                                    router.stop().await;
+                                    cursor_send_handle.stop().await;
+                                    teardown_drawing(
+                                        host_drawing_send_handle,
+                                        host_drawing_recv_handle,
+                                    )
+                                    .await;
+                                    teardown_clipboard(clipboard_recv_handle).await;
+                                    teardown_input(input_recv_handle).await;
+                                    teardown_audio(
+                                        guest_audio_forward_task,
+                                        guest_audio_decode_handle,
+                                        guest_audio_playback_handle,
+                                        audio_encode_handle,
+                                        audio_capture_handle,
+                                    )
+                                    .await;
+                                    transport.close().await;
+                                    return Ok(());
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "transport accept error while connected");
+                                }
+                            }
+                        }
+                    }
+                }
+                if shutdown_triggered {
+                    pub_handle.stop().await;
+                    encode_thread.stop();
+                    if let Ok(mut guard) = encode_tx_slot.lock() {
+                        *guard = None;
+                    }
+                    cursor_poll_task.abort();
+                    let _ = cursor_poll_task.await;
+                    host_cursor_log_task.abort();
+                    let _ = host_cursor_log_task.await;
+                    host_cursor_recv_handle.stop().await;
+                    quality_handle.stop().await;
+                    host_ctrl_state_task.abort();
+                    let _ = host_ctrl_state_task.await;
+                    host_ctrl_handle.stop().await;
+                    router.stop().await;
+                    cursor_send_handle.stop().await;
+                    teardown_drawing(host_drawing_send_handle, host_drawing_recv_handle).await;
+                    teardown_clipboard(clipboard_recv_handle).await;
+                    teardown_input(input_recv_handle).await;
+                    teardown_audio(
+                        guest_audio_forward_task,
+                        guest_audio_decode_handle,
+                        guest_audio_playback_handle,
+                        audio_encode_handle,
+                        audio_capture_handle,
+                    )
+                    .await;
+                    transport.close().await;
+                    return Ok(());
+                }
+
+                pub_handle.stop().await;
+                encode_thread.stop();
+                // Remove the encode sender from the slot so the tee drops frames
+                // while waiting for the next guest.
+                if let Ok(mut guard) = encode_tx_slot.lock() {
+                    *guard = None;
+                }
+            }
+        }
+
+        #[cfg(not(feature = "encode"))]
+        {
+            warn!("encode feature not enabled -- handshake done but not sending frames");
+            // Send overlay channels with an empty frame watch when not encoding.
+            #[cfg(feature = "gui")]
+            if let Some(tx) = overlay_tx.take() {
+                let (_preview_tx, preview_rx) = watch::channel::<Option<DecodedFrame>>(None);
+                let channels = HostOverlayChannels {
+                    frame_rx: preview_rx,
+                    strokes_rx: host_strokes_watch_rx.clone(),
+                    live_point_rx: host_live_pt_watch_rx.clone(),
+                    drawing_event_tx: overlay_drawing_bcast_tx.clone(),
+                    capture_width: capture_config.width,
+                    capture_height: capture_config.height,
+                    state_rx: session_state_rx.clone(),
+                };
+                let _ = tx.send(channels);
+            }
+
+            // Wait for disconnect, shutdown, or second-guest rejection.
+            let mut shutdown_triggered_no_encode = false;
+            loop {
+                let shutdown_arm = async {
+                    if let Some(ref mut srx) = shutdown_rx {
+                        loop {
+                            if srx.changed().await.is_err() {
+                                return;
+                            }
+                            if *srx.borrow() {
+                                return;
+                            }
+                        }
+                    } else {
+                        std::future::pending::<()>().await
+                    }
+                };
+                tokio::select! {
+                    _ = conn.closed() => {
+                        info!(peer = %peer_id_short, "guest disconnected");
+                        break;
+                    }
+                    () = shutdown_arm => {
+                        info!("shutdown requested — closing host session");
+                        shutdown_triggered_no_encode = true;
+                        break;
+                    }
+                    new_conn = transport.accept() => {
+                        match new_conn {
+                            Ok(Some(interloper)) => {
+                                tracing::debug!(
+                                    peer = %interloper.remote_id(),
+                                    "rejecting second guest — host busy \
+                                     (TODO(multi-guest): fan-out not yet implemented)"
+                                );
+                                drop(interloper);
+                            }
+                            Ok(None) => {
+                                info!("transport endpoint closed");
+                                cursor_poll_task.abort();
+                                let _ = cursor_poll_task.await;
+                                host_cursor_log_task.abort();
+                                let _ = host_cursor_log_task.await;
+                                host_cursor_recv_handle.stop().await;
+                                quality_handle.stop().await;
+                                host_ctrl_state_task.abort();
+                                let _ = host_ctrl_state_task.await;
+                                host_ctrl_handle.stop().await;
+                                router.stop().await;
+                                cursor_send_handle.stop().await;
+                                teardown_drawing(
+                                    host_drawing_send_handle,
+                                    host_drawing_recv_handle,
+                                )
+                                .await;
+                                teardown_clipboard(clipboard_recv_handle).await;
+                                teardown_input(input_recv_handle).await;
+                                teardown_audio(
+                                    guest_audio_forward_task,
+                                    guest_audio_decode_handle,
+                                    guest_audio_playback_handle,
+                                    audio_encode_handle,
+                                    audio_capture_handle,
+                                )
+                                .await;
+                                transport.close().await;
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "transport accept error while connected");
+                            }
+                        }
+                    }
+                }
+            }
+            if shutdown_triggered_no_encode {
+                cursor_poll_task.abort();
+                let _ = cursor_poll_task.await;
+                host_cursor_log_task.abort();
+                let _ = host_cursor_log_task.await;
+                host_cursor_recv_handle.stop().await;
+                quality_handle.stop().await;
+                host_ctrl_state_task.abort();
+                let _ = host_ctrl_state_task.await;
+                host_ctrl_handle.stop().await;
+                router.stop().await;
+                cursor_send_handle.stop().await;
+                teardown_drawing(host_drawing_send_handle, host_drawing_recv_handle).await;
+                teardown_clipboard(clipboard_recv_handle).await;
+                teardown_input(input_recv_handle).await;
+                teardown_audio(
+                    guest_audio_forward_task,
+                    guest_audio_decode_handle,
+                    guest_audio_playback_handle,
+                    audio_encode_handle,
+                    audio_capture_handle,
+                )
+                .await;
+                transport.close().await;
+                return Ok(());
+            }
+        }
+
+        // ── Per-connection teardown (loop continues to next accept) ────────────
+        cursor_poll_task.abort();
+        let _ = cursor_poll_task.await;
+        host_cursor_log_task.abort();
+        let _ = host_cursor_log_task.await;
+        host_cursor_recv_handle.stop().await;
+        quality_handle.stop().await;
+        host_ctrl_state_task.abort();
+        let _ = host_ctrl_state_task.await;
+        host_ctrl_handle.stop().await;
+        router.stop().await;
+        cursor_send_handle.stop().await;
+        teardown_drawing(host_drawing_send_handle, host_drawing_recv_handle).await;
+        teardown_clipboard(clipboard_recv_handle).await;
+        teardown_input(input_recv_handle).await;
+        teardown_audio(
+            guest_audio_forward_task,
+            guest_audio_decode_handle,
+            guest_audio_playback_handle,
+            audio_encode_handle,
+            audio_capture_handle,
+        )
+        .await;
+
+        info!("per-connection teardown complete; ready for next guest");
     }
 
-    cursor_poll_task.abort();
-    let _ = cursor_poll_task.await;
-    host_cursor_log_task.abort();
-    let _ = host_cursor_log_task.await;
-    host_cursor_recv_handle.stop().await;
-    quality_handle.stop().await;
-    host_ctrl_state_task.abort();
-    let _ = host_ctrl_state_task.await;
-    host_ctrl_handle.stop().await;
-    router.stop().await;
-    cursor_send_handle.stop().await;
-    if let Some(handle) = host_drawing_send_handle {
+    // Unreachable: the loop only exits via explicit `return Ok(())` above when the
+    // transport endpoint closes (or via `?` propagation on fatal errors).
+    #[allow(unreachable_code)]
+    {
+        transport.close().await;
+        Ok(())
+    }
+}
+
+// ── Teardown helpers ──────────────────────────────────────────────────────────
+
+async fn teardown_drawing(
+    send_handle: Option<pairwire_transport::DrawingSenderHandle>,
+    recv_handle: Option<pairwire_transport::DrawingReceiverHandle>,
+) {
+    if let Some(handle) = send_handle {
         handle.stop().await;
     }
-    if let Some(handle) = host_drawing_recv_handle {
+    if let Some(handle) = recv_handle {
         handle.stop().await;
     }
-    if let Some(handle) = clipboard_recv_handle {
+}
+
+async fn teardown_clipboard(recv_handle: Option<pairwire_input::ClipboardReceiverHandle>) {
+    if let Some(handle) = recv_handle {
         handle.stop().await;
     }
-    if let Some(handle) = input_recv_handle {
+}
+
+async fn teardown_input(recv_handle: Option<pairwire_input::InputReceiverHandle>) {
+    if let Some(handle) = recv_handle {
         handle.stop().await;
     }
-    if let Some(task) = guest_audio_forward_task {
+}
+
+async fn teardown_audio(
+    forward_task: Option<tokio::task::JoinHandle<()>>,
+    decode_handle: Option<AudioDecodeThread>,
+    playback_handle: Option<AudioPlaybackThread>,
+    encode_handle: Option<AudioEncodeThread>,
+    capture_handle: Option<AudioCaptureThread>,
+) {
+    if let Some(task) = forward_task {
         task.abort();
         let _ = task.await;
     }
-    if let Some(decode) = guest_audio_decode_handle {
+    if let Some(decode) = decode_handle {
         decode.stop();
     }
-    if let Some(playback) = guest_audio_playback_handle {
+    if let Some(playback) = playback_handle {
         playback.stop();
     }
-    if let Some(encode) = audio_encode_handle {
+    if let Some(encode) = encode_handle {
         encode.stop();
     }
-    if let Some(capture) = audio_capture_handle {
+    if let Some(capture) = capture_handle {
         capture.stop();
     }
-
-    transport.close().await;
-    Ok(())
 }
 
 /// Run as guest: connect to host, handshake, receive and decode frames, forward to viewer.
