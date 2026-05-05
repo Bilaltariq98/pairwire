@@ -62,7 +62,12 @@ pub struct HostOverlayChannels {
     /// The overlay sends drawing events here; the session bridges them into
     /// the `DrawingSender` mpsc and out to the guest.
     pub drawing_event_tx: tokio::sync::broadcast::Sender<pairwire_transport::DrawingEvent>,
+    /// Encoded capture resolution. Strokes from the guest are in this coordinate
+    /// space, so the overlay needs it to map host-coord → screen-pixel correctly.
+    pub capture_width: u32,
+    pub capture_height: u32,
 }
+
 
 /// Run as host: capture screen, accept one connection, handshake, stream frames.
 ///
@@ -248,7 +253,11 @@ pub async fn run_host(
                 // stored. DrawClear commands are also applied to keep the cache
                 // consistent with the whiteboard state.
                 let (recv_handle, strokes_rx, live_rx) = DrawingReceiver::new(annot_recv)
-                    .spawn_with_cache(draw_pt_rx, Arc::clone(&stroke_cache));
+                    .spawn_with_cache_and_echo(
+                        draw_pt_rx,
+                        Arc::clone(&stroke_cache),
+                        draw_event_tx.clone(),
+                    );
 
                 // When the gui feature is enabled, forward the receiver watches to the
                 // overlay watch channels and bridge the overlay broadcast into the mpsc.
@@ -532,6 +541,8 @@ pub async fn run_host(
                         strokes_rx: host_strokes_watch_rx,
                         live_point_rx: host_live_pt_watch_rx,
                         drawing_event_tx: overlay_drawing_bcast_tx.clone(),
+                        capture_width: capture_config.width,
+                        capture_height: capture_config.height,
                     };
                     if tx.send(channels).is_err() {
                         warn!("host overlay receiver dropped before channels were sent");
@@ -566,6 +577,7 @@ pub async fn run_host(
                     }
                 })
             };
+
 
             let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
                 capture_config.clone(),
@@ -611,6 +623,8 @@ pub async fn run_host(
                 strokes_rx: host_strokes_watch_rx,
                 live_point_rx: host_live_pt_watch_rx,
                 drawing_event_tx: overlay_drawing_bcast_tx.clone(),
+                capture_width: capture_config.width,
+                capture_height: capture_config.height,
             };
             let _ = tx.send(channels);
         }

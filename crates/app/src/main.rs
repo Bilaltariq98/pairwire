@@ -8,6 +8,7 @@ mod cli;
 mod control_state;
 mod guest_ctrl;
 mod host_ctrl;
+mod host_overlay_transparent;
 mod reconnect;
 mod session;
 mod tray;
@@ -47,114 +48,159 @@ fn main() -> Result<()> {
 }
 
 fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
-    #[cfg(not(feature = "tray"))]
+    // Three valid configurations:
+    //   1. gui (overlay on main thread, tray ignored if compiled in)
+    //   2. tray only — no gui (tray on main thread)
+    //   3. no overlay, no tray (headless: just run the session)
+    //
+    // On macOS both the tray (NSStatusBar) and winit's `EventLoop` insist on
+    // being created on the main thread. They cannot share it. When `gui` is
+    // compiled in we always give the overlay main-thread ownership; the tray
+    // is silently ignored. To run with tray+menubar control, build without `gui`.
+    #[cfg(feature = "gui")]
     {
-        // Without the tray feature, run the session directly on the async runtime.
-        rt.block_on(session::run_host(args, None, None, None))
+        if args.no_overlay {
+            run_host_no_overlay(args, rt)
+        } else {
+            run_host_with_overlay(args, rt)
+        }
     }
 
-    #[cfg(feature = "tray")]
+    #[cfg(all(feature = "tray", not(feature = "gui")))]
     {
-        // With the tray feature: spawn the session as a background task so the
-        // main thread can drive the tray event loop (macOS requirement).
-        use tray::TrayAction;
+        run_host_with_tray(args, rt)
+    }
 
-        let (invite_tx, invite_rx) = tokio::sync::oneshot::channel::<String>();
-        let mut tray_handle = tray::TrayHandle::new(None)?;
+    #[cfg(not(any(feature = "gui", feature = "tray")))]
+    {
+        run_host_no_overlay(args, rt)
+    }
+}
 
-        // Bridge tray GrantControl / RevokeControl events into the session's
-        // control-state machine. The mpsc channel is created here (on the main
-        // thread) and the receiver is passed into run_host.
-        let (tray_action_tx, tray_action_rx) =
-            tokio::sync::mpsc::channel::<control_state::ControlAction>(8);
+#[cfg(any(feature = "gui", not(feature = "tray")))]
+fn run_host_no_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    rt.block_on(session::run_host(args, None, None, None))
+}
 
-        let session_handle = rt.spawn(session::run_host(
-            args,
-            Some(invite_tx),
-            Some(tray_action_rx),
-            None, // overlay_tx: no host overlay in tray-only mode
-        ));
+#[cfg(feature = "gui")]
+fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    // Spawn the session on the runtime; block on the main thread waiting for
+    // the overlay channels, then launch the transparent overlay (which owns
+    // the main thread for the rest of the session).
+    let (overlay_tx, overlay_rx) = tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
+    let session_handle = rt.spawn(session::run_host(args, None, None, Some(overlay_tx)));
 
-        // Block until the invite URL arrives, then update the tray item.
-        if let Ok(url) = rt.block_on(invite_rx) {
-            tray_handle.set_invite_url(url);
-        }
-
-        // Poll tray events on the main thread until the session ends.
-        loop {
-            if let Some(action) = tray_handle.poll() {
-                match action {
-                    TrayAction::CopyInvite(url) => {
-                        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone()))
-                        {
-                            Ok(()) => info!(url, "invite link copied to clipboard"),
-                            Err(e) => tracing::warn!(error = %e, "clipboard write failed"),
-                        }
-                    }
-                    TrayAction::Disconnect => {
-                        info!("tray: disconnect requested");
-                        session_handle.abort();
-                        break;
-                    }
-                    TrayAction::Quit => {
-                        info!("tray: quit requested");
-                        session_handle.abort();
-                        std::process::exit(0);
-                    }
-                    TrayAction::GrantControl => {
-                        let _ = tray_action_tx.try_send(control_state::ControlAction::Grant);
-                        tray_handle.set_control_granted(true);
-                        info!("tray: grant control forwarded to session");
-                    }
-                    TrayAction::RevokeControl => {
-                        let _ = tray_action_tx.try_send(control_state::ControlAction::Revoke);
-                        tray_handle.set_control_granted(false);
-                        info!("tray: revoke control forwarded to session");
-                    }
-                }
-            }
-
-            if session_handle.is_finished() {
-                break;
-            }
-
-            // On macOS, the tray menu requires the NSApplication event
-            // dispatch loop — CFRunLoopRunInMode only pumps CF sources, NOT
-            // AppKit events (menu clicks, popups). We use the standard Cocoa
-            // event pump: nextEventMatchingMask + sendEvent.
-            #[cfg(target_os = "macos")]
+    match rt.block_on(overlay_rx) {
+        Ok(channels) => {
+            let cw = channels.capture_width;
+            let ch = channels.capture_height;
+            if let Err(e) = host_overlay_transparent::run_transparent_host_overlay(channels, cw, ch)
             {
-                use objc2_app_kit::{NSApplication, NSEventMask};
-                use objc2_foundation::{MainThreadMarker, NSDate};
+                tracing::warn!(error = %e, "transparent overlay exited with error");
+            }
+        }
+        Err(_) => {
+            tracing::warn!("session ended before overlay channels were sent");
+        }
+    }
 
-                let mtm = MainThreadMarker::new().expect("must be main thread");
-                let app = NSApplication::sharedApplication(mtm);
-                loop {
-                    let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
-                        NSEventMask::Any,
-                        Some(&NSDate::dateWithTimeIntervalSinceNow(0.05)),
-                        objc2_foundation::ns_string!("kCFRunLoopDefaultMode"),
-                        true,
-                    );
-                    match event {
-                        Some(event) => app.sendEvent(&event),
-                        None => break,
+    session_handle.abort();
+    match rt.block_on(session_handle) {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(e)) => eprintln!("session error: {e}"),
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "tray", not(feature = "gui")))]
+fn run_host_with_tray(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    use tray::TrayAction;
+
+    let (invite_tx, invite_rx) = tokio::sync::oneshot::channel::<String>();
+    let mut tray_handle = tray::TrayHandle::new(None)?;
+
+    let (tray_action_tx, tray_action_rx) =
+        tokio::sync::mpsc::channel::<control_state::ControlAction>(8);
+
+    let session_handle = rt.spawn(session::run_host(
+        args,
+        Some(invite_tx),
+        Some(tray_action_rx),
+        None,
+    ));
+
+    if let Ok(url) = rt.block_on(invite_rx) {
+        tray_handle.set_invite_url(url);
+    }
+
+    loop {
+        if let Some(action) = tray_handle.poll() {
+            match action {
+                TrayAction::CopyInvite(url) => {
+                    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone())) {
+                        Ok(()) => info!(url, "invite link copied to clipboard"),
+                        Err(e) => tracing::warn!(error = %e, "clipboard write failed"),
                     }
                 }
+                TrayAction::Disconnect => {
+                    info!("tray: disconnect requested");
+                    session_handle.abort();
+                    break;
+                }
+                TrayAction::Quit => {
+                    info!("tray: quit requested");
+                    session_handle.abort();
+                    std::process::exit(0);
+                }
+                TrayAction::GrantControl => {
+                    let _ = tray_action_tx.try_send(control_state::ControlAction::Grant);
+                    tray_handle.set_control_granted(true);
+                    info!("tray: grant control forwarded to session");
+                }
+                TrayAction::RevokeControl => {
+                    let _ = tray_action_tx.try_send(control_state::ControlAction::Revoke);
+                    tray_handle.set_control_granted(false);
+                    info!("tray: revoke control forwarded to session");
+                }
             }
-            #[cfg(not(target_os = "macos"))]
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        match rt.block_on(session_handle) {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("session error: {e}"),
-            Err(e) if e.is_cancelled() => {}
-            Err(e) => eprintln!("task panic: {e}"),
+        if session_handle.is_finished() {
+            break;
         }
 
-        Ok(())
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_app_kit::{NSApplication, NSEventMask};
+            use objc2_foundation::{MainThreadMarker, NSDate};
+
+            let mtm = MainThreadMarker::new().expect("must be main thread");
+            let app = NSApplication::sharedApplication(mtm);
+            loop {
+                let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                    NSEventMask::Any,
+                    Some(&NSDate::dateWithTimeIntervalSinceNow(0.05)),
+                    objc2_foundation::ns_string!("kCFRunLoopDefaultMode"),
+                    true,
+                );
+                match event {
+                    Some(event) => app.sendEvent(&event),
+                    None => break,
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+
+    match rt.block_on(session_handle) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("session error: {e}"),
+        Err(e) if e.is_cancelled() => {}
+        Err(e) => eprintln!("task panic: {e}"),
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::unnecessary_wraps)] // Result is needed when `gui` feature propagates viewer errors
