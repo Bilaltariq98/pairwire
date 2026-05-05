@@ -53,8 +53,6 @@ type GuestAudioSenderParts = (
 /// Only available when the `gui` feature is compiled in.
 #[cfg(feature = "gui")]
 pub struct HostOverlayChannels {
-    /// Live preview frames from the capture pipeline (host's own screen).
-    pub frame_rx: watch::Receiver<Option<DecodedFrame>>,
     /// Accumulated strokes from `DrawingReceiver` (both peers).
     pub strokes_rx: watch::Receiver<Vec<pairwire_transport::TimedStroke>>,
     /// Live in-progress `DrawPoint`s from the remote peer.
@@ -67,7 +65,6 @@ pub struct HostOverlayChannels {
     pub capture_width: u32,
     pub capture_height: u32,
 }
-
 
 /// Run as host: capture screen, accept one connection, handshake, stream frames.
 ///
@@ -522,14 +519,8 @@ pub async fn run_host(
             let (capture_thread, raw_frame_rx) =
                 start_capture(capture_config.clone(), capture_show_cursor.clone())?;
 
-            // Preview watch: tee raw frames from capture into a watch channel so the
-            // host overlay can render a live mirror without a second capturer instance.
-            // The tee task runs on a dedicated OS thread to avoid blocking tokio.
-            #[cfg(feature = "gui")]
-            let (preview_frame_tx, preview_frame_rx) =
-                watch::channel::<Option<DecodedFrame>>(None);
-            // Bridge channel from tee thread to encode thread.
-            let (tee_to_encode_tx, tee_to_encode_rx) =
+            // Bridge channel from raw capture to encode thread.
+            let (raw_to_encode_tx, raw_to_encode_rx) =
                 std::sync::mpsc::sync_channel::<pairwire_capture::RawFrame>(4);
 
             #[cfg(feature = "gui")]
@@ -537,7 +528,6 @@ pub async fn run_host(
                 // Send overlay channels now that we have all the pieces.
                 if let Some(tx) = overlay_tx {
                     let channels = HostOverlayChannels {
-                        frame_rx: preview_frame_rx,
                         strokes_rx: host_strokes_watch_rx,
                         live_point_rx: host_live_pt_watch_rx,
                         drawing_event_tx: overlay_drawing_bcast_tx.clone(),
@@ -552,36 +542,19 @@ pub async fn run_host(
                 }
             }
 
-            // Spawn the tee OS thread: reads raw frames, converts to DecodedFrame for
-            // the preview watch, and forwards to the encode pipeline.
-            let tee_thread = {
-                #[cfg(feature = "gui")]
-                let preview_tx = preview_frame_tx.clone();
-                std::thread::spawn(move || {
-                    while let Ok(raw) = raw_frame_rx.recv() {
-                        // Push a DecodedFrame view into the preview watch (BGRA == BGRA).
-                        #[cfg(feature = "gui")]
-                        {
-                            let decoded = DecodedFrame {
-                                data: raw.data.clone(),
-                                width: raw.width,
-                                height: raw.height,
-                                timestamp_us: raw.timestamp_us,
-                            };
-                            let _ = preview_tx.send(Some(decoded));
-                        }
-                        // Forward to encode; if encoder is gone, exit the tee.
-                        if tee_to_encode_tx.send(raw).is_err() {
-                            break;
-                        }
+            // Forward raw frames from capture to encode. (No tee — the transparent
+            // overlay does not need a preview frame, only stroke channels.)
+            let forward_thread = std::thread::spawn(move || {
+                while let Ok(raw) = raw_frame_rx.recv() {
+                    if raw_to_encode_tx.send(raw).is_err() {
+                        break;
                     }
-                })
-            };
-
+                }
+            });
 
             let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
                 capture_config.clone(),
-                tee_to_encode_rx,
+                raw_to_encode_rx,
                 Some(quality_rx),
             )
             .context("failed to start encoder")?;
@@ -607,19 +580,16 @@ pub async fn run_host(
             pub_handle.stop().await;
             encode_thread.stop();
             capture_thread.stop();
-            let _ = tee_thread.join();
+            let _ = forward_thread.join();
         }
     }
 
     #[cfg(not(feature = "encode"))]
     {
         warn!("encode feature not enabled -- handshake done but not sending frames");
-        // Send overlay channels with an empty frame watch when not encoding.
         #[cfg(feature = "gui")]
         if let Some(tx) = overlay_tx {
-            let (_preview_tx, preview_rx) = watch::channel::<Option<DecodedFrame>>(None);
             let channels = HostOverlayChannels {
-                frame_rx: preview_rx,
                 strokes_rx: host_strokes_watch_rx,
                 live_point_rx: host_live_pt_watch_rx,
                 drawing_event_tx: overlay_drawing_bcast_tx.clone(),
