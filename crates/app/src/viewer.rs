@@ -10,12 +10,17 @@ mod inner {
     use pairwire_protocol::drawing::{DrawMode, DrawPoint, DrawStroke};
     use pairwire_protocol::input::{InputMessage, KeyEvent, MouseClick, MouseMove, MouseScroll};
     use pairwire_protocol::{ControlMessage, ControlRequest, CursorUpdate};
-    use pairwire_transport::{DrawingEvent, QualityTier};
+    use pairwire_transport::{DrawingEvent, QualityTier, TimedStroke};
+    use std::collections::HashMap;
+    use std::time::Instant;
     use tokio::sync::{broadcast, watch};
     use tracing::{debug, info};
 
     use crate::control_state::RuntimeControlState;
     use crate::reconnect::ConnectionState;
+
+    /// Per-peer fading trail: host-coordinate point + arrival time.
+    type LiveTrails = HashMap<u8, Vec<((u16, u16), Instant)>>;
 
     /// Derive a consistent egui color from a peer ID.
     /// Peer 0 (host) → blue, peer 1 (guest) → red, others → hashed hue.
@@ -165,7 +170,8 @@ mod inner {
         cursor_rx: watch::Receiver<Option<CursorUpdate>>,
         conn_rx: watch::Receiver<ConnectionState>,
         input_tx: broadcast::Sender<InputMessage>,
-        drawing_rx: watch::Receiver<Vec<DrawStroke>>,
+        drawing_rx: watch::Receiver<Vec<TimedStroke>>,
+        live_point_rx: watch::Receiver<Option<DrawPoint>>,
         drawing_tx: broadcast::Sender<DrawingEvent>,
         /// Sends mute state to the session (true = muted).
         mute_tx: watch::Sender<bool>,
@@ -202,15 +208,26 @@ mod inner {
         /// (0x01=left, 0x02=right, 0x04=middle). Used to stamp `MouseMove`
         /// events with the correct button state for drag injection.
         held_buttons: u8,
+        /// Per-peer trail of recently received live `DrawPoint`s, with arrival time.
+        /// Used to render a fading laser trail for the in-flight remote stroke.
+        live_trails: LiveTrails,
+        /// Last `DrawPoint` we routed into `live_trails` — used to skip duplicate
+        /// values when the watch channel hasn't actually changed.
+        last_live_point: Option<DrawPoint>,
+        /// Last time we emitted a live `DrawPoint` datagram (epoch ms). Used to
+        /// throttle outgoing live points to roughly 60 Hz.
+        last_live_send_ms: u64,
     }
 
     impl ViewerApp {
+        #[allow(clippy::too_many_arguments)]
         pub fn new(
             frame_rx: watch::Receiver<Option<DecodedFrame>>,
             cursor_rx: watch::Receiver<Option<CursorUpdate>>,
             conn_rx: watch::Receiver<ConnectionState>,
             input_tx: broadcast::Sender<InputMessage>,
-            drawing_rx: watch::Receiver<Vec<DrawStroke>>,
+            drawing_rx: watch::Receiver<Vec<TimedStroke>>,
+            live_point_rx: watch::Receiver<Option<DrawPoint>>,
             drawing_tx: broadcast::Sender<DrawingEvent>,
             mute_tx: watch::Sender<bool>,
             quality_rx: watch::Receiver<QualityTier>,
@@ -223,6 +240,7 @@ mod inner {
                 conn_rx,
                 input_tx,
                 drawing_rx,
+                live_point_rx,
                 drawing_tx,
                 mute_tx,
                 quality_rx,
@@ -242,6 +260,9 @@ mod inner {
                 muted: false,
                 has_pending_request: false,
                 held_buttons: 0,
+                live_trails: HashMap::new(),
+                last_live_point: None,
+                last_live_send_ms: 0,
             }
         }
 
@@ -506,11 +527,11 @@ mod inner {
                 }
 
                 child.add_space(4.0);
-                // Clear button
+                // Clear button — drops only this peer's strokes.
                 if child
                     .add(
                         egui::Button::new(
-                            egui::RichText::new("Clear")
+                            egui::RichText::new("Clear mine")
                                 .color(egui::Color32::from_rgba_unmultiplied(200, 100, 100, 200))
                                 .size(11.0),
                         )
@@ -522,6 +543,26 @@ mod inner {
                         peer_id: Some(self.peer_id),
                     }));
                     self.current_stroke.clear();
+                }
+
+                child.add_space(4.0);
+                // Clear all — drops every peer's strokes (host + guest).
+                if child
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear all")
+                                .color(egui::Color32::from_rgba_unmultiplied(220, 80, 80, 220))
+                                .size(11.0),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    self.send_drawing(DrawingEvent::Clear(pairwire_protocol::drawing::DrawClear {
+                        peer_id: None,
+                    }));
+                    self.current_stroke.clear();
+                    self.live_trails.clear();
                 }
             }
         }
@@ -538,10 +579,6 @@ mod inner {
             tex_size: egui::Vec2,
         ) {
             let strokes = self.drawing_rx.borrow();
-            if strokes.is_empty() && self.current_stroke.is_empty() {
-                return;
-            }
-
             let p = ui.painter();
 
             // Map a host-coordinate point to a viewer pixel position.
@@ -554,18 +591,41 @@ mod inner {
                 )
             };
 
+            // Resolve the stroke's display color: prefer the explicit `color`
+            // field when the sender supplied a non-zero value, else fall back
+            // to a per-peer palette so old senders still render legibly.
+            let resolve_color = |stroke: &DrawStroke| -> egui::Color32 {
+                if stroke.color != [0, 0, 0] {
+                    egui::Color32::from_rgb(stroke.color[0], stroke.color[1], stroke.color[2])
+                } else {
+                    peer_color(stroke.peer_id)
+                }
+            };
+
+            let now = Instant::now();
+            // Laser strokes fade linearly over LASER_FADE_MS; persistent strokes never fade.
+            const LASER_FADE_MS: u128 = 2000;
+            const LASER_BASE_ALPHA: f32 = 220.0;
+            const PERSISTENT_ALPHA: u8 = 230;
+
             // Render completed strokes received from the remote peer.
-            for stroke in strokes.iter() {
+            for timed in strokes.iter() {
+                let stroke = &timed.stroke;
                 if stroke.points.len() < 2 {
                     continue;
                 }
                 let alpha = match stroke.mode {
-                    DrawMode::Laser => 160u8,
-                    DrawMode::Persistent => 230u8,
+                    DrawMode::Laser => {
+                        let age_ms = now.saturating_duration_since(timed.received_at).as_millis();
+                        if age_ms >= LASER_FADE_MS {
+                            continue;
+                        }
+                        let frac = 1.0 - (age_ms as f32 / LASER_FADE_MS as f32);
+                        (LASER_BASE_ALPHA * frac).clamp(0.0, 255.0) as u8
+                    }
+                    DrawMode::Persistent => PERSISTENT_ALPHA,
                 };
-                // Use peer_color for consistency with the cursor overlay.
-                // stroke.color is a fallback for future custom colors.
-                let base = peer_color(stroke.peer_id);
+                let base = resolve_color(stroke);
                 let color =
                     egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
                 let egui_stroke = egui::Stroke::new(3.0, color);
@@ -576,7 +636,7 @@ mod inner {
                 }
             }
 
-            // Render the current in-progress stroke (local, not yet sent).
+            // Render the current in-progress local stroke (local, not yet sent).
             if self.current_stroke.len() >= 2 {
                 let base = peer_color(self.peer_id);
                 let color =
@@ -588,6 +648,49 @@ mod inner {
                     p.line_segment([a, b], egui_stroke);
                 }
             }
+
+            // Render fading live-trail polylines for each remote peer mid-stroke.
+            // Each segment fades over LIVE_TRAIL_MS so the trail looks like a laser.
+            const LIVE_TRAIL_MS: u128 = 700;
+            for (peer, trail) in self.live_trails.iter() {
+                if trail.len() < 2 {
+                    continue;
+                }
+                let base = peer_color(*peer);
+                for window in trail.windows(2) {
+                    let age_ms = now.saturating_duration_since(window[1].1).as_millis();
+                    if age_ms >= LIVE_TRAIL_MS {
+                        continue;
+                    }
+                    let frac = 1.0 - (age_ms as f32 / LIVE_TRAIL_MS as f32);
+                    let alpha = (200.0 * frac).clamp(0.0, 255.0) as u8;
+                    let color =
+                        egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
+                    let a = to_screen(window[0].0.0, window[0].0.1);
+                    let b = to_screen(window[1].0.0, window[1].0.1);
+                    p.line_segment([a, b], egui::Stroke::new(3.0, color));
+                }
+            }
+        }
+
+        /// Drain newly received `DrawPoint`s from the live preview channel into
+        /// per-peer trails, and prune trail entries older than the fade window.
+        fn pump_live_points(&mut self) {
+            const LIVE_TRAIL_MS: u128 = 700;
+            let current = *self.live_point_rx.borrow();
+            if current != self.last_live_point {
+                self.last_live_point = current;
+                if let Some(pt) = current {
+                    let trail = self.live_trails.entry(pt.peer_id).or_default();
+                    trail.push(((pt.x, pt.y), Instant::now()));
+                }
+            }
+            let now = Instant::now();
+            for trail in self.live_trails.values_mut() {
+                trail
+                    .retain(|(_, t)| now.saturating_duration_since(*t).as_millis() < LIVE_TRAIL_MS);
+            }
+            self.live_trails.retain(|_, trail| !trail.is_empty());
         }
 
         fn upload_frame(&mut self, ctx: &Context, frame: &DecodedFrame) {
@@ -631,6 +734,8 @@ mod inner {
             }
             ctx.request_repaint();
 
+            self.pump_live_points();
+
             // Clear the pending-request flag whenever the control state changes
             // (host responded: either granted or silently reverted to HostActive).
             if self.control_rx.has_changed().unwrap_or(false) {
@@ -664,8 +769,10 @@ mod inner {
                         self.render_strokes(ui, rect, display_size, tex_size);
 
                         // Remote cursor overlay — Tuple-style arrow + name tag
-                        if let Some(cursor) = self.cursor_rx.borrow().as_ref() {
-                            if cursor.visible {
+                        if let Some(cursor) = self.cursor_rx.borrow().as_ref()
+                            && cursor.visible
+                        {
+                            {
                                 let cx =
                                     rect.min.x + (cursor.x as f32 / tex_size.x) * display_size.x;
                                 let cy =
@@ -908,8 +1015,16 @@ mod inner {
                                 } else if self.drawing_active {
                                     // Stroke complete — send it.
                                     self.drawing_active = false;
+                                    let c = peer_color(self.peer_id);
+                                    // Tap-to-dot: a single-point stroke would be dropped by the
+                                    // renderer (it needs >=2 points), so synthesise a tiny second
+                                    // point so quick taps render as visible dots.
+                                    if self.current_stroke.len() == 1 {
+                                        let (x, y) = self.current_stroke[0];
+                                        self.current_stroke
+                                            .push((x.saturating_add(1), y.saturating_add(1)));
+                                    }
                                     if self.current_stroke.len() >= 2 {
-                                        let c = peer_color(self.peer_id);
                                         let stroke = DrawStroke {
                                             peer_id: self.peer_id,
                                             color: [c.r(), c.g(), c.b()],
@@ -985,6 +1100,10 @@ mod inner {
 
             // While drawing is active, sample pointer position each frame to build
             // the stroke and send live DrawPoint datagrams.
+            // Live points are throttled: append to the local stroke whenever the
+            // pointer moves >=2 host pixels (so the saved stroke stays smooth) but
+            // only emit a datagram every ~16 ms so we don't flood the wire.
+            const LIVE_POINT_MIN_GAP_MS: u64 = 16;
             if self.drawing_mode && self.drawing_active && pointer_down {
                 if let Some(pos) = latest_pos {
                     if let Some((hx, hy)) = self.map_pointer_to_host(pos) {
@@ -997,11 +1116,16 @@ mod inner {
                         });
                         if moved {
                             self.current_stroke.push((hx, hy));
-                            self.send_drawing(DrawingEvent::Point(DrawPoint {
-                                peer_id: self.peer_id,
-                                x: hx,
-                                y: hy,
-                            }));
+                            if now_ms.saturating_sub(self.last_live_send_ms)
+                                >= LIVE_POINT_MIN_GAP_MS
+                            {
+                                self.last_live_send_ms = now_ms;
+                                self.send_drawing(DrawingEvent::Point(DrawPoint {
+                                    peer_id: self.peer_id,
+                                    x: hx,
+                                    y: hy,
+                                }));
+                            }
                         }
                     }
                 }
@@ -1046,7 +1170,8 @@ mod inner {
         cursor_rx: watch::Receiver<Option<CursorUpdate>>,
         conn_rx: watch::Receiver<ConnectionState>,
         input_tx: broadcast::Sender<InputMessage>,
-        drawing_rx: watch::Receiver<Vec<DrawStroke>>,
+        drawing_rx: watch::Receiver<Vec<TimedStroke>>,
+        live_point_rx: watch::Receiver<Option<DrawPoint>>,
         drawing_tx: broadcast::Sender<DrawingEvent>,
         mute_tx: watch::Sender<bool>,
         quality_rx: watch::Receiver<QualityTier>,
@@ -1067,8 +1192,17 @@ mod inner {
             options,
             Box::new(|_cc| {
                 Ok(Box::new(ViewerApp::new(
-                    frame_rx, cursor_rx, conn_rx, input_tx, drawing_rx, drawing_tx, mute_tx,
-                    quality_rx, control_rx, control_tx,
+                    frame_rx,
+                    cursor_rx,
+                    conn_rx,
+                    input_tx,
+                    drawing_rx,
+                    live_point_rx,
+                    drawing_tx,
+                    mute_tx,
+                    quality_rx,
+                    control_rx,
+                    control_tx,
                 )))
             }),
         )
