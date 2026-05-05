@@ -254,3 +254,15 @@ Each entry should include:
 - **Impact**: The stroke cache (`StrokeCache`) built in feat/drawing-replay-on-reconnect is fully correct and ready: strokes are accumulated persistently across the session, `replay_persistent_strokes` fires immediately on the first (and currently only) guest connect, and the cache+replay path is wired such that a future host-reconnect loop needs zero changes to the cache itself.
 - **Resolution / Next step**: Wrap the `accept → handshake → session` block in a `loop` inside `run_host`. The `stroke_cache` variable is declared above the loop so it naturally survives across iterations. After accepting the annotation stream on each new guest, call `replay_persistent_strokes(&stroke_cache, &draw_event_tx).await` — the call is already there and the doc comment in `drawing.rs` spells out exactly where.
 - **Key insight**: iroh's `Endpoint` is reusable — calling `endpoint.accept().await` again after the first connection closes is perfectly valid and will accept the next inbound connection. No re-bind needed.
+
+### 2026-05-04 — Host accept loop + session-state watch + overlay status banner (PR-B)
+- **Area**: session, reconnect, overlay, gui
+- **What**: Implemented the host accept loop in `feat/host-reconnect-loop`. Key design decisions:
+  - **Capture lifetime**: The capture thread + tee thread are started once on the first loop iteration and kept alive across reconnects. An `Arc<Mutex<Option<SyncSender<RawFrame>>>>` (`encode_tx_slot`) lets the tee thread forward frames only when an encoder is wired. Between connections the tee drops frames silently via `try_send` — no spam logging.
+  - **Tray relay**: The original `tray_action_rx: Option<mpsc::Receiver<...>>` can only be consumed once. To give each loop iteration a fresh subscription, the relay uses a `tokio::sync::broadcast::Sender`. Each iteration subscribes with `.subscribe()` and bridges broadcast → per-conn mpsc.
+  - **Overlay lifetime**: `host_strokes_watch_tx`, `host_live_pt_watch_tx`, `overlay_drawing_bcast_tx`, and `session_state_tx` are all created before the loop and survive across reconnects. The overlay holds the receivers throughout the host process lifetime.
+  - **Second-guest rejection**: While a guest is connected, the inner wait loop uses `tokio::select!` between `conn.closed()` and `transport.accept()`. New connections are `drop()`ped immediately with a debug log (`TODO(multi-guest)`).
+  - **Overlay auto-close**: `session_state_tx` is dropped when `run_host` returns. The overlay detects `state_rx.has_changed().is_err()` (sender dropped) and issues `ctx.send_viewport_cmd(ViewportCommand::Close)`.
+  - **Status banner**: `render_session_banner` paints a small semi-transparent pill at top-center. Showing "Waiting for guest to connect…" or "Connected: <peer_id_short>".
+- **watch::Receiver::has_changed()**: Returns `Err` when the sender is dropped. Safe to use as a channel-closed detector without blocking.
+- **teardown helpers**: `teardown_drawing`, `teardown_clipboard`, `teardown_input`, `teardown_audio` extracted to avoid duplication between the normal loop teardown and the early-exit (transport closed) path.
