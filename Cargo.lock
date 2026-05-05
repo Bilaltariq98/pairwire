@@ -4394,6 +4394,7 @@ dependencies = [
  "pairwire-terminal",
  "pairwire-transport",
  "rand 0.9.2",
+ "raw-window-handle",
  "tokio",
  "tracing",
  "tracing-subscriber",

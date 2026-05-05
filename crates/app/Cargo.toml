@@ -26,7 +26,7 @@ arboard = { workspace = true, optional = true }
 [features]
 default = ["tray"]
 # Enable the graphical viewer. Requires a display and GPU.
-gui = ["dep:egui", "dep:eframe"]
+gui = ["dep:egui", "dep:eframe", "dep:raw-window-handle", "dep:objc2-app-kit", "dep:objc2-foundation"]
 # Enable the macOS menu bar / system tray icon.
 tray = ["dep:tray-icon", "dep:arboard", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # Enable H.264 encode/decode. Requires system FFmpeg libraries.
@@ -52,4 +52,19 @@ version = "0.21"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3", optional = true, features = ["NSDate", "NSString", "NSThread"] }
-objc2-app-kit = { version = "0.3", optional = true, features = ["NSApplication", "NSRunningApplication", "NSEvent"] }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSApplication",
+    "NSRunningApplication",
+    "NSEvent",
+    # Required for transparent overlay: NSView.window() + NSWindow click-through
+    # NSScreen for sizing the overlay to the desktop without true-fullscreen mode
+    # NSResponder is the superclass NSWindow needs for level/collection behavior
+    "NSView",
+    "NSWindow",
+    "NSColor",
+    "NSScreen",
+    "NSResponder",
+] }
+# raw-window-handle is a transitive dep of winit/eframe; pull it in directly so
+# we can extract the NSView* from eframe::Frame in host_overlay_transparent.rs.
+raw-window-handle = { version = "0.6", optional = true }

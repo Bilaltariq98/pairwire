@@ -19,6 +19,9 @@ mod inner {
     use crate::control_state::RuntimeControlState;
     use crate::reconnect::ConnectionState;
 
+    /// Per-peer fading trail: host-coordinate point + arrival time.
+    type LiveTrails = HashMap<u8, Vec<((u16, u16), Instant)>>;
+
     /// Derive a consistent egui color from a peer ID.
     /// Peer 0 (host) → blue, peer 1 (guest) → red, others → hashed hue.
     fn peer_color(peer_id: u8) -> egui::Color32 {
@@ -207,7 +210,7 @@ mod inner {
         held_buttons: u8,
         /// Per-peer trail of recently received live `DrawPoint`s, with arrival time.
         /// Used to render a fading laser trail for the in-flight remote stroke.
-        live_trails: HashMap<u8, Vec<((u16, u16), Instant)>>,
+        live_trails: LiveTrails,
         /// Last `DrawPoint` we routed into `live_trails` — used to skip duplicate
         /// values when the watch channel hasn't actually changed.
         last_live_point: Option<DrawPoint>,
@@ -217,6 +220,7 @@ mod inner {
     }
 
     impl ViewerApp {
+        #[allow(clippy::too_many_arguments)]
         pub fn new(
             frame_rx: watch::Receiver<Option<DecodedFrame>>,
             cursor_rx: watch::Receiver<Option<CursorUpdate>>,
@@ -765,8 +769,10 @@ mod inner {
                         self.render_strokes(ui, rect, display_size, tex_size);
 
                         // Remote cursor overlay — Tuple-style arrow + name tag
-                        if let Some(cursor) = self.cursor_rx.borrow().as_ref() {
-                            if cursor.visible {
+                        if let Some(cursor) = self.cursor_rx.borrow().as_ref()
+                            && cursor.visible
+                        {
+                            {
                                 let cx =
                                     rect.min.x + (cursor.x as f32 / tex_size.x) * display_size.x;
                                 let cy =
