@@ -268,6 +268,12 @@ Each entry should include:
   For single-use select! branches (no loop), inline the same pattern in a dedicated async block.
 - **Key insight**: `wait_for()` is convenient for `block_on` contexts on the main thread but unsafe in `rt.spawn()` futures. Prefer `changed()` + `borrow()` everywhere for consistency.
 
+### 2026-05-05 — Multi-guest fan-out: broadcast::channel works but has no keyframe-on-join mechanism
+- **Area**: session, multi-guest, encode
+- **What**: spike/multi-guest-p2p uses `tokio::sync::broadcast::channel<Arc<EncodedPacket>>` to tee encoded frames to N per-guest publisher tasks. When a new guest joins mid-session, they subscribe to the broadcast but their first received frame may be a delta (P-frame). The decode loop in `DecodeThread` already handles this by discarding deltas until the first keyframe (`waiting_for_keyframe` flag), so no corruption occurs — but the new guest sees a black screen until the next scheduled IDR.
+- **Resolution**: For the spike, this is acceptable. The encoder emits a keyframe every `keyframe_interval_secs` (default ~2s), so new guests wait at most ~2s for their first image. To fix for production, add `force_keyframe: Arc<AtomicBool>` to `EncodeThread` — the encoder polls it each frame and emits an IDR immediately when set. See `TODO(multi-guest-keyframe)` in `session.rs`.
+- **Key insight**: `broadcast::Receiver::recv()` returns `RecvError::Lagged(n)` when the subscriber falls too far behind — this must `continue` (not `break`) to stay alive. See 2026-04-30 entry for the same pattern in HUD.
+
 ### 2026-05-04 — Host does not support guest reconnect today; iroh connection is 1:1 per `run_host` invocation
 - **Area**: reconnect, session, drawing
 - **What**: The guest has a full reconnect loop (`reconnect.rs` / `with_reconnect`) that re-calls `run_join` on disconnect. The host has NO equivalent loop — `run_host` calls `transport.accept()` exactly once, processes one guest, then returns. When the guest reconnects after a drop, it dials a new iroh connection to the same endpoint. The host endpoint (iroh `Endpoint`) does stay alive after the first guest disconnects (the `Endpoint` is not closed until `transport.close()` at the end of `run_host`), but `run_host` never calls `accept()` a second time, so the reconnecting guest's TCP-style SYN goes unacknowledged and the reconnect fails.

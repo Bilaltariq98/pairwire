@@ -534,8 +534,9 @@ mod inner {
             let state = self.state_rx.borrow();
             let label = match &*state {
                 HostSessionState::Waiting => "Waiting for guest to connect…".to_owned(),
-                HostSessionState::Connected { peer_id_short } => {
-                    format!("Connected: {peer_id_short}")
+                HostSessionState::Connected { guests } => {
+                    let ids = guests.join(", ");
+                    format!("{} guest(s) connected: {ids}", guests.len())
                 }
             };
             drop(state);

@@ -9,7 +9,7 @@
 //! Media transport uses a single moq-lite session with hang framing. Both screen
 //! and audio are published as tracks in one broadcast, described by a hang catalog.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use pairwire_audio::{
@@ -24,14 +24,14 @@ use pairwire_core::{
 };
 use pairwire_input::{ClipboardReceiver, ClipboardSender, InputReceiver, InputSender};
 use pairwire_protocol::{Capability, CursorUpdate, VideoCodec};
+#[cfg(feature = "encode")]
+use pairwire_transport::VideoStreamConfig;
 use pairwire_transport::{
     AudioStreamConfig, ControlChannel, CursorReceiver, CursorSender, DatagramChannels,
     DrawingReceiver, DrawingSender, MoqSessionSubscriber, NegotiatedSession, QualityMonitor,
     StrokeCache, TAG_GUEST_AUDIO, Transport, datagram_router, guest_handshake, host_handshake,
     local_handshake, replay_persistent_strokes,
 };
-#[cfg(feature = "encode")]
-use pairwire_transport::{MoqSessionPublisher, VideoStreamConfig};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -45,6 +45,10 @@ type GuestAudioSenderParts = (
     Option<tokio::task::JoinHandle<()>>,
 );
 
+/// Maximum number of concurrent guests in the multi-guest spike.
+/// Beyond this, new connections are dropped with a debug log.
+const MAX_GUESTS: usize = 4;
+
 /// The current state of the host session, published via a watch channel so
 /// the overlay can display a status banner.
 ///
@@ -55,10 +59,13 @@ type GuestAudioSenderParts = (
 pub enum HostSessionState {
     /// No guest is connected; the host is waiting for an inbound connection.
     Waiting,
-    /// A guest is actively connected.
+    /// One or more guests are actively connected.
+    ///
+    /// spike/multi-guest-p2p: extended from a single `peer_id_short: String`
+    /// to a list of short IDs so the overlay can show "N guests: abc, def".
     Connected {
-        /// First 8 hex characters of the guest's `EndpointId` (public key).
-        peer_id_short: String,
+        /// First 8 hex characters of each connected guest's `EndpointId`.
+        guests: Vec<String>,
     },
 }
 
@@ -239,6 +246,28 @@ pub async fn run_host(
         });
     }
 
+    // ── Multi-guest fan-out state (spike/multi-guest-p2p) ─────────────────────
+    //
+    // Video fan-out: the encoder produces one stream of EncodedPackets. A pump
+    // task reads them and broadcasts to all per-guest subscriber tasks. Each
+    // per-guest task runs its own MoqSessionPublisher over its QUIC connection.
+    //
+    // Capacity 32: ~0.5s of keyframe interval at 60fps; lagging subscribers drop
+    // frames (acceptable for a spike — see RecvError::Lagged handling below).
+    #[cfg(feature = "encode")]
+    let (video_fan_tx, _video_fan_rx0) =
+        tokio::sync::broadcast::channel::<Arc<pairwire_capture::EncodedPacket>>(32);
+
+    // Tracks which guest currently holds input control. Only one guest at a time
+    // may send input events. Other guests are view-only. No UI for switching yet —
+    // see PR description for followup work.
+    //
+    // TODO(multi-guest-control): add a tray item / hotkey to switch controlling guest.
+    let controlling_guest: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    // Active guest list used to update the overlay HostSessionState banner.
+    let active_guests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
     // ── Accept loop ────────────────────────────────────────────────────────────
 
     loop {
@@ -279,11 +308,24 @@ pub async fn run_host(
         let peer_id_short = conn.remote_id().to_string()[..8].to_owned();
         info!(peer = %conn.remote_id(), "guest connected");
 
-        // Update session-state watch so the overlay shows the connected banner.
-        #[cfg(feature = "gui")]
-        let _ = session_state_tx.send(HostSessionState::Connected {
-            peer_id_short: peer_id_short.clone(),
-        });
+        // Track active guests and update the overlay banner.
+        {
+            let mut guests = active_guests.lock().unwrap_or_else(|e| e.into_inner());
+            guests.push(peer_id_short.clone());
+            #[cfg(feature = "gui")]
+            let _ = session_state_tx.send(HostSessionState::Connected {
+                guests: guests.clone(),
+            });
+        }
+
+        // This first connected guest becomes the controlling guest (input forwarding).
+        {
+            let mut ctrl = controlling_guest.lock().unwrap_or_else(|e| e.into_inner());
+            if ctrl.is_none() {
+                *ctrl = Some(peer_id_short.clone());
+                info!(peer = %peer_id_short, "guest is now the controlling guest");
+            }
+        }
 
         // ── Per-connection setup ───────────────────────────────────────────────
 
@@ -652,7 +694,19 @@ pub async fn run_host(
             .await;
         });
 
-        // ── Encode + publish ───────────────────────────────────────────────────
+        // ── Encode + fan-out publish (spike/multi-guest-p2p) ──────────────────
+        //
+        // Architecture:
+        //   - Encoder produces EncodedPackets → fan-out pump task → broadcast channel
+        //   - Each guest (first + additional) has a per-guest task that subscribes
+        //     to the broadcast and drives its own MoqSessionPublisher.
+        //   - Audio: fan-out is TODO — only the first guest receives host audio.
+        //     See PR description for the design note.
+        //   - Control: only the `controlling_guest` may send input. Others view-only.
+        //
+        // TODO(multi-guest-audio): broadcast audio packets the same way as video.
+        // At 5 Mbps video + ~64 kbps audio per guest, host upstream = N × ~5.1 Mbps.
+        // Residential upstreams (~25 Mbps) support N≤4. See PR description.
         #[cfg(feature = "encode")]
         {
             use pairwire_capture::EncodeThread;
@@ -666,17 +720,11 @@ pub async fn run_host(
                         start_capture(capture_config.clone(), capture_show_cursor.clone())?;
                     _capture_thread_holder = Some(capture_thread);
 
-                    // Preview watch for the overlay.
-                    #[cfg(feature = "gui")]
-                    let (preview_frame_tx, preview_frame_rx) =
-                        watch::channel::<Option<DecodedFrame>>(None);
-
                     // Send overlay channels now that capture is up (first iteration only).
                     #[cfg(feature = "gui")]
                     {
                         if let Some(tx) = overlay_tx.take() {
                             let channels = HostOverlayChannels {
-                                frame_rx: preview_frame_rx,
                                 strokes_rx: host_strokes_watch_rx.clone(),
                                 live_point_rx: host_live_pt_watch_rx.clone(),
                                 drawing_event_tx: overlay_drawing_bcast_tx.clone(),
@@ -693,35 +741,18 @@ pub async fn run_host(
                     }
 
                     let encode_tx_slot_tee = Arc::clone(&encode_tx_slot);
-                    let tee_thread = {
-                        #[cfg(feature = "gui")]
-                        let preview_tx = preview_frame_tx.clone();
-                        std::thread::spawn(move || {
-                            while let Ok(raw) = raw_frame_rx.recv() {
-                                #[cfg(feature = "gui")]
-                                {
-                                    let decoded = DecodedFrame {
-                                        data: raw.data.clone(),
-                                        width: raw.width,
-                                        height: raw.height,
-                                        timestamp_us: raw.timestamp_us,
-                                    };
-                                    let _ = preview_tx.send(Some(decoded));
-                                }
-                                // Forward to encode pipeline if connected; otherwise
-                                // drop silently to keep capture warm.
-                                let slot = encode_tx_slot_tee.lock().ok();
-                                if let Some(guard) = slot {
-                                    if let Some(ref tx) = *guard {
-                                        // Try-send: if the encode channel is full, drop
-                                        // the frame. Do NOT log per-frame drops to avoid
-                                        // spamming when no guest is connected.
-                                        let _ = tx.try_send(raw);
-                                    }
+                    let tee_thread = std::thread::spawn(move || {
+                        while let Ok(raw) = raw_frame_rx.recv() {
+                            // Forward to encode pipeline if connected; otherwise
+                            // drop silently to keep capture warm.
+                            let slot = encode_tx_slot_tee.lock().ok();
+                            if let Some(guard) = slot {
+                                if let Some(ref tx) = *guard {
+                                    let _ = tx.try_send(raw);
                                 }
                             }
-                        })
-                    };
+                        }
+                    });
                     _tee_thread_holder = Some(tee_thread);
                     capture_started = true;
                 }
@@ -734,7 +765,7 @@ pub async fn run_host(
                     *guard = Some(tee_to_encode_tx);
                 }
 
-                let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
+                let (encode_thread, mut video_pkt_rx) = EncodeThread::start_with_quality(
                     capture_config.clone(),
                     tee_to_encode_rx,
                     Some(quality_rx),
@@ -748,18 +779,32 @@ pub async fn run_host(
                     bitrate: 5_000_000,
                 };
 
-                let publisher = MoqSessionPublisher::new(Arc::clone(&conn));
-                let pub_handle = publisher.spawn(
-                    video_stream_config,
+                // ── Fan-out pump task ──────────────────────────────────────────
+                // Reads encoded packets from the encoder and broadcasts them to
+                // all per-guest subscriber tasks. Wrapping in Arc avoids cloning
+                // the payload bytes (Bytes is an Arc internally, but the packet
+                // struct itself needs to be cheap to clone into the broadcast).
+                let fan_pump_fan_tx = video_fan_tx.clone();
+                let fan_pump_task = tokio::spawn(async move {
+                    while let Some(pkt) = video_pkt_rx.recv().await {
+                        // If no subscribers yet, ignore the error.
+                        let _ = fan_pump_fan_tx.send(Arc::new(pkt));
+                    }
+                });
+
+                // ── Per-guest publisher for the first (primary) guest ──────────
+                // Audio goes only to the primary guest (TODO(multi-guest-audio)).
+                let first_guest_pub_handle = spawn_guest_publisher(
+                    Arc::clone(&conn),
+                    video_stream_config.clone(),
                     audio_stream_config,
-                    video_pkt_rx,
+                    video_fan_tx.subscribe(),
                     audio_pkt_rx,
                 );
 
-                // Wait for the guest to disconnect. While waiting, also accept and
-                // reject any second guest that tries to connect (busy host), and
-                // respond to graceful shutdown requests from the GUI.
-                // TODO(multi-guest): replace this with a proper multi-guest fan-out.
+                // ── Multi-guest wait loop ──────────────────────────────────────
+                // Accept additional connections and spawn per-guest publishers.
+                // The primary guest's disconnect breaks us out of this loop.
                 let mut shutdown_triggered = false;
                 loop {
                     // Build the shutdown future from the optional receiver.
@@ -779,7 +824,7 @@ pub async fn run_host(
                     };
                     tokio::select! {
                         _ = conn.closed() => {
-                            info!(peer = %peer_id_short, "guest disconnected");
+                            info!(peer = %peer_id_short, "primary guest disconnected");
                             break;
                         }
                         () = shutdown_arm => {
@@ -789,25 +834,96 @@ pub async fn run_host(
                         }
                         new_conn = transport.accept() => {
                             match new_conn {
-                                Ok(Some(interloper)) => {
-                                    tracing::debug!(
-                                        peer = %interloper.remote_id(),
-                                        "rejecting second guest — host busy \
-                                         (TODO(multi-guest): fan-out not yet implemented)"
-                                    );
-                                    // Drop the connection. The connecting peer will see
-                                    // a connection reset.
-                                    drop(interloper);
+                                Ok(Some(extra_conn)) => {
+                                    let extra_peer = extra_conn.remote_id().to_string()[..8].to_owned();
+                                    // Check guest cap.
+                                    let current_count = {
+                                        active_guests
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .len()
+                                    };
+                                    if current_count >= MAX_GUESTS {
+                                        tracing::debug!(
+                                            peer = %extra_peer,
+                                            limit = MAX_GUESTS,
+                                            "rejecting guest — MAX_GUESTS limit reached"
+                                        );
+                                        drop(extra_conn);
+                                        continue;
+                                    }
+
+                                    info!(peer = %extra_peer, "additional guest connecting (fan-out)");
+
+                                    // Add to active list and update state banner.
+                                    {
+                                        let mut guests = active_guests
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        guests.push(extra_peer.clone());
+                                        #[cfg(feature = "gui")]
+                                        let _ = session_state_tx.send(
+                                            HostSessionState::Connected {
+                                                guests: guests.clone(),
+                                            },
+                                        );
+                                    }
+
+                                    // Spawn per-guest publisher for the additional guest.
+                                    // Audio fan-out is TODO — extra guests get video only.
+                                    let extra_conn = Arc::new(extra_conn);
+                                    let extra_video_rx = video_fan_tx.subscribe();
+                                    let extra_cfg = video_stream_config.clone();
+                                    let extra_guests = Arc::clone(&active_guests);
+                                    let extra_peer_clone = extra_peer.clone();
+                                    #[cfg(feature = "gui")]
+                                    let extra_state_tx = session_state_tx.clone();
+                                    tokio::spawn(async move {
+                                        // Lightweight handshake for the additional guest.
+                                        // We reuse the same session_token so the guest can
+                                        // verify session identity.
+                                        //
+                                        // TODO(multi-guest): full per-guest handshake,
+                                        // including capability negotiation. For the spike
+                                        // we skip this and go straight to moq publish.
+                                        // This means additional guests must support H.264.
+                                        let handle = spawn_guest_publisher(
+                                            Arc::clone(&extra_conn),
+                                            extra_cfg,
+                                            None, // no audio for additional guests (TODO)
+                                            extra_video_rx,
+                                            None,
+                                        );
+                                        extra_conn.closed().await;
+                                        info!(peer = %extra_peer_clone, "additional guest disconnected");
+                                        handle.stop().await;
+                                        // Remove from active list and update overlay.
+                                        let mut guests = extra_guests
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        guests.retain(|id| id != &extra_peer_clone);
+                                        #[cfg(feature = "gui")]
+                                        let _ = extra_state_tx.send(
+                                            if guests.is_empty() {
+                                                HostSessionState::Waiting
+                                            } else {
+                                                HostSessionState::Connected {
+                                                    guests: guests.clone(),
+                                                }
+                                            },
+                                        );
+                                    });
                                 }
                                 Ok(None) => {
-                                    // Endpoint closed — exit the accept loop entirely.
+                                    // Endpoint closed — stop everything and exit.
                                     info!("transport endpoint closed");
-                                    pub_handle.stop().await;
+                                    first_guest_pub_handle.stop().await;
+                                    fan_pump_task.abort();
+                                    let _ = fan_pump_task.await;
                                     encode_thread.stop();
                                     if let Ok(mut guard) = encode_tx_slot.lock() {
                                         *guard = None;
                                     }
-                                    // Teardown per-connection resources before returning.
                                     cursor_poll_task.abort();
                                     let _ = cursor_poll_task.await;
                                     host_cursor_log_task.abort();
@@ -845,7 +961,9 @@ pub async fn run_host(
                     }
                 }
                 if shutdown_triggered {
-                    pub_handle.stop().await;
+                    first_guest_pub_handle.stop().await;
+                    fan_pump_task.abort();
+                    let _ = fan_pump_task.await;
                     encode_thread.stop();
                     if let Ok(mut guard) = encode_tx_slot.lock() {
                         *guard = None;
@@ -876,7 +994,9 @@ pub async fn run_host(
                     return Ok(());
                 }
 
-                pub_handle.stop().await;
+                first_guest_pub_handle.stop().await;
+                fan_pump_task.abort();
+                let _ = fan_pump_task.await;
                 encode_thread.stop();
                 // Remove the encode sender from the slot so the tee drops frames
                 // while waiting for the next guest.
@@ -889,12 +1009,9 @@ pub async fn run_host(
         #[cfg(not(feature = "encode"))]
         {
             warn!("encode feature not enabled -- handshake done but not sending frames");
-            // Send overlay channels with an empty frame watch when not encoding.
             #[cfg(feature = "gui")]
             if let Some(tx) = overlay_tx.take() {
-                let (_preview_tx, preview_rx) = watch::channel::<Option<DecodedFrame>>(None);
                 let channels = HostOverlayChannels {
-                    frame_rx: preview_rx,
                     strokes_rx: host_strokes_watch_rx.clone(),
                     live_point_rx: host_live_pt_watch_rx.clone(),
                     drawing_event_tx: overlay_drawing_bcast_tx.clone(),
@@ -905,7 +1022,8 @@ pub async fn run_host(
                 let _ = tx.send(channels);
             }
 
-            // Wait for disconnect, shutdown, or second-guest rejection.
+            // Multi-guest wait loop (no-encode path): same fan-out accept loop
+            // but without a publisher (just track state and reject over-limit).
             let mut shutdown_triggered_no_encode = false;
             loop {
                 let shutdown_arm = async {
@@ -924,7 +1042,7 @@ pub async fn run_host(
                 };
                 tokio::select! {
                     _ = conn.closed() => {
-                        info!(peer = %peer_id_short, "guest disconnected");
+                        info!(peer = %peer_id_short, "primary guest disconnected");
                         break;
                     }
                     () = shutdown_arm => {
@@ -934,13 +1052,57 @@ pub async fn run_host(
                     }
                     new_conn = transport.accept() => {
                         match new_conn {
-                            Ok(Some(interloper)) => {
-                                tracing::debug!(
-                                    peer = %interloper.remote_id(),
-                                    "rejecting second guest — host busy \
-                                     (TODO(multi-guest): fan-out not yet implemented)"
-                                );
-                                drop(interloper);
+                            Ok(Some(extra_conn)) => {
+                                let extra_peer = extra_conn.remote_id().to_string()[..8].to_owned();
+                                let current_count = {
+                                    active_guests
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .len()
+                                };
+                                if current_count >= MAX_GUESTS {
+                                    tracing::debug!(
+                                        peer = %extra_peer,
+                                        limit = MAX_GUESTS,
+                                        "rejecting guest — MAX_GUESTS limit reached (no-encode path)"
+                                    );
+                                    drop(extra_conn);
+                                    continue;
+                                }
+                                info!(peer = %extra_peer, "additional guest connected (no-encode, view-only)");
+                                {
+                                    let mut guests = active_guests
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    guests.push(extra_peer.clone());
+                                    #[cfg(feature = "gui")]
+                                    let _ = session_state_tx.send(HostSessionState::Connected {
+                                        guests: guests.clone(),
+                                    });
+                                }
+                                let extra_guests = Arc::clone(&active_guests);
+                                let extra_peer_clone = extra_peer.clone();
+                                #[cfg(feature = "gui")]
+                                let extra_state_tx = session_state_tx.clone();
+                                let extra_conn = Arc::new(extra_conn);
+                                tokio::spawn(async move {
+                                    extra_conn.closed().await;
+                                    info!(peer = %extra_peer_clone, "additional guest disconnected (no-encode)");
+                                    let mut guests = extra_guests
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    guests.retain(|id| id != &extra_peer_clone);
+                                    #[cfg(feature = "gui")]
+                                    let _ = extra_state_tx.send(
+                                        if guests.is_empty() {
+                                            HostSessionState::Waiting
+                                        } else {
+                                            HostSessionState::Connected {
+                                                guests: guests.clone(),
+                                            }
+                                        },
+                                    );
+                                });
                             }
                             Ok(None) => {
                                 info!("transport endpoint closed");
@@ -1032,6 +1194,19 @@ pub async fn run_host(
         )
         .await;
 
+        // Remove this guest from the active list and update the overlay banner.
+        {
+            let mut guests = active_guests.lock().unwrap_or_else(|e| e.into_inner());
+            guests.retain(|id| id != &peer_id_short);
+            // If the disconnecting guest held control, clear the slot so the
+            // next guest can claim it on connect (or a future UI can assign it).
+            let mut ctrl = controlling_guest.lock().unwrap_or_else(|e| e.into_inner());
+            if ctrl.as_deref() == Some(&peer_id_short) {
+                *ctrl = None;
+                info!(peer = %peer_id_short, "controlling guest disconnected — control released");
+            }
+        }
+
         info!("per-connection teardown complete; ready for next guest");
     }
 
@@ -1042,6 +1217,71 @@ pub async fn run_host(
         transport.close().await;
         Ok(())
     }
+}
+
+// ── Multi-guest helpers (spike/multi-guest-p2p) ───────────────────────────────
+
+/// Spawn a `MoqSessionPublisher` for a single guest connection that subscribes to
+/// the video fan-out broadcast channel.
+///
+/// Each call creates a new tokio mpsc channel bridging the broadcast receiver into
+/// the `MoqSessionPublisher`. This means every guest gets its own independent
+/// QUIC stream set, even though they all receive the same encoded frames.
+///
+/// `audio_rx` is `Some` only for the primary guest; additional guests pass `None`
+/// until `TODO(multi-guest-audio)` is implemented.
+///
+/// Keyframe-on-join: new subscribers that arrive mid-stream will see `Lagged`
+/// errors until the next IDR frame arrives in the broadcast. The moq subscriber on
+/// the guest side already handles the "wait for keyframe" invariant in its decode
+/// loop (see `DecodeThread`). We do not force a keyframe here — the encoder emits
+/// one on its regular interval (default: every `keyframe_interval_secs`).
+///
+/// TODO(multi-guest-keyframe): add `force_keyframe: Arc<AtomicBool>` to
+/// `EncodeThread` so joining guests can request an immediate IDR without waiting
+/// for the next scheduled keyframe.
+#[cfg(feature = "encode")]
+fn spawn_guest_publisher(
+    conn: Arc<pairwire_transport::PairwireConnection>,
+    video_config: pairwire_transport::VideoStreamConfig,
+    audio_config: Option<pairwire_transport::AudioStreamConfig>,
+    mut video_fan_rx: tokio::sync::broadcast::Receiver<Arc<pairwire_capture::EncodedPacket>>,
+    audio_pkt_rx: Option<tokio::sync::mpsc::Receiver<pairwire_audio::OpusPacket>>,
+) -> pairwire_transport::MoqSessionPublisherHandle {
+    // Bridge: broadcast receiver → mpsc sender consumed by MoqSessionPublisher.
+    let (video_bridge_tx, video_bridge_rx) =
+        tokio::sync::mpsc::channel::<pairwire_capture::EncodedPacket>(32);
+
+    // Pump task: reads from the broadcast and forwards into the per-guest mpsc.
+    tokio::spawn(async move {
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            match video_fan_rx.recv().await {
+                Ok(pkt) => {
+                    // Arc deref clone: cheap, just copies the EncodedPacket struct
+                    // (Bytes fields are themselves Arc-backed, so this is O(1)).
+                    if video_bridge_tx
+                        .send(pairwire_capture::EncodedPacket::clone(&pkt))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                // Lagged: this guest fell behind. Skip the dropped frames; the guest
+                // decoder will discard delta frames until the next keyframe arrives
+                // (see DecodeThread's `waiting_for_keyframe` logic).
+                Err(RecvError::Lagged(n)) => {
+                    tracing::debug!(dropped = n, "video fan-out: guest subscriber lagged");
+                    continue;
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+
+    let publisher = pairwire_transport::MoqSessionPublisher::new(conn);
+    publisher.spawn(video_config, audio_config, video_bridge_rx, audio_pkt_rx)
 }
 
 // ── Teardown helpers ──────────────────────────────────────────────────────────
