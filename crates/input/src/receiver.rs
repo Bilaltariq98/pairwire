@@ -176,7 +176,12 @@ impl InputReceiver {
                             Err(e) => {
                                 // EOF or connection close — normal shutdown
                                 let msg = e.to_string();
-                                if msg.contains("closed") || msg.contains("reset") || msg.contains("eof") {
+                                if msg.contains("closed")
+                                    || msg.contains("reset")
+                                    || msg.contains("eof")
+                                    || msg.contains("connection lost")
+                                    || msg.contains("timed out")
+                                {
                                     break;
                                 }
                                 warn!(error = %e, "input recv error");

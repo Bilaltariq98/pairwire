@@ -220,6 +220,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     let (cursor_tx, cursor_rx) =
         tokio::sync::watch::channel::<Option<pairwire_protocol::CursorUpdate>>(None);
     let (conn_tx, conn_rx) = tokio::sync::watch::channel(ConnectionState::Connected);
+    let conn_tx = std::sync::Arc::new(conn_tx);
+    let conn_tx_for_session = std::sync::Arc::clone(&conn_tx);
     // Drawing strokes watch: session publishes accumulated strokes, viewer renders them.
     let (drawing_strokes_tx, drawing_strokes_rx) =
         tokio::sync::watch::channel::<Vec<pairwire_transport::TimedStroke>>(Vec::new());
@@ -278,6 +280,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     let session_handle = rt.spawn(async move {
         let policy = ReconnectPolicy::default();
         reconnect::with_reconnect(policy, conn_tx, move || {
+            let conn_tx_for_session = std::sync::Arc::clone(&conn_tx_for_session);
             let frame_tx = frame_tx.clone();
             let cursor_tx = cursor_tx.clone();
             let drawing_strokes_tx = drawing_strokes_tx.clone();
@@ -335,6 +338,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                     control_state_tx,
                     control_request_bridge_rx,
                     shutdown_rx,
+                    conn_tx_for_session,
                 )
                 .await
             }
@@ -375,11 +379,21 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
             // frame instead of relying on the idle-timeout to detect the drop.
             let _ = shutdown_tx.send(true);
             rt.block_on(async {
-                match session_handle.await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => eprintln!("session error: {e}"),
-                    Err(e) if e.is_cancelled() => {}
-                    Err(e) => eprintln!("task panic: {e}"),
+                let mut session_handle = session_handle;
+                match tokio::time::timeout(std::time::Duration::from_secs(5), &mut session_handle)
+                    .await
+                {
+                    Ok(Ok(Ok(()))) => {}
+                    Ok(Ok(Err(e))) => eprintln!("session error: {e}"),
+                    Ok(Err(e)) if e.is_cancelled() => {}
+                    Ok(Err(e)) => eprintln!("task panic: {e}"),
+                    Err(_) => {
+                        tracing::warn!(
+                            "session did not finish within 5s after viewer close; aborting"
+                        );
+                        session_handle.abort();
+                        let _ = session_handle.await;
+                    }
                 }
             });
 

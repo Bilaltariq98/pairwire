@@ -73,6 +73,8 @@ impl ControlChannel {
                             || s.contains("eof")
                             || s.contains("reset")
                             || s.contains("finish")
+                            || s.contains("connection lost")
+                            || s.contains("timed out")
                         {
                             info!("control channel recv stream closed cleanly");
                         } else {

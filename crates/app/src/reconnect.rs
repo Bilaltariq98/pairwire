@@ -9,6 +9,7 @@
 //! - Backoff: 1s, 2s, 4s
 //! - After 3 failures: emit `ConnectionState::Lost` and give up
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::{sync::watch, time};
@@ -69,7 +70,7 @@ impl ReconnectPolicy {
 /// Returns `Ok(())` if the session ended cleanly, `Err` after all retries fail.
 pub async fn with_reconnect<F, Fut>(
     policy: ReconnectPolicy,
-    state_tx: watch::Sender<ConnectionState>,
+    state_tx: Arc<watch::Sender<ConnectionState>>,
     mut connect_fn: F,
 ) -> anyhow::Result<()>
 where
@@ -132,7 +133,8 @@ mod tests {
     #[tokio::test]
     async fn succeeds_on_first_attempt() {
         let (tx, rx) = watch::channel(ConnectionState::Connected);
-        let result = with_reconnect(ReconnectPolicy::default(), tx, || async { Ok(()) }).await;
+        let result =
+            with_reconnect(ReconnectPolicy::default(), Arc::new(tx), || async { Ok(()) }).await;
         assert!(result.is_ok());
         assert_eq!(*rx.borrow(), ConnectionState::Connected);
     }
@@ -144,7 +146,8 @@ mod tests {
             base_delay: Duration::from_millis(1), // fast for tests
         };
         let (tx, rx) = watch::channel(ConnectionState::Connected);
-        let result = with_reconnect(policy, tx, || async { anyhow::bail!("always fails") }).await;
+        let result =
+            with_reconnect(policy, Arc::new(tx), || async { anyhow::bail!("always fails") }).await;
         assert!(result.is_err());
         assert_eq!(*rx.borrow(), ConnectionState::Lost);
     }
@@ -159,7 +162,7 @@ mod tests {
         let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let attempt_clone = std::sync::Arc::clone(&attempt);
 
-        let result = with_reconnect(policy, tx, move || {
+        let result = with_reconnect(policy, Arc::new(tx), move || {
             let a = std::sync::Arc::clone(&attempt_clone);
             async move {
                 let n = a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -204,7 +207,7 @@ mod tests {
         let attempt_clone = std::sync::Arc::clone(&attempt);
 
         // Fail first two attempts, succeed on third (which is reconnect attempt 2).
-        let result = with_reconnect(policy, tx, move || {
+        let result = with_reconnect(policy, Arc::new(tx), move || {
             let a = std::sync::Arc::clone(&attempt_clone);
             async move {
                 let n = a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

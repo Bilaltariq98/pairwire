@@ -266,7 +266,7 @@ pub async fn run_host(
                 result = transport.accept() => result.context("accept failed")?,
                 () = shutdown_fut => {
                     info!("shutdown requested while waiting for guest — closing host");
-                    transport.close().await;
+                    close_transport_with_timeout(transport, "shutdown while waiting for guest").await;
                     return Ok(());
                 }
             }
@@ -825,7 +825,11 @@ pub async fn run_host(
                                         audio_capture_handle,
                                     )
                                     .await;
-                                    transport.close().await;
+                                    close_transport_with_timeout(
+                                        transport,
+                                        "transport endpoint closed while connected",
+                                    )
+                                    .await;
                                     return Ok(());
                                 }
                                 Err(e) => {
@@ -921,7 +925,11 @@ pub async fn run_host(
                                     audio_capture_handle,
                                 )
                                 .await;
-                                transport.close().await;
+                                close_transport_with_timeout(
+                                    transport,
+                                    "transport endpoint closed while connected",
+                                )
+                                .await;
                                 return Ok(());
                             }
                             Err(e) => {
@@ -958,7 +966,7 @@ pub async fn run_host(
         .await;
 
         if shutdown_requested {
-            transport.close().await;
+            close_transport_with_timeout(transport, "host shutdown requested").await;
             return Ok(());
         }
 
@@ -969,12 +977,19 @@ pub async fn run_host(
     // transport endpoint closes (or via `?` propagation on fatal errors).
     #[allow(unreachable_code)]
     {
-        transport.close().await;
+        close_transport_with_timeout(transport, "host loop exit").await;
         Ok(())
     }
 }
 
 // ── Teardown helpers ──────────────────────────────────────────────────────────
+
+async fn close_transport_with_timeout(transport: Transport, reason: &'static str) {
+    match tokio::time::timeout(std::time::Duration::from_secs(2), transport.close()).await {
+        Ok(()) => {}
+        Err(_) => warn!(reason, "timed out closing transport endpoint"),
+    }
+}
 
 async fn wait_for_shutdown(srx: &mut watch::Receiver<bool>) {
     loop {
@@ -1022,17 +1037,34 @@ async fn teardown_audio(
         task.abort();
         let _ = task.await;
     }
-    if let Some(decode) = decode_handle {
-        decode.stop();
-    }
-    if let Some(playback) = playback_handle {
-        playback.stop();
+    // Stop capture first so audio producers drop their senders and unblock
+    // downstream encode/decode threads. Some platform audio backends (notably
+    // CoreAudio/cpal on macOS) can occasionally block while dropping a stream;
+    // don't let that keep the host out of its accept loop and prevent reconnect.
+    if let Some(capture) = capture_handle {
+        stop_blocking_audio_handle("audio capture", move || capture.stop()).await;
     }
     if let Some(encode) = encode_handle {
-        encode.stop();
+        stop_blocking_audio_handle("audio encode", move || encode.stop()).await;
     }
-    if let Some(capture) = capture_handle {
-        capture.stop();
+    if let Some(decode) = decode_handle {
+        stop_blocking_audio_handle("audio decode", move || decode.stop()).await;
+    }
+    if let Some(playback) = playback_handle {
+        stop_blocking_audio_handle("audio playback", move || playback.stop()).await;
+    }
+}
+
+async fn stop_blocking_audio_handle<F>(name: &'static str, stop: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let join = tokio::task::spawn_blocking(stop);
+    if tokio::time::timeout(std::time::Duration::from_secs(2), join)
+        .await
+        .is_err()
+    {
+        warn!(name, "timed out stopping audio handle; continuing teardown");
     }
 }
 
@@ -1065,6 +1097,7 @@ pub async fn run_join(
     control_state_tx: watch::Sender<crate::control_state::RuntimeControlState>,
     mut control_request_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::ControlMessage>,
     mut shutdown_rx: watch::Receiver<bool>,
+    conn_state_tx: std::sync::Arc<watch::Sender<crate::reconnect::ConnectionState>>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
     let _ = &frame_tx;
@@ -1076,12 +1109,13 @@ pub async fn run_join(
         .await
         .context("failed to bind iroh endpoint")?;
 
-    let conn = Arc::new(
-        transport
-            .connect(&invite)
-            .await
-            .context("failed to connect to host")?,
-    );
+    let conn = match transport.connect(&invite).await {
+        Ok(conn) => Arc::new(conn),
+        Err(error) => {
+            close_transport_with_timeout(transport, "guest connect failed").await;
+            return Err(error).context("failed to connect to host");
+        }
+    };
     info!(peer = %conn.remote_id(), "connected to host");
 
     // Perform handshake before starting media.
@@ -1138,10 +1172,24 @@ pub async fn run_join(
         })
         .await;
         match ready {
-            Ok(Ok(())) => info!("received host ready ack"),
-            Ok(Err(e)) => return Err(e),
+            Ok(Ok(())) => {
+                info!("received host ready ack");
+                // Session is fully wired — clear any "Reconnecting" overlay state.
+                let _ = conn_state_tx.send(crate::reconnect::ConnectionState::Connected);
+            }
+            Ok(Err(e)) => {
+                conn.close(0, b"host ready wait failed");
+                guest_ctrl_handle.stop().await;
+                close_transport_with_timeout(transport, "HostReady wait failed").await;
+                return Err(e);
+            }
             Err(_) => {
-                warn!("HostReady timed out after 5s — proceeding anyway (host may be old build)")
+                conn.close(0, b"host ready timeout");
+                guest_ctrl_handle.stop().await;
+                close_transport_with_timeout(transport, "HostReady timeout").await;
+                return Err(anyhow::anyhow!(
+                    "timed out waiting for HostReady from host after handshake"
+                ));
             }
         }
     }
@@ -1368,7 +1416,10 @@ pub async fn run_join(
             warn!("no common video codec — not decoding frames");
             tokio::select! {
                 _ = conn.closed() => info!("host disconnected"),
-                () = wait_for_shutdown(&mut shutdown_rx) => info!("shutdown requested — closing guest session"),
+                () = wait_for_shutdown(&mut shutdown_rx) => {
+                    info!("shutdown requested — closing guest session");
+                    conn.close(0, b"guest shutdown");
+                },
             }
         } else {
             let (decode_thread, mut decoded_rx) =
@@ -1382,7 +1433,10 @@ pub async fn run_join(
 
             tokio::select! {
                 _ = conn.closed() => info!("host disconnected"),
-                () = wait_for_shutdown(&mut shutdown_rx) => info!("shutdown requested — closing guest session"),
+                () = wait_for_shutdown(&mut shutdown_rx) => {
+                    info!("shutdown requested — closing guest session");
+                    conn.close(0, b"guest shutdown");
+                },
             }
             decode_thread.stop();
         }
@@ -1393,9 +1447,17 @@ pub async fn run_join(
         warn!("encode feature not enabled — handshake done but not decoding frames");
         tokio::select! {
             _ = conn.closed() => info!("host disconnected"),
-            () = wait_for_shutdown(&mut shutdown_rx) => info!("shutdown requested — closing guest session"),
+            () = wait_for_shutdown(&mut shutdown_rx) => {
+                info!("shutdown requested — closing guest session");
+                conn.close(0, b"guest shutdown");
+            },
         }
     }
+
+    // Send a QUIC application close before tearing down subsystem handles.
+    // This unblocks peer-side readers promptly and prevents the GUI from
+    // hanging while endpoint shutdown waits for the connection to quiesce.
+    conn.close(0, b"guest shutdown");
 
     sub_handle.stop().await;
     guest_quality_handle.stop().await;
@@ -1435,20 +1497,20 @@ pub async fn run_join(
         task.abort();
         let _ = task.await;
     }
-    if let Some(encode) = guest_audio_encode_handle {
-        encode.stop();
-    }
     if let Some(capture) = guest_audio_capture_handle {
-        capture.stop();
+        stop_blocking_audio_handle("guest audio capture", move || capture.stop()).await;
+    }
+    if let Some(encode) = guest_audio_encode_handle {
+        stop_blocking_audio_handle("guest audio encode", move || encode.stop()).await;
     }
     if let Some(decode) = audio_decode_handle {
-        decode.stop();
+        stop_blocking_audio_handle("guest audio decode", move || decode.stop()).await;
     }
     if let Some(playback) = audio_playback_handle {
-        playback.stop();
+        stop_blocking_audio_handle("guest audio playback", move || playback.stop()).await;
     }
 
-    transport.close().await;
+    close_transport_with_timeout(transport, "guest session teardown").await;
     Ok(())
 }
 

@@ -336,6 +336,11 @@ mod inner {
 
     impl TransparentHostOverlayApp {
         pub fn new(channels: HostOverlayChannels, capture_width: u32, capture_height: u32) -> Self {
+            // The transparent overlay currently renders annotations/cursors only.
+            // Consume the preview receiver so HostOverlayChannels doesn't carry a
+            // dead field; keeping it in the channel bundle preserves the API for
+            // a future host self-preview without restarting the session plumbing.
+            let _preview_rx = channels.frame_rx;
             Self {
                 strokes_rx: channels.strokes_rx,
                 live_point_rx: channels.live_point_rx,

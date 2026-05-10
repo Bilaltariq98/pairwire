@@ -139,7 +139,13 @@ pub struct DrawingSenderHandle {
 impl DrawingSenderHandle {
     pub async fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
+        // The sender task may be parked on `event_rx.recv()` while the host
+        // overlay/broadcast bridge is still alive across reconnects. Setting a
+        // flag alone does not wake that receive, so abort the task to avoid
+        // blocking per-connection teardown and preventing host reconnect.
+        self.handle.abort();
         let _ = self.handle.await;
+        info!("drawing sender stopped");
     }
 }
 
@@ -377,7 +383,12 @@ impl DrawingReceiver {
                         match result {
                             Err(e) => {
                                 let s = e.to_string();
-                                if s.contains("closed") || s.contains("reset") || s.contains("eof") {
+                                if s.contains("closed")
+                                    || s.contains("reset")
+                                    || s.contains("eof")
+                                    || s.contains("connection lost")
+                                    || s.contains("timed out")
+                                {
                                     break;
                                 }
                                 warn!(error = %s, "annotation stream recv error");
