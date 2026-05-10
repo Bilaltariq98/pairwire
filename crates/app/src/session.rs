@@ -107,12 +107,20 @@ pub struct HostOverlayChannels {
 /// `overlay_tx` receives the channels the host overlay window needs, once the
 /// capture pipeline is established. Only sent on the first iteration. Pass `None`
 /// to run headlessly (e.g. `--no-overlay` or the `gui` feature is not compiled).
+///
+/// `shutdown_rx` is an optional watch channel that becomes `true` when the
+/// caller wants a graceful teardown (e.g. the host overlay window was closed).
+/// When triggered, the host breaks out of its blocking `accept` / `conn.closed`
+/// wait and runs its normal teardown sequence — including `transport.close()` —
+/// before returning. Pass `None` for headless / tray-only builds where the
+/// session owns the process lifetime.
 pub async fn run_host(
     args: HostArgs,
     invite_tx: Option<tokio::sync::oneshot::Sender<String>>,
     tray_action_rx: Option<tokio::sync::mpsc::Receiver<crate::control_state::ControlAction>>,
     #[cfg(feature = "gui")] overlay_tx: Option<tokio::sync::oneshot::Sender<HostOverlayChannels>>,
     #[cfg(not(feature = "gui"))] _overlay_tx: Option<()>,
+    mut shutdown_rx: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
     let transport = Transport::bind()
         .await
@@ -243,12 +251,30 @@ pub async fn run_host(
 
         info!("waiting for guest to connect…");
 
+        let accepted = if let Some(ref mut srx) = shutdown_rx {
+            let shutdown_fut = async {
+                loop {
+                    if srx.changed().await.is_err() {
+                        return;
+                    }
+                    if *srx.borrow() {
+                        return;
+                    }
+                }
+            };
+            tokio::select! {
+                result = transport.accept() => result.context("accept failed")?,
+                () = shutdown_fut => {
+                    info!("shutdown requested while waiting for guest — closing host");
+                    transport.close().await;
+                    return Ok(());
+                }
+            }
+        } else {
+            transport.accept().await.context("accept failed")?
+        };
         let conn = Arc::new(
-            transport
-                .accept()
-                .await
-                .context("accept failed")?
-                .ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?,
+            accepted.ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?,
         );
         let peer_id_short = conn.remote_id().to_string()[..8].to_owned();
         info!(peer = %conn.remote_id(), "guest connected");
@@ -626,6 +652,8 @@ pub async fn run_host(
             .await;
         });
 
+        let mut shutdown_requested = false;
+
         // ── Encode + publish ───────────────────────────────────────────────────
         #[cfg(feature = "encode")]
         {
@@ -739,6 +767,17 @@ pub async fn run_host(
                             info!(peer = %peer_id_short, "guest disconnected");
                             break;
                         }
+                        _ = async {
+                            if let Some(srx) = shutdown_rx.as_mut() {
+                                wait_for_shutdown(srx).await;
+                            } else {
+                                std::future::pending::<()>().await;
+                            }
+                        } => {
+                            info!(peer = %peer_id_short, "shutdown requested — closing host session");
+                            shutdown_requested = true;
+                            break;
+                        }
                         new_conn = transport.accept() => {
                             match new_conn {
                                 Ok(Some(interloper)) => {
@@ -833,6 +872,17 @@ pub async fn run_host(
                         info!(peer = %peer_id_short, "guest disconnected");
                         break;
                     }
+                    _ = async {
+                        if let Some(srx) = shutdown_rx.as_mut() {
+                            wait_for_shutdown(srx).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        info!(peer = %peer_id_short, "shutdown requested — closing host session");
+                        shutdown_requested = true;
+                        break;
+                    }
                     new_conn = transport.accept() => {
                         match new_conn {
                             Ok(Some(interloper)) => {
@@ -907,6 +957,11 @@ pub async fn run_host(
         )
         .await;
 
+        if shutdown_requested {
+            transport.close().await;
+            return Ok(());
+        }
+
         info!("per-connection teardown complete; ready for next guest");
     }
 
@@ -920,6 +975,17 @@ pub async fn run_host(
 }
 
 // ── Teardown helpers ──────────────────────────────────────────────────────────
+
+async fn wait_for_shutdown(srx: &mut watch::Receiver<bool>) {
+    loop {
+        if srx.changed().await.is_err() {
+            return;
+        }
+        if *srx.borrow() {
+            return;
+        }
+    }
+}
 
 async fn teardown_drawing(
     send_handle: Option<pairwire_transport::DrawingSenderHandle>,
@@ -980,6 +1046,11 @@ async fn teardown_audio(
 /// `control_state_tx` publishes the current `RuntimeControlState` to the viewer's HUD.
 /// `control_request_rx` receives `ControlRequest` messages from the viewer and forwards them to
 /// the host via the control channel.
+///
+/// `shutdown_rx` is a watch channel that becomes `true` when the caller wants
+/// graceful teardown (e.g. the GUI window closed). When triggered, `run_join`
+/// breaks out of its main `conn.closed()` wait and runs its normal teardown
+/// sequence — including `transport.close().await` — before returning.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_join(
     args: JoinArgs,
@@ -993,6 +1064,7 @@ pub async fn run_join(
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
     control_state_tx: watch::Sender<crate::control_state::RuntimeControlState>,
     mut control_request_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::ControlMessage>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
     let _ = &frame_tx;
@@ -1294,8 +1366,10 @@ pub async fn run_join(
 
         if session.video_codec.is_none() {
             warn!("no common video codec — not decoding frames");
-            conn.closed().await;
-            info!("host disconnected");
+            tokio::select! {
+                _ = conn.closed() => info!("host disconnected"),
+                () = wait_for_shutdown(&mut shutdown_rx) => info!("shutdown requested — closing guest session"),
+            }
         } else {
             let (decode_thread, mut decoded_rx) =
                 DecodeThread::start(pkt_rx).context("failed to start decoder")?;
@@ -1306,8 +1380,10 @@ pub async fn run_join(
                 }
             });
 
-            conn.closed().await;
-            info!("host disconnected");
+            tokio::select! {
+                _ = conn.closed() => info!("host disconnected"),
+                () = wait_for_shutdown(&mut shutdown_rx) => info!("shutdown requested — closing guest session"),
+            }
             decode_thread.stop();
         }
     }
@@ -1315,8 +1391,10 @@ pub async fn run_join(
     #[cfg(not(feature = "encode"))]
     {
         warn!("encode feature not enabled — handshake done but not decoding frames");
-        conn.closed().await;
-        info!("host disconnected");
+        tokio::select! {
+            _ = conn.closed() => info!("host disconnected"),
+            () = wait_for_shutdown(&mut shutdown_rx) => info!("shutdown requested — closing guest session"),
+        }
     }
 
     sub_handle.stop().await;
