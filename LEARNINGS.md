@@ -248,6 +248,26 @@ Each entry should include:
 - **Resolution**: Used this pattern for `overlay_tx` in `run_host`. The `#[cfg(not(feature = "gui"))] _overlay_tx: Option<()>` fallback parameter keeps the call sites symmetric.
 - **Key insight**: Prefer this pattern over feature-gating entire functions when the function is large and only one parameter varies by feature.
 
+### 2026-05-04 — watch::Receiver::wait_for is !Send across await points (do not use in spawned tasks)
+- **Area**: tokio, async, watch channel
+- **What**: `tokio::sync::watch::Receiver::wait_for(predicate)` returns a `WaitForFut<'_, T>` whose `Output` is a `Result<Ref<'_, T>, RecvError>`. The `Ref<'_, T>` type holds an `RwLockReadGuard<'_, T>`. `RwLockReadGuard` is `!Send`. If you use `wait_for()` in a `select!` branch inside a `tokio::spawn`-ed future, rustc correctly rejects it with "future cannot be sent between threads safely".
+- **Resolution**: Use `receiver.changed().await` in a loop, then check `*receiver.borrow()` to read the value. The borrow is taken (and dropped) synchronously at the check point — it never crosses an await boundary. Pattern:
+  ```rust
+  let shutdown_fut = async move {
+      loop {
+          if rx.changed().await.is_err() { return; }
+          if *rx.borrow() { return; }
+      }
+  };
+  tokio::pin!(shutdown_fut);
+  tokio::select! {
+      _ = some_async_op() => {},
+      () = &mut shutdown_fut => {},
+  }
+  ```
+  For single-use select! branches (no loop), inline the same pattern in a dedicated async block.
+- **Key insight**: `wait_for()` is convenient for `block_on` contexts on the main thread but unsafe in `rt.spawn()` futures. Prefer `changed()` + `borrow()` everywhere for consistency.
+
 ### 2026-05-04 — Host does not support guest reconnect today; iroh connection is 1:1 per `run_host` invocation
 - **Area**: reconnect, session, drawing
 - **What**: The guest has a full reconnect loop (`reconnect.rs` / `with_reconnect`) that re-calls `run_join` on disconnect. The host has NO equivalent loop — `run_host` calls `transport.accept()` exactly once, processes one guest, then returns. When the guest reconnects after a drop, it dials a new iroh connection to the same endpoint. The host endpoint (iroh `Endpoint`) does stay alive after the first guest disconnects (the `Endpoint` is not closed until `transport.close()` at the end of `run_host`), but `run_host` never calls `accept()` a second time, so the reconnecting guest's TCP-style SYN goes unacknowledged and the reconnect fails.

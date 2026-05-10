@@ -77,12 +77,20 @@ pub struct HostOverlayChannels {
 /// `overlay_tx` receives the channels the host overlay window needs, once the
 /// annotation stream and capture pipeline are established. Pass `None` to run
 /// headlessly (e.g. `--no-overlay` or the `gui` feature is not compiled).
+///
+/// `shutdown_rx` is an optional watch channel that becomes `true` when the
+/// caller wants a graceful teardown (e.g. the host overlay window was closed).
+/// When triggered, the host breaks out of its blocking `accept` / `conn.closed`
+/// wait and runs its normal teardown sequence — including `transport.close()` —
+/// before returning.  Pass `None` for headless / tray-only builds where the
+/// session owns the process lifetime.
 pub async fn run_host(
     args: HostArgs,
     invite_tx: Option<tokio::sync::oneshot::Sender<String>>,
     tray_action_rx: Option<tokio::sync::mpsc::Receiver<crate::control_state::ControlAction>>,
     #[cfg(feature = "gui")] overlay_tx: Option<tokio::sync::oneshot::Sender<HostOverlayChannels>>,
     #[cfg(not(feature = "gui"))] _overlay_tx: Option<()>,
+    mut shutdown_rx: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
     let transport = Transport::bind()
         .await
@@ -135,13 +143,35 @@ pub async fn run_host(
     // loop across multiple successive guest connections.
     let stroke_cache = Arc::new(StrokeCache::new());
 
-    let conn = Arc::new(
-        transport
-            .accept()
-            .await
-            .context("accept failed")?
-            .ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?,
-    );
+    // Wait for an incoming guest connection, or bail early if shutdown fires
+    // (e.g. host closes the overlay window before any guest connects).
+    let accepted = if let Some(ref mut srx) = shutdown_rx {
+        // Spin on changed() until either accept yields or shutdown is true.
+        // We cannot use wait_for() across an .await because RwLockReadGuard is !Send.
+        let shutdown_fut = async {
+            loop {
+                if srx.changed().await.is_err() {
+                    // Sender dropped — treat as permanent shutdown.
+                    return;
+                }
+                if *srx.borrow() {
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            result = transport.accept() => result.context("accept failed")?,
+            () = shutdown_fut => {
+                info!("shutdown requested before guest connected — closing host");
+                transport.close().await;
+                return Ok(());
+            }
+        }
+    } else {
+        transport.accept().await.context("accept failed")?
+    };
+    let conn =
+        Arc::new(accepted.ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?);
     info!(peer = %conn.remote_id(), "guest connected");
 
     // Perform handshake before starting media.
@@ -519,8 +549,13 @@ pub async fn run_host(
             let (capture_thread, raw_frame_rx) =
                 start_capture(capture_config.clone(), capture_show_cursor.clone())?;
 
-            // Bridge channel from raw capture to encode thread.
-            let (raw_to_encode_tx, raw_to_encode_rx) =
+            // Preview watch: tee raw frames from capture into a watch channel so the
+            // host overlay can render a live mirror without a second capturer instance.
+            // The tee task runs on a dedicated OS thread to avoid blocking tokio.
+            #[cfg(feature = "gui")]
+            let (preview_frame_tx, preview_frame_rx) = watch::channel::<Option<DecodedFrame>>(None);
+            // Bridge channel from tee thread to encode thread.
+            let (tee_to_encode_tx, tee_to_encode_rx) =
                 std::sync::mpsc::sync_channel::<pairwire_capture::RawFrame>(4);
 
             #[cfg(feature = "gui")]
@@ -528,6 +563,7 @@ pub async fn run_host(
                 // Send overlay channels now that we have all the pieces.
                 if let Some(tx) = overlay_tx {
                     let channels = HostOverlayChannels {
+                        frame_rx: preview_frame_rx,
                         strokes_rx: host_strokes_watch_rx,
                         live_point_rx: host_live_pt_watch_rx,
                         drawing_event_tx: overlay_drawing_bcast_tx.clone(),
@@ -542,19 +578,35 @@ pub async fn run_host(
                 }
             }
 
-            // Forward raw frames from capture to encode. (No tee — the transparent
-            // overlay does not need a preview frame, only stroke channels.)
-            let forward_thread = std::thread::spawn(move || {
-                while let Ok(raw) = raw_frame_rx.recv() {
-                    if raw_to_encode_tx.send(raw).is_err() {
-                        break;
+            // Spawn the tee OS thread: reads raw frames, converts to DecodedFrame for
+            // the preview watch, and forwards to the encode pipeline.
+            let tee_thread = {
+                #[cfg(feature = "gui")]
+                let preview_tx = preview_frame_tx.clone();
+                std::thread::spawn(move || {
+                    while let Ok(raw) = raw_frame_rx.recv() {
+                        // Push a DecodedFrame view into the preview watch (BGRA == BGRA).
+                        #[cfg(feature = "gui")]
+                        {
+                            let decoded = DecodedFrame {
+                                data: raw.data.clone(),
+                                width: raw.width,
+                                height: raw.height,
+                                timestamp_us: raw.timestamp_us,
+                            };
+                            let _ = preview_tx.send(Some(decoded));
+                        }
+                        // Forward to encode; if encoder is gone, exit the tee.
+                        if tee_to_encode_tx.send(raw).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
+                })
+            };
 
             let (encode_thread, video_pkt_rx) = EncodeThread::start_with_quality(
                 capture_config.clone(),
-                raw_to_encode_rx,
+                tee_to_encode_rx,
                 Some(quality_rx),
             )
             .context("failed to start encoder")?;
@@ -574,13 +626,30 @@ pub async fn run_host(
                 audio_pkt_rx,
             );
 
-            conn.closed().await;
-            info!("guest disconnected");
+            if let Some(ref mut srx) = shutdown_rx {
+                let shutdown_fut = async {
+                    loop {
+                        if srx.changed().await.is_err() {
+                            return;
+                        }
+                        if *srx.borrow() {
+                            return;
+                        }
+                    }
+                };
+                tokio::select! {
+                    _ = conn.closed() => { info!("guest disconnected"); }
+                    () = shutdown_fut => { info!("shutdown requested — closing host session"); }
+                }
+            } else {
+                conn.closed().await;
+                info!("guest disconnected");
+            }
 
             pub_handle.stop().await;
             encode_thread.stop();
             capture_thread.stop();
-            let _ = forward_thread.join();
+            let _ = tee_thread.join();
         }
     }
 
@@ -598,8 +667,25 @@ pub async fn run_host(
             };
             let _ = tx.send(channels);
         }
-        conn.closed().await;
-        info!("guest disconnected");
+        if let Some(ref mut srx) = shutdown_rx {
+            let shutdown_fut = async {
+                loop {
+                    if srx.changed().await.is_err() {
+                        return;
+                    }
+                    if *srx.borrow() {
+                        return;
+                    }
+                }
+            };
+            tokio::select! {
+                _ = conn.closed() => { info!("guest disconnected"); }
+                () = shutdown_fut => { info!("shutdown requested — closing host session"); }
+            }
+        } else {
+            conn.closed().await;
+            info!("guest disconnected");
+        }
     }
 
     cursor_poll_task.abort();
@@ -656,6 +742,11 @@ pub async fn run_host(
 /// `control_state_tx` publishes the current `RuntimeControlState` to the viewer's HUD.
 /// `control_request_rx` receives `ControlRequest` messages from the viewer and forwards them to
 /// the host via the control channel.
+///
+/// `shutdown_rx` is a watch channel that becomes `true` when the caller wants
+/// graceful teardown (e.g. the GUI window closed). When triggered, `run_join`
+/// breaks out of its main `conn.closed()` wait and runs its normal teardown
+/// sequence — including `transport.close().await` — before returning.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_join(
     args: JoinArgs,
@@ -669,6 +760,7 @@ pub async fn run_join(
     mut viewer_input_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::input::InputMessage>,
     control_state_tx: watch::Sender<crate::control_state::RuntimeControlState>,
     mut control_request_rx: tokio::sync::mpsc::Receiver<pairwire_protocol::ControlMessage>,
+    shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     #[cfg(not(feature = "encode"))]
     let _ = &frame_tx;
@@ -964,14 +1056,36 @@ pub async fn run_join(
         None
     };
 
+    // Helper async block that resolves when `shutdown_rx` becomes true.
+    // Uses `changed()` rather than `wait_for()` because `wait_for()` returns a
+    // `RwLockReadGuard` which is `!Send` and therefore cannot be held across an
+    // `.await` inside a `tokio::spawn`-ed (Send) future.
+    let shutdown_fut = {
+        let mut rx = shutdown_rx;
+        async move {
+            loop {
+                if rx.changed().await.is_err() {
+                    return; // sender dropped → treat as shutdown
+                }
+                if *rx.borrow() {
+                    return;
+                }
+            }
+        }
+    };
+    // Pin the future so it can be polled in `select!` across multiple branches.
+    tokio::pin!(shutdown_fut);
+
     #[cfg(feature = "encode")]
     {
         use pairwire_capture::DecodeThread;
 
         if session.video_codec.is_none() {
             warn!("no common video codec — not decoding frames");
-            conn.closed().await;
-            info!("host disconnected");
+            tokio::select! {
+                _ = conn.closed() => { info!("host disconnected"); }
+                () = &mut shutdown_fut => { info!("shutdown requested — closing session"); }
+            }
         } else {
             let (decode_thread, mut decoded_rx) =
                 DecodeThread::start(pkt_rx).context("failed to start decoder")?;
@@ -982,8 +1096,10 @@ pub async fn run_join(
                 }
             });
 
-            conn.closed().await;
-            info!("host disconnected");
+            tokio::select! {
+                _ = conn.closed() => { info!("host disconnected"); }
+                () = &mut shutdown_fut => { info!("shutdown requested — closing session"); }
+            }
             decode_thread.stop();
         }
     }
@@ -991,8 +1107,10 @@ pub async fn run_join(
     #[cfg(not(feature = "encode"))]
     {
         warn!("encode feature not enabled — handshake done but not decoding frames");
-        conn.closed().await;
-        info!("host disconnected");
+        tokio::select! {
+            _ = conn.closed() => { info!("host disconnected"); }
+            () = &mut shutdown_fut => { info!("shutdown requested — closing session"); }
+        }
     }
 
     sub_handle.stop().await;
