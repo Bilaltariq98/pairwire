@@ -15,7 +15,7 @@ pub mod wt_session;
 #[cfg(test)]
 pub(crate) mod test_utils;
 
-pub use connection::PairwireConnection;
+pub use connection::{PairwireConnection, close_code, is_graceful_session_end};
 pub use control_channel::{ControlChannel, ControlChannelHandle};
 pub use cursor::{CursorReceiver, CursorReceiverHandle, CursorSender, CursorSenderHandle};
 pub use datagram_router::{

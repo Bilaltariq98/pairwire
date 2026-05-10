@@ -966,6 +966,12 @@ pub async fn run_host(
         .await;
 
         if shutdown_requested {
+            // Tell the guest the session ended deliberately so it does not
+            // attempt to reconnect.
+            conn.close(
+                pairwire_transport::close_code::SESSION_ENDED,
+                b"host ended session",
+            );
             close_transport_with_timeout(transport, "host shutdown requested").await;
             return Ok(());
         }
@@ -1408,6 +1414,10 @@ pub async fn run_join(
         None
     };
 
+    // Track whether the session ended because the host went away (so reconnect
+    // should kick in) or because the local viewer requested shutdown (clean exit).
+    let host_disconnected;
+
     #[cfg(feature = "encode")]
     {
         use pairwire_capture::DecodeThread;
@@ -1415,11 +1425,20 @@ pub async fn run_join(
         if session.video_codec.is_none() {
             warn!("no common video codec — not decoding frames");
             tokio::select! {
-                _ = conn.closed() => info!("host disconnected"),
+                reason = conn.closed_reason() => {
+                    if pairwire_transport::is_graceful_session_end(&reason) {
+                        info!(?reason, "host ended session — closing without reconnect");
+                        host_disconnected = false;
+                    } else {
+                        info!(?reason, "host disconnected");
+                        host_disconnected = true;
+                    }
+                }
                 () = wait_for_shutdown(&mut shutdown_rx) => {
                     info!("shutdown requested — closing guest session");
                     conn.close(0, b"guest shutdown");
-                },
+                    host_disconnected = false;
+                }
             }
         } else {
             let (decode_thread, mut decoded_rx) =
@@ -1432,11 +1451,20 @@ pub async fn run_join(
             });
 
             tokio::select! {
-                _ = conn.closed() => info!("host disconnected"),
+                reason = conn.closed_reason() => {
+                    if pairwire_transport::is_graceful_session_end(&reason) {
+                        info!(?reason, "host ended session — closing without reconnect");
+                        host_disconnected = false;
+                    } else {
+                        info!(?reason, "host disconnected");
+                        host_disconnected = true;
+                    }
+                }
                 () = wait_for_shutdown(&mut shutdown_rx) => {
                     info!("shutdown requested — closing guest session");
                     conn.close(0, b"guest shutdown");
-                },
+                    host_disconnected = false;
+                }
             }
             decode_thread.stop();
         }
@@ -1446,11 +1474,15 @@ pub async fn run_join(
     {
         warn!("encode feature not enabled — handshake done but not decoding frames");
         tokio::select! {
-            _ = conn.closed() => info!("host disconnected"),
+            _ = conn.closed() => {
+                info!("host disconnected");
+                host_disconnected = true;
+            }
             () = wait_for_shutdown(&mut shutdown_rx) => {
                 info!("shutdown requested — closing guest session");
                 conn.close(0, b"guest shutdown");
-            },
+                host_disconnected = false;
+            }
         }
     }
 
@@ -1511,6 +1543,9 @@ pub async fn run_join(
     }
 
     close_transport_with_timeout(transport, "guest session teardown").await;
+    if host_disconnected {
+        anyhow::bail!("host disconnected");
+    }
     Ok(())
 }
 

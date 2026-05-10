@@ -32,12 +32,16 @@ pub enum ResolutionPreset {
 
 impl ResolutionPreset {
     /// Resolve to concrete (width, height) given the detected physical display size.
+    ///
+    /// Both dimensions are rounded down to the nearest even integer because H.264
+    /// requires even width/height (CaptureConfig::validate enforces this).
     pub fn resolve(self, physical: (u32, u32)) -> (u32, u32) {
-        match self {
+        let (w, h) = match self {
             ResolutionPreset::Native => physical,
             ResolutionPreset::P1080 => (physical.0.min(1920), physical.1.min(1080)),
             ResolutionPreset::P720 => (physical.0.min(1280), physical.1.min(720)),
-        }
+        };
+        (w & !1, h & !1)
     }
 }
 
@@ -201,6 +205,13 @@ mod tests {
         // A 1280×800 display should not be upscaled.
         let physical = (1280, 800);
         assert_eq!(ResolutionPreset::P1080.resolve(physical), (1280, 800));
+    }
+
+    #[test]
+    fn resolution_preset_resolve_rounds_odd_to_even() {
+        // H.264 requires even width/height; odd physical dims must be rounded down.
+        let physical = (2056, 1329);
+        assert_eq!(ResolutionPreset::Native.resolve(physical), (2056, 1328));
     }
 
     #[test]
