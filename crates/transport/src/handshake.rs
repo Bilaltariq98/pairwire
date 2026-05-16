@@ -96,9 +96,7 @@ pub async fn host_handshake(
             )));
         }
         Err(_) => {
-            return Err(Error::Transport(
-                "host handshake send ack timed out".into(),
-            ));
+            return Err(Error::Transport("host handshake send ack timed out".into()));
         }
     }
 
@@ -274,11 +272,19 @@ mod tests {
     async fn host_guest_handshake_completes_over_loopback() {
         let (guest_conn, host_conn) = crate::test_utils::loopback_pair().await;
         let host_local = make_hs(
-            vec![Capability::Screen, Capability::Audio, Capability::RemoteControl],
+            vec![
+                Capability::Screen,
+                Capability::Audio,
+                Capability::RemoteControl,
+            ],
             vec![VideoCodec::H264],
         );
         let mut guest_local = make_hs(
-            vec![Capability::Screen, Capability::Audio, Capability::Annotations],
+            vec![
+                Capability::Screen,
+                Capability::Audio,
+                Capability::Annotations,
+            ],
             vec![VideoCodec::H264],
         );
         guest_local.display_width = 0;
@@ -294,12 +300,12 @@ mod tests {
             guest_handshake(send, recv, guest_local).await.unwrap().2
         };
 
-        let (host_session, guest_session) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            async { tokio::join!(host, guest) },
-        )
-        .await
-        .expect("handshake timed out");
+        let (host_session, guest_session) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(host, guest)
+            })
+            .await
+            .expect("handshake timed out");
 
         assert_eq!(host_session.video_codec, Some(VideoCodec::H264));
         assert_eq!(guest_session.audio_codec, Some(AudioCodec::Opus));

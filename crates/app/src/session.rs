@@ -273,9 +273,8 @@ pub async fn run_host(
         } else {
             transport.accept().await.context("accept failed")?
         };
-        let conn = Arc::new(
-            accepted.ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?,
-        );
+        let conn =
+            Arc::new(accepted.ok_or_else(|| anyhow::anyhow!("endpoint closed before connection"))?);
         let peer_id_short = conn.remote_id().to_string()[..8].to_owned();
         info!(peer = %conn.remote_id(), "guest connected");
 

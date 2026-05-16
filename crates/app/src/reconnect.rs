@@ -133,8 +133,10 @@ mod tests {
     #[tokio::test]
     async fn succeeds_on_first_attempt() {
         let (tx, rx) = watch::channel(ConnectionState::Connected);
-        let result =
-            with_reconnect(ReconnectPolicy::default(), Arc::new(tx), || async { Ok(()) }).await;
+        let result = with_reconnect(ReconnectPolicy::default(), Arc::new(tx), || async {
+            Ok(())
+        })
+        .await;
         assert!(result.is_ok());
         assert_eq!(*rx.borrow(), ConnectionState::Connected);
     }
@@ -146,8 +148,10 @@ mod tests {
             base_delay: Duration::from_millis(1), // fast for tests
         };
         let (tx, rx) = watch::channel(ConnectionState::Connected);
-        let result =
-            with_reconnect(policy, Arc::new(tx), || async { anyhow::bail!("always fails") }).await;
+        let result = with_reconnect(policy, Arc::new(tx), || async {
+            anyhow::bail!("always fails")
+        })
+        .await;
         assert!(result.is_err());
         assert_eq!(*rx.borrow(), ConnectionState::Lost);
     }
