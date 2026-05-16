@@ -30,7 +30,7 @@
 //! # }
 //! ```
 
-#[cfg(feature = "tray")]
+#[cfg(all(feature = "tray", not(feature = "gui")))]
 mod inner {
     use tracing::{debug, warn};
     use tray_icon::{
@@ -236,5 +236,5 @@ mod inner {
     }
 }
 
-#[cfg(feature = "tray")]
+#[cfg(all(feature = "tray", not(feature = "gui")))]
 pub use inner::{TrayAction, TrayHandle};

@@ -42,10 +42,7 @@ impl CaptureThread {
         config: CaptureConfig,
         show_cursor: ShowCursorFlag,
     ) -> Result<(Self, mpsc::Receiver<RawFrame>)> {
-        use scap::{
-            capturer::{Capturer, Options, Resolution},
-            frame::{Frame, FrameType},
-        };
+        use scap::{capturer::Capturer, frame::Frame};
 
         if !scap::is_supported() {
             return Err(Error::Capture(
