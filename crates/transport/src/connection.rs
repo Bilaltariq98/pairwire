@@ -154,6 +154,38 @@ impl PairwireConnection {
     pub async fn closed(&self) {
         self.conn.closed().await;
     }
+
+    /// Wait until the connection is closed and return the close reason.
+    ///
+    /// Used by the guest to distinguish a graceful host-initiated close
+    /// (peer should not reconnect) from an unexpected drop (peer should
+    /// reconnect).
+    pub async fn closed_reason(&self) -> ConnectionError {
+        self.conn.closed().await
+    }
+}
+
+/// Application close codes used by pairwire over QUIC.
+///
+/// QUIC close codes are application-defined u32 values. Distinguishing them
+/// lets the guest decide whether to attempt reconnection.
+pub mod close_code {
+    /// Generic close (unspecified). Treat as recoverable.
+    pub const GENERIC: u32 = 0;
+    /// Host or guest gracefully ended the session (e.g. window closed,
+    /// user clicked end). Peer should NOT reconnect.
+    pub const SESSION_ENDED: u32 = 1;
+}
+
+/// Returns true if the close reason indicates the peer deliberately ended the
+/// session (so the local side should NOT attempt reconnection).
+#[must_use]
+pub fn is_graceful_session_end(err: &ConnectionError) -> bool {
+    matches!(
+        err,
+        ConnectionError::ApplicationClosed(close)
+            if u64::from(close.error_code) == u64::from(close_code::SESSION_ENDED)
+    )
 }
 
 /// Write a length-prefixed postcard message to a `SendStream`.

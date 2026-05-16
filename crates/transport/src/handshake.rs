@@ -81,15 +81,24 @@ pub async fn host_handshake(
 ) -> Result<(SendStream, RecvStream, NegotiatedSession)> {
     debug!("sending host handshake");
     send_message(&mut send, &ControlMessage::Handshake(local.clone())).await?;
-    // The handshake stream is one-shot. Finish the send side and wait until
-    // the peer has acknowledged the bytes before moving on to additional bidi
-    // streams. iroh/quinn can otherwise leave the opposite side waiting for
-    // the length prefix while later session streams are opened.
+    // The handshake stream is one-shot. Finish the send side and wait for the
+    // peer's ACK before continuing. Without `stopped().await` Quinn may not
+    // flush the buffered handshake bytes before subsequent bidi streams are
+    // opened, leaving the peer's `recv_message` blocked on the length prefix.
+    // Bounded by a timeout so a stalled peer cannot wedge the host accept loop.
     send.finish()
         .map_err(|e| Error::Transport(format!("finish host handshake stream: {e}")))?;
-    send.stopped()
-        .await
-        .map_err(|e| Error::Transport(format!("host handshake stream ack failed: {e}")))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(3), send.stopped()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            return Err(Error::Transport(format!(
+                "host handshake stream ack failed: {e}"
+            )));
+        }
+        Err(_) => {
+            return Err(Error::Transport("host handshake send ack timed out".into()));
+        }
+    }
 
     debug!("waiting for guest handshake");
     let msg: ControlMessage = recv_message(&mut recv).await?;
@@ -133,13 +142,25 @@ pub async fn guest_handshake(
 
     debug!("sending guest handshake");
     send_message(&mut send, &ControlMessage::Handshake(local.clone())).await?;
-    // Ensure the response bytes are acknowledged before the caller drops this
-    // one-shot stream and opens subsequent session streams.
+    // Finish and wait for the peer's ACK before dropping this one-shot stream.
+    // Without the wait, the response bytes can be lost if the SendStream is
+    // dropped while Quinn still has them buffered, and the host gets stuck
+    // reading the length prefix. Bounded so a stalled host cannot wedge us.
     send.finish()
         .map_err(|e| Error::Transport(format!("finish guest handshake stream: {e}")))?;
-    send.stopped()
-        .await
-        .map_err(|e| Error::Transport(format!("guest handshake stream ack failed: {e}")))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(3), send.stopped()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            return Err(Error::Transport(format!(
+                "guest handshake stream ack failed: {e}"
+            )));
+        }
+        Err(_) => {
+            return Err(Error::Transport(
+                "guest handshake send ack timed out".into(),
+            ));
+        }
+    }
 
     let session = negotiate(local, remote)?;
     Ok((send, recv, session))
@@ -245,6 +266,51 @@ mod tests {
             audio_codecs: vec![AudioCodec::Opus],
             session_token: TEST_TOKEN,
         }
+    }
+
+    #[tokio::test]
+    async fn host_guest_handshake_completes_over_loopback() {
+        let (guest_conn, host_conn) = crate::test_utils::loopback_pair().await;
+        let host_local = make_hs(
+            vec![
+                Capability::Screen,
+                Capability::Audio,
+                Capability::RemoteControl,
+            ],
+            vec![VideoCodec::H264],
+        );
+        let mut guest_local = make_hs(
+            vec![
+                Capability::Screen,
+                Capability::Audio,
+                Capability::Annotations,
+            ],
+            vec![VideoCodec::H264],
+        );
+        guest_local.display_width = 0;
+        guest_local.display_height = 0;
+        guest_local.display_scale = 0;
+
+        let host = async {
+            let (send, recv) = host_conn.open_control_stream().await.unwrap();
+            host_handshake(send, recv, host_local).await.unwrap().2
+        };
+        let guest = async {
+            let (send, recv) = guest_conn.accept_bi().await.unwrap().unwrap();
+            guest_handshake(send, recv, guest_local).await.unwrap().2
+        };
+
+        let (host_session, guest_session) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(host, guest)
+            })
+            .await
+            .expect("handshake timed out");
+
+        assert_eq!(host_session.video_codec, Some(VideoCodec::H264));
+        assert_eq!(guest_session.audio_codec, Some(AudioCodec::Opus));
+        assert!(host_session.has_capability(&Capability::Screen));
+        assert!(guest_session.has_capability(&Capability::Audio));
     }
 
     #[test]

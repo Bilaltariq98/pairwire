@@ -88,7 +88,7 @@ mod inner {
     use tokio::sync::{broadcast, watch};
     use tracing::{debug, info, warn};
 
-    use crate::session::HostOverlayChannels;
+    use crate::session::{HostOverlayChannels, HostSessionState};
 
     // ── Color helpers (shared with host_overlay.rs) ────────────────────────────
 
@@ -293,6 +293,9 @@ mod inner {
         strokes_rx: watch::Receiver<Vec<TimedStroke>>,
         live_point_rx: watch::Receiver<Option<DrawPoint>>,
         drawing_tx: broadcast::Sender<DrawingEvent>,
+        /// Session state watch — drives the status banner at the top of the overlay.
+        /// When the sender is dropped (host process shutting down), the overlay closes.
+        state_rx: watch::Receiver<HostSessionState>,
 
         /// Whether drawing mode is active (toggled with Cmd+Shift+D).
         drawing_mode: bool,
@@ -333,10 +336,16 @@ mod inner {
 
     impl TransparentHostOverlayApp {
         pub fn new(channels: HostOverlayChannels, capture_width: u32, capture_height: u32) -> Self {
+            // The transparent overlay currently renders annotations/cursors only.
+            // Consume the preview receiver so HostOverlayChannels doesn't carry a
+            // dead field; keeping it in the channel bundle preserves the API for
+            // a future host self-preview without restarting the session plumbing.
+            let _preview_rx = channels.frame_rx;
             Self {
                 strokes_rx: channels.strokes_rx,
                 live_point_rx: channels.live_point_rx,
                 drawing_tx: channels.drawing_event_tx,
+                state_rx: channels.state_rx,
                 drawing_mode: false,
                 draw_mode: DrawMode::Laser,
                 current_stroke: Vec::new(),
@@ -519,6 +528,46 @@ mod inner {
                 }
                 !stale
             });
+        }
+
+        /// Render the session-state status banner at the top-center of the overlay.
+        ///
+        /// Shows "Waiting for guest to connect…" or "Connected: <peer_id>".
+        /// Uses a semi-transparent pill that does NOT block click-through (it is
+        /// painted by the painter, not an egui widget, so hit-test is unaffected).
+        fn render_session_banner(&self, ui: &egui::Ui, canvas: egui::Rect) {
+            let state = self.state_rx.borrow();
+            let label = match &*state {
+                HostSessionState::Waiting => "Waiting for guest to connect…".to_owned(),
+                HostSessionState::Connected { peer_id_short } => {
+                    format!("Connected: {peer_id_short}")
+                }
+            };
+            drop(state);
+
+            let p = ui.painter();
+            let font = egui::FontId::proportional(12.0);
+            let text_color = Color32::from_rgb(200, 200, 200);
+            let galley = p.layout_no_wrap(label.clone(), font.clone(), text_color);
+            let pad = Vec2::new(10.0, 4.0);
+            let label_size = galley.size() + pad * 2.0;
+            // Position: top-center, a little below the menu bar.
+            let label_x = canvas.center().x - label_size.x / 2.0;
+            let label_y = canvas.min.y + 6.0;
+            let label_pos = egui::pos2(label_x, label_y);
+            let bg_rect = egui::Rect::from_min_size(label_pos, label_size);
+            p.rect_filled(
+                bg_rect,
+                6.0,
+                Color32::from_rgba_unmultiplied(10, 10, 10, 140),
+            );
+            p.text(
+                label_pos + pad,
+                egui::Align2::LEFT_TOP,
+                label,
+                font,
+                text_color,
+            );
         }
 
         /// Render the minimal HUD showing drawing mode status.
@@ -715,12 +764,22 @@ mod inner {
                 debug!("transparent overlay: initial click-through enabled");
             }
 
+            // When the session_tx is dropped (run_host returning / tray quit),
+            // the watch channel is closed. Treat that as a signal to close the
+            // overlay window so the process exits cleanly.
+            if self.state_rx.has_changed().is_err() {
+                info!("session state channel closed — closing overlay window");
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+
             let canvas = ctx.screen_rect();
 
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(Color32::TRANSPARENT))
                 .show(ctx, |ui| {
                     self.render_strokes(ui, canvas);
+                    self.render_session_banner(ui, canvas);
                     self.render_hud(ui, canvas);
                 });
 
