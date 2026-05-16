@@ -194,6 +194,74 @@ cargo run --release --features encode,audio -- join '<invite-link>' --no-gui
 
 ---
 
+## T9: Settings (config.toml three-layer merge)
+
+Tests: P4.7 — `config.toml` is created on first run, settings flow into runtime behavior, and CLI flags override the file.
+
+**Config path** (macOS): `~/Library/Application Support/pairwire/config.toml`. On Linux: `~/.config/pairwire/config.toml`. The exact resolved path is logged at startup as `loaded settings path=...`.
+
+```bash
+# 0. Optional: clean slate so first-run behavior is observable.
+rm -f "$HOME/Library/Application Support/pairwire/config.toml"
+
+# 1. First run — should create the file with safe defaults.
+cargo run --release --features encode,capture -- host
+# (Ctrl+C after you see "Invite link" and "loaded settings path=...".)
+```
+
+**Expected after step 1:**
+- [ ] Startup log includes `loaded settings path=<...>/pairwire/config.toml`
+- [ ] That file now exists
+- [ ] First line of the file is `# pairwire config — edit freely. ...`
+- [ ] File contains `[identity]`, `[capture]`, `[audio]`, `[permissions]`, `[terminal]`, `[tunnels]`, `[ui]` sections
+- [ ] `permissions.remote_control = "denied"` (safe default)
+- [ ] `tunnels.blocked_ports = [3306, 5432, 6379, 27017]` (database ports pre-blocked)
+
+```bash
+# 2. Settings → runtime: change auto-grant in the file, then start.
+#    Replace the line in config.toml:
+#      remote_control = "denied"   →   remote_control = "auto_grant"
+cargo run --release --features encode,capture,gui -- host
+```
+
+**Expected after step 2:**
+- [ ] No `--allow-remote-control` flag passed, yet the host auto-grants on the first `ControlRequest` from the guest (same behavior as passing the flag). Verify by connecting a guest and pressing `Cmd+Shift+R` — control should grant without a tray click.
+
+```bash
+# 3. CLI overrides file: keep auto_grant in the file, but force OFF on the CLI.
+#    Currently there is no --deny-remote-control flag; the inverse is to set
+#    the file back to "denied" and add --allow-remote-control:
+#      remote_control = "denied"
+cargo run --release --features encode,capture,gui -- host --allow-remote-control
+```
+
+**Expected after step 3:**
+- [ ] Despite `denied` in the file, the CLI flag wins — first guest `Cmd+Shift+R` is auto-granted.
+
+```bash
+# 4. Setting flows: fps from file.
+#    In config.toml under [capture]:  max_fps = 24
+cargo run --release --features encode,capture -- host
+```
+
+**Expected after step 4:**
+- [ ] Startup log shows `display resolution detected` followed by frame rate ~24 fps in the encode thread (run `RUST_LOG=pairwire=debug` to see the encoder config).
+- [ ] CLI `--fps 60` overrides this — verify by appending `--fps 60` and re-running.
+
+```bash
+# 5. Corrupted file fallback.
+echo 'this is = = not toml [[[' > "$HOME/Library/Application Support/pairwire/config.toml"
+cargo run --release --features encode,capture -- host
+```
+
+**Expected after step 5:**
+- [ ] Startup log includes `WARN ... failed to load config; using defaults path=...`
+- [ ] Pairwire still starts and prints an invite link — the bad config does **not** abort startup.
+
+**Cleanup:** Restore the file by removing it (first-run regenerates) or `cargo run -- host` once with no edits and let it rewrite on save in a future step.
+
+---
+
 ## Log Reference
 
 Key log lines and what they mean:

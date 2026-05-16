@@ -3,7 +3,20 @@
 //! Commands:
 //!   pairwire host [--fps N] [--resolution native|1080p|720p]
 //!   pairwire join <invite-url> [--no-gui]
+//!
+//! Argument resolution is a three-layer merge:
+//!
+//! ```text
+//! Settings::default()  ─┐
+//! config.toml           ┼──►  HostArgs::from_settings(&merged)
+//! CLI flags            ─┘     └─►  overlaid by parse_from_args()
+//! ```
+//!
+//! [`load_settings_with_fallback`] loads the on-disk config; bad files
+//! warn-and-default rather than abort startup.
 
+use pairwire_core::{RemoteControlPolicy, Settings};
+use std::path::Path;
 use std::str::FromStr;
 
 /// Top-level CLI command.
@@ -75,11 +88,47 @@ pub struct HostArgs {
 
 impl Default for HostArgs {
     fn default() -> Self {
+        // Keep this in sync with `Settings::default()` — covered by
+        // `from_settings_default_matches_hostargs_default` test.
         Self {
             fps: 30,
             resolution: ResolutionPreset::default(),
             allow_remote_control: false,
             no_overlay: false,
+        }
+    }
+}
+
+impl HostArgs {
+    /// Derive defaults from a loaded `Settings`. The result is what
+    /// CLI-flag parsing then layers on top of.
+    ///
+    /// `resolution` is intentionally **not** sourced from
+    /// `settings.capture.max_resolution` yet — the preset enum
+    /// (Native/1080p/720p) doesn't map cleanly to arbitrary dims, and
+    /// P4.7.1 (Intelligent Quality Negotiation) is going to rework the
+    /// resolution-selection story anyway. For now, resolution stays
+    /// CLI-driven.
+    pub fn from_settings(s: &Settings) -> Self {
+        let allow_remote_control = match s.permissions.remote_control {
+            RemoteControlPolicy::AutoGrant => true,
+            RemoteControlPolicy::Denied => false,
+            RemoteControlPolicy::AskFirst => {
+                // TODO(P3.5.2 follow-up): wire to a real "approve?"
+                // prompt. Until that exists, AskFirst is indistinguishable
+                // from Denied — make the gap visible in the logs.
+                tracing::warn!(
+                    "permissions.remote_control = 'ask_first' has no prompt UI yet — \
+                     treating as 'denied' until that lands"
+                );
+                false
+            }
+        };
+        Self {
+            fps: s.capture.max_fps,
+            resolution: ResolutionPreset::default(),
+            allow_remote_control,
+            no_overlay: !s.ui.show_overlay,
         }
     }
 }
@@ -91,17 +140,58 @@ pub struct JoinArgs {
     pub no_gui: bool,
 }
 
-/// Parse `std::env::args()` into a `Command`.
+/// Parse `std::env::args()` into a `Command`, merging on-disk settings
+/// underneath the CLI flags.
+///
+/// Layer order (later layers win): `Settings::default()` →
+/// `config.toml` → CLI flags. The config file is created with safe
+/// defaults on first run; load failures degrade to defaults rather
+/// than abort startup.
 pub fn parse_args() -> anyhow::Result<Command> {
+    let settings = load_settings_with_fallback();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    parse_from_args(&args)
+    parse_from_args(&args, &settings)
+}
+
+/// Load `Settings` from the OS-default config path.
+///
+/// If the path cannot be determined or the file is malformed, logs a
+/// warning and returns `Settings::default()` — pairwire should never
+/// be unable to start because of a config file.
+pub fn load_settings_with_fallback() -> Settings {
+    let path = match pairwire_core::default_config_path() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not determine config path; using defaults");
+            return Settings::default();
+        }
+    };
+    let settings = load_settings_at(&path);
+    tracing::info!(path = %path.display(), "loaded settings");
+    settings
+}
+
+/// Testable inner: load from an explicit path with the same
+/// warn-and-default fallback as `load_settings_with_fallback`.
+fn load_settings_at(path: &Path) -> Settings {
+    match pairwire_core::load_or_init(path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "failed to load config; using defaults"
+            );
+            Settings::default()
+        }
+    }
 }
 
 /// Parse a pre-split argument list (without the program name) into a `Command`.
-fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
+fn parse_from_args(args: &[String], settings: &Settings) -> anyhow::Result<Command> {
     match args.first().map(std::string::String::as_str) {
         Some("host") => {
-            let mut a = HostArgs::default();
+            let mut a = HostArgs::from_settings(settings);
             let mut i = 1;
             while i < args.len() {
                 match args[i].as_str() {
@@ -154,8 +244,12 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> anyhow::Result<Command> {
+        parse_with(args, &Settings::default())
+    }
+
+    fn parse_with(args: &[&str], settings: &Settings) -> anyhow::Result<Command> {
         let args: Vec<String> = args.iter().map(|s| String::from(*s)).collect();
-        parse_from_args(&args)
+        parse_from_args(&args, settings)
     }
 
     #[test]
@@ -284,5 +378,123 @@ mod tests {
     #[test]
     fn parse_no_args_errors() {
         assert!(parse(&[]).is_err());
+    }
+
+    // ───────────────────── Settings merge ─────────────────────
+
+    #[test]
+    fn from_settings_default_matches_hostargs_default() {
+        // Baseline invariant: feeding default Settings through
+        // `from_settings` must produce the same shape as the current
+        // hardcoded `HostArgs::default()`. If this breaks, one of the
+        // two has drifted and needs reconciling.
+        let from_default = HostArgs::from_settings(&Settings::default());
+        let hardcoded = HostArgs::default();
+        assert_eq!(from_default.fps, hardcoded.fps);
+        assert_eq!(from_default.resolution, hardcoded.resolution);
+        assert_eq!(
+            from_default.allow_remote_control,
+            hardcoded.allow_remote_control
+        );
+        assert_eq!(from_default.no_overlay, hardcoded.no_overlay);
+    }
+
+    #[test]
+    fn settings_fps_inherited_when_no_cli_flag() {
+        let mut settings = Settings::default();
+        settings.capture.max_fps = 60;
+        let Command::Host(a) = parse_with(&["host"], &settings).unwrap() else {
+            panic!("expected Host")
+        };
+        assert_eq!(a.fps, 60, "settings.capture.max_fps should flow through");
+    }
+
+    #[test]
+    fn cli_fps_overrides_settings_fps() {
+        let mut settings = Settings::default();
+        settings.capture.max_fps = 60;
+        let Command::Host(a) = parse_with(&["host", "--fps", "24"], &settings).unwrap() else {
+            panic!("expected Host")
+        };
+        assert_eq!(a.fps, 24, "CLI --fps must win over settings");
+    }
+
+    #[test]
+    fn settings_auto_grant_enables_allow_remote_control() {
+        let mut settings = Settings::default();
+        settings.permissions.remote_control = RemoteControlPolicy::AutoGrant;
+        let Command::Host(a) = parse_with(&["host"], &settings).unwrap() else {
+            panic!("expected Host")
+        };
+        assert!(a.allow_remote_control);
+    }
+
+    #[test]
+    fn settings_ask_first_treated_as_denied() {
+        // Until the prompt UI lands, AskFirst must not silently behave
+        // like AutoGrant. Guards against accidental privilege grant.
+        let mut settings = Settings::default();
+        settings.permissions.remote_control = RemoteControlPolicy::AskFirst;
+        let Command::Host(a) = parse_with(&["host"], &settings).unwrap() else {
+            panic!("expected Host")
+        };
+        assert!(!a.allow_remote_control);
+    }
+
+    #[test]
+    fn cli_allow_remote_control_overrides_denied_settings() {
+        // settings explicitly denies; CLI flag should still flip it on
+        // (operator-on-the-machine intent beats persisted config).
+        let settings = Settings::default(); // remote_control = Denied
+        let Command::Host(a) = parse_with(&["host", "--allow-remote-control"], &settings).unwrap()
+        else {
+            panic!("expected Host")
+        };
+        assert!(a.allow_remote_control);
+    }
+
+    #[test]
+    fn settings_show_overlay_false_yields_no_overlay_true() {
+        let mut settings = Settings::default();
+        settings.ui.show_overlay = false;
+        let Command::Host(a) = parse_with(&["host"], &settings).unwrap() else {
+            panic!("expected Host")
+        };
+        assert!(a.no_overlay);
+    }
+
+    #[test]
+    fn cli_no_overlay_overrides_show_overlay_true_settings() {
+        let settings = Settings::default(); // show_overlay = true
+        let Command::Host(a) = parse_with(&["host", "--no-overlay"], &settings).unwrap() else {
+            panic!("expected Host")
+        };
+        assert!(a.no_overlay);
+    }
+
+    // ───────────────────── load_settings_at fallback ─────────────────────
+
+    #[test]
+    fn load_settings_at_creates_file_on_first_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(!path.exists());
+        let s = load_settings_at(&path);
+        assert_eq!(s, Settings::default());
+        assert!(path.exists(), "first-run template should be written");
+    }
+
+    #[test]
+    fn load_settings_at_malformed_file_returns_defaults() {
+        // Acceptance criterion: a busted config must not brick startup.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "this is = = not toml [[[").unwrap();
+        let s = load_settings_at(&path);
+        assert_eq!(
+            s,
+            Settings::default(),
+            "malformed config should fall back to defaults"
+        );
     }
 }
