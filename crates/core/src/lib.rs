@@ -17,6 +17,6 @@ pub use error::{Error, Result};
 pub use settings::{
     AudioSettings, CaptureSettings, ClipboardPolicy, H264Profile, IdentitySettings,
     PermissionSettings, RemoteControlPolicy, Settings, TerminalAccessPolicy, TerminalSettings,
-    TunnelSettings, UiSettings,
+    TunnelSettings, UiSettings, default_config_path, load_or_init, save,
 };
 pub use types::{PeerId, SessionId};

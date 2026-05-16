@@ -19,3 +19,4 @@ test-support = []
 
 [dev-dependencies]
 postcard = { version = "1", features = ["alloc"] }
+tempfile.workspace = true

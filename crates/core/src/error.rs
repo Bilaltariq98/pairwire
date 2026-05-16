@@ -47,6 +47,21 @@ pub enum Error {
 
     #[error("config validation: {0}")]
     InvalidConfig(String),
+
+    #[error("config I/O: {0}")]
+    ConfigIo(String),
+}
+
+impl From<toml::de::Error> for Error {
+    fn from(e: toml::de::Error) -> Self {
+        Error::ConfigIo(format!("parse error: {e}"))
+    }
+}
+
+impl From<toml::ser::Error> for Error {
+    fn from(e: toml::ser::Error) -> Self {
+        Error::ConfigIo(format!("serialize error: {e}"))
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
