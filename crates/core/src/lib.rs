@@ -6,6 +6,7 @@
 pub mod config;
 pub mod diagnostics;
 pub mod error;
+pub mod settings;
 pub mod types;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -13,4 +14,9 @@ pub mod test_utils;
 
 pub use config::{AudioConfig, CaptureConfig, SessionConfig};
 pub use error::{Error, Result};
+pub use settings::{
+    AudioSettings, CaptureSettings, ClipboardPolicy, H264Profile, IdentitySettings,
+    PermissionSettings, RemoteControlPolicy, Settings, TerminalAccessPolicy, TerminalSettings,
+    TunnelSettings, UiSettings,
+};
 pub use types::{PeerId, SessionId};
