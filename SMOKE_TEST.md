@@ -194,6 +194,70 @@ cargo run --release --features encode,audio -- join '<invite-link>' --no-gui
 
 ---
 
+## T9: Audio Mute Controls
+
+Tests: P4.8 — `--mute` CLI flag and runtime mute toggles on both host (tray) and guest (viewer).
+
+### 1. `--mute` starts the host muted
+
+```bash
+# Host: start with mic muted
+cargo run --release --features encode,capture,audio --no-default-features --features tray -- host --mute
+
+# Guest:
+cargo run --release --features encode,audio,gui -- join '<invite-link>'
+```
+
+**Expected:**
+- [ ] Host startup log includes `host mic mute state changed muted=true` once the audio pipeline comes up
+- [ ] Guest hears silence (no host voice) — speak on host to confirm
+- [ ] Host tray menu shows "Unmute Microphone" (label reflects current state)
+
+### 2. Toggle mute mid-session via host tray
+
+With the session above still running:
+
+- [ ] Click tray → "Unmute Microphone" → log shows `tray: mute toggled muted=false`
+- [ ] Guest now hears host voice
+- [ ] Tray label flips to "Mute Microphone"
+- [ ] Click again → guest goes silent again within ~100ms
+
+### 3. `--mute` starts the guest muted
+
+```bash
+cargo run --release --features encode,capture,audio -- host
+cargo run --release --features encode,audio,gui -- join '<invite-link>' --mute
+```
+
+**Expected:**
+- [ ] Guest viewer HUD shows "🔇 Muted" badge in the bottom-right
+- [ ] Guest toolbar button reads "🔇 Unmute"
+- [ ] Host hears silence — guest speaks to confirm
+- [ ] Click guest toolbar "🔇 Unmute" (or press Cmd/Ctrl+Shift+M) → host hears voice; badge disappears
+
+### 4. End-to-end: both sides toggling mute independently
+
+Run the same setup (no `--mute` flags). On both sides:
+
+- [ ] Mute the guest via the viewer toolbar → host stops hearing guest (host still hears self if monitor enabled — that's expected)
+- [ ] Mute the host via tray → guest stops hearing host
+- [ ] Unmute either side → audio resumes on that direction without restarting the session
+
+### 5. Initial state survives short audio-pipeline restarts
+
+`--mute` is applied each time `start_host_audio` constructs a new capture handle (so it survives guest reconnects). Smoke-test this by:
+
+```bash
+cargo run --features encode,capture,audio --no-default-features --features tray -- host --mute
+# Connect a guest, then kill the guest, then reconnect a guest.
+```
+
+**Expected:**
+- [ ] On the second guest connection, the host mic is still muted (no need to re-set anything).
+- [ ] Host log shows `host mic mute state changed muted=true` once on each capture restart.
+
+---
+
 ## Log Reference
 
 Key log lines and what they mean:
