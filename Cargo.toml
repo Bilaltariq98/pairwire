@@ -33,6 +33,9 @@ toml = "0.8"
 # Platform-correct config/data directories
 directories = "5"
 
+# Test-only: temp dirs for store tests
+tempfile = "3"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

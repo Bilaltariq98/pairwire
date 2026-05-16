@@ -16,6 +16,13 @@
 //! Every section uses `#[serde(default)]` on each field so a partial
 //! config file remains valid — adding new fields in future versions
 //! will not break existing users.
+//!
+//! See the [`store`] submodule for file path discovery, load-or-init,
+//! and atomic save.
+
+pub mod store;
+
+pub use store::{default_config_path, load_or_init, save};
 
 use serde::{Deserialize, Serialize};
 
