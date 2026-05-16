@@ -26,6 +26,21 @@ pub enum Command {
     Host(HostArgs),
     /// Join a session using an invite link.
     Join(JoinArgs),
+    /// Inspect or modify the persisted user settings (`config.toml`).
+    Config(ConfigArgs),
+}
+
+/// Subcommand under `pairwire config`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfigArgs {
+    /// Print the resolved path to `config.toml`.
+    Path,
+    /// Read one dotted-key value (e.g. `capture.max_fps`).
+    Get { key: String },
+    /// Set one dotted-key value, preserving comments in the file.
+    Set { key: String, value: String },
+    /// Open `config.toml` in `$EDITOR` (falls back to `vi`).
+    Edit,
 }
 
 /// Resolution preset for the capture pipeline.
@@ -226,10 +241,54 @@ fn parse_from_args(args: &[String], settings: &Settings) -> anyhow::Result<Comma
             let no_gui = args.iter().any(|a| a == "--no-gui");
             Ok(Command::Join(JoinArgs { invite_url, no_gui }))
         }
+        Some("config") => Ok(Command::Config(parse_config_args(&args[1..])?)),
         Some(cmd) => {
-            anyhow::bail!("unknown command: {cmd}\nUsage: pairwire host | pairwire join <invite>")
+            anyhow::bail!(
+                "unknown command: {cmd}\n\
+                 Usage:\n\
+                 \x20 pairwire host [--fps N] [--resolution native|1080p|720p]\n\
+                 \x20 pairwire join <invite-url> [--no-gui]\n\
+                 \x20 pairwire config {{path | get <key> | set <key> <value> | edit}}"
+            )
         }
-        None => anyhow::bail!("Usage: pairwire host | pairwire join <invite>"),
+        None => anyhow::bail!(
+            "Usage:\n\
+             \x20 pairwire host\n\
+             \x20 pairwire join <invite>\n\
+             \x20 pairwire config {{path | get <key> | set <key> <value> | edit}}"
+        ),
+    }
+}
+
+/// Parse the tail after `config`: `path`, `get <key>`, `set <key> <value>`, or `edit`.
+fn parse_config_args(rest: &[String]) -> anyhow::Result<ConfigArgs> {
+    match rest.first().map(std::string::String::as_str) {
+        Some("path") => Ok(ConfigArgs::Path),
+        Some("edit") => Ok(ConfigArgs::Edit),
+        Some("get") => {
+            let key = rest
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("usage: pairwire config get <key>"))?
+                .clone();
+            Ok(ConfigArgs::Get { key })
+        }
+        Some("set") => {
+            let key = rest
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("usage: pairwire config set <key> <value>"))?
+                .clone();
+            let value = rest
+                .get(2)
+                .ok_or_else(|| anyhow::anyhow!("usage: pairwire config set <key> <value>"))?
+                .clone();
+            Ok(ConfigArgs::Set { key, value })
+        }
+        Some(other) => {
+            anyhow::bail!("unknown config subcommand: {other} (try: path, get, set, edit)")
+        }
+        None => {
+            anyhow::bail!("usage: pairwire config {{path | get <key> | set <key> <value> | edit}}")
+        }
     }
 }
 
@@ -378,6 +437,71 @@ mod tests {
     #[test]
     fn parse_no_args_errors() {
         assert!(parse(&[]).is_err());
+    }
+
+    // ───────────────────── config subcommand parsing ─────────────────────
+
+    #[test]
+    fn parse_config_path() {
+        let Command::Config(c) = parse(&["config", "path"]).unwrap() else {
+            panic!("expected Config")
+        };
+        assert_eq!(c, ConfigArgs::Path);
+    }
+
+    #[test]
+    fn parse_config_edit() {
+        let Command::Config(c) = parse(&["config", "edit"]).unwrap() else {
+            panic!("expected Config")
+        };
+        assert_eq!(c, ConfigArgs::Edit);
+    }
+
+    #[test]
+    fn parse_config_get() {
+        let Command::Config(c) = parse(&["config", "get", "capture.max_fps"]).unwrap() else {
+            panic!("expected Config")
+        };
+        assert_eq!(
+            c,
+            ConfigArgs::Get {
+                key: "capture.max_fps".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_config_set() {
+        let Command::Config(c) = parse(&["config", "set", "capture.max_fps", "60"]).unwrap() else {
+            panic!("expected Config")
+        };
+        assert_eq!(
+            c,
+            ConfigArgs::Set {
+                key: "capture.max_fps".into(),
+                value: "60".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_config_get_missing_key_errors() {
+        assert!(parse(&["config", "get"]).is_err());
+    }
+
+    #[test]
+    fn parse_config_set_missing_value_errors() {
+        assert!(parse(&["config", "set", "capture.max_fps"]).is_err());
+    }
+
+    #[test]
+    fn parse_config_unknown_sub_errors() {
+        assert!(parse(&["config", "spelunk"]).is_err());
+    }
+
+    #[test]
+    fn parse_config_no_sub_errors() {
+        assert!(parse(&["config"]).is_err());
     }
 
     // ───────────────────── Settings merge ─────────────────────

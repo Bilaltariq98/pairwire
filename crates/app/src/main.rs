@@ -5,6 +5,7 @@
 //!   pairwire join <invite-url> [--no-gui]
 
 mod cli;
+mod config_cmd;
 mod control_state;
 mod guest_ctrl;
 mod host_ctrl;
@@ -31,6 +32,12 @@ fn main() -> Result<()> {
 
     let cmd = cli::parse_args()?;
 
+    // `config` subcommands are synchronous file ops — no tokio runtime
+    // needed. Handle them before constructing the runtime.
+    if let cli::Command::Config(args) = cmd {
+        return config_cmd::run(args);
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -42,6 +49,7 @@ fn main() -> Result<()> {
         cli::Command::Join(args) => {
             run_join_command(args, &rt)?;
         }
+        cli::Command::Config(_) => unreachable!("handled above"),
     }
 
     Ok(())

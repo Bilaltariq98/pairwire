@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 toml = "0.8"
+toml_edit = "0.22"
 
 # Platform-correct config/data directories
 directories = "5"

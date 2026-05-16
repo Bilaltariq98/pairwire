@@ -262,6 +262,86 @@ cargo run --release --features encode,capture -- host
 
 ---
 
+## T10: `pairwire config` subcommands
+
+Tests: P4.7 step 4 — `path`, `get`, `set`, `edit` operate on the same `config.toml` that `host`/`join` consume.
+
+```bash
+# Start from a clean slate.
+rm -f "$HOME/Library/Application Support/pairwire/config.toml"
+```
+
+### 1. `path` prints the resolved location
+
+```bash
+cargo run -- config path
+```
+
+**Expected:**
+- [ ] Prints something ending in `pairwire/config.toml` (macOS: `~/Library/Application Support/pairwire/config.toml`)
+- [ ] Exit code 0; no extra output
+
+### 2. `get` reads from the file (and creates it on first run)
+
+```bash
+cargo run -- config get capture.max_fps
+```
+
+**Expected:**
+- [ ] Prints `30` (the default).
+- [ ] The config file now exists (first-run template was written by `get`).
+- [ ] `cargo run -- config get permissions.remote_control` prints `denied` (no quotes).
+- [ ] `cargo run -- config get capture.nope` exits non-zero with a clear "key not found" message.
+
+### 3. `set` writes a value and preserves comments
+
+```bash
+cargo run -- config set capture.max_fps 60
+cargo run -- config get capture.max_fps
+```
+
+**Expected:**
+- [ ] Second `get` prints `60`.
+- [ ] First line of `config.toml` is still `# pairwire config — edit freely…` — the comment block from step 2 must survive the write.
+- [ ] `cargo run -- config set permissions.remote_control '"auto_grant"'` then `get` prints `auto_grant`.
+
+### 4. `set` validates and refuses bad input
+
+```bash
+cp "$HOME/Library/Application Support/pairwire/config.toml" /tmp/pw.before
+cargo run -- config set permissions.remote_control '"nonsense"'   # should fail
+diff "$HOME/Library/Application Support/pairwire/config.toml" /tmp/pw.before
+```
+
+**Expected:**
+- [ ] The `set` command exits non-zero and prints an error referencing the bad value or the key.
+- [ ] `diff` shows no changes — the file is **not** corrupted by a rejected write.
+
+### 5. End-to-end with `host`
+
+After `set`-ing `capture.max_fps = 45` and `permissions.remote_control = "auto_grant"`:
+
+```bash
+cargo run --features encode,capture,gui -- host
+```
+
+**Expected:**
+- [ ] Startup log shows `loaded settings path=<...>/config.toml`.
+- [ ] Guest `Cmd+Shift+R` auto-grants without `--allow-remote-control` (proves `set` value flowed through).
+- [ ] Encode thread runs at ~45 fps (visible with `RUST_LOG=pairwire=debug`).
+
+### 6. `edit` opens `$EDITOR`
+
+```bash
+EDITOR=cat cargo run -- config edit
+```
+
+**Expected:**
+- [ ] `cat` prints the current `config.toml` contents and exits.
+- [ ] Without `EDITOR` set, `vi` is launched (smoke-test this manually).
+
+---
+
 ## Log Reference
 
 Key log lines and what they mean:
