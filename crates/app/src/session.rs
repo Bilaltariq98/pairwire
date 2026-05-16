@@ -712,13 +712,13 @@ pub async fn run_host(
                                 // Forward to encode pipeline if connected; otherwise
                                 // drop silently to keep capture warm.
                                 let slot = encode_tx_slot_tee.lock().ok();
-                                if let Some(guard) = slot {
-                                    if let Some(ref tx) = *guard {
-                                        // Try-send: if the encode channel is full, drop
-                                        // the frame. Do NOT log per-frame drops to avoid
-                                        // spamming when no guest is connected.
-                                        let _ = tx.try_send(raw);
-                                    }
+                                if let Some(guard) = slot
+                                    && let Some(ref tx) = *guard
+                                {
+                                    // Try-send: if the encode channel is full, drop
+                                    // the frame. Do NOT log per-frame drops to avoid
+                                    // spamming when no guest is connected.
+                                    let _ = tx.try_send(raw);
                                 }
                             }
                         })
