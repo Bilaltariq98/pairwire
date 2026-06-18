@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 66" fill="none" role="img" aria-label="Pairwire">
+  <!-- Left screen: solid light rounded square, sharp dark squared-spiral + node -->
+  <rect x="8" y="7" width="42" height="52" rx="10" fill="#e3e4f1"/>
+  <rect x="14" y="13" width="30" height="40" rx="3" fill="#0e1122"/>
+  <path d="M44 19 H21 V47 H44" stroke="#e3e4f1" stroke-width="5" stroke-linejoin="miter"/>
+  <rect x="40" y="27.5" width="9" height="11" rx="1.5" fill="#e3e4f1"/>
+
+  <!-- Right screen (mirror) -->
+  <rect x="78" y="7" width="42" height="52" rx="10" fill="#e3e4f1"/>
+  <rect x="84" y="13" width="30" height="40" rx="3" fill="#0e1122"/>
+  <path d="M84 19 H107 V47 H84" stroke="#e3e4f1" stroke-width="5" stroke-linejoin="miter"/>
+  <rect x="79" y="27.5" width="9" height="11" rx="1.5" fill="#e3e4f1"/>
+
+  <!-- Periwinkle wire: soft leads + diagonal springy figure-8 — upper loop left,
+       lower loop right, crossing near centre (traced from logo) -->
+  <path d="M50 33
+           C54 33 56 32 58 30
+           C52 25 53 17 60 17
+           C67 17 68 27 62 31
+           C60 32 60 33 63 34
+           C66 35 68 36 70 39
+           C76 44 75 51 68 51
+           C61 51 60 41 66 38
+           C68 36 70 35 72 34
+           C74 33 76 33 78 33"
+        stroke="#8b90f0" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

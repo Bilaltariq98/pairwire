@@ -167,10 +167,10 @@ p, li {
   flex-shrink: 0;
 }
 
-.nav-logo img {
-  width: 28px;
-  height: 28px;
-  object-fit: contain;
+.nav-mark {
+  height: 24px;
+  width: auto;
+  display: block;
 }
 
 .nav-wordmark {
@@ -200,7 +200,7 @@ p, li {
   font-weight: 500;
   text-decoration: none;
   color: var(--muted);
-  min-height: 36px;
+  min-height: 44px;
   transition: color 160ms ease, background 160ms ease;
 }
 
@@ -245,66 +245,63 @@ p, li {
   margin-bottom: clamp(32px, 5vw, 48px);
 }
 
-.hero-motif svg {
-  width: clamp(200px, 40vw, 360px);
+.hero-mark {
+  width: clamp(196px, 38vw, 300px);
   height: auto;
   overflow: visible;
 }
 
-/* wire draw animation */
-.wire-path {
-  stroke-dasharray: 520;
-  stroke-dashoffset: 520;
-  animation: wire-draw 900ms cubic-bezier(0.16, 1, 0.3, 1) 200ms forwards;
+/* Each <g> screen scales/fades around its own centre, not the SVG origin. */
+.hero-screen {
+  opacity: 0;
+  transform: scale(0.94);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: screen-settle 460ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.hero-screen--left  { animation-delay: 120ms; }
+.hero-screen--right { animation-delay: 260ms; }
+
+/* The wire draws between the screens once they've settled (≈700ms in). */
+.hero-wire {
+  stroke-dasharray: 108;
+  stroke-dashoffset: 108;
+  animation: wire-draw 900ms cubic-bezier(0.16, 1, 0.3, 1) 700ms forwards;
+}
+
+/* Glow: dark until the wire connects, a soft pulse, then a faint resting halo. */
+.hero-wire-glow {
+  opacity: 0;
+  animation: wire-glow 1400ms ease-out 1450ms forwards;
+}
+
+@keyframes screen-settle {
+  to { opacity: 1; transform: scale(1); }
 }
 
 @keyframes wire-draw {
   to { stroke-dashoffset: 0; }
 }
 
-/* screen glyphs fade in after wire connects */
-.screen-glyph {
-  opacity: 0;
-  animation: glyph-appear 400ms ease-out 950ms forwards;
-}
-
-.screen-glyph--left {
-  animation-delay: 100ms;
-}
-
-.screen-glyph--right {
-  animation-delay: 1050ms;
-}
-
-/* glow pulse after connect */
-.wire-glow {
-  opacity: 0;
-  animation: glow-pulse 600ms ease-out 1100ms forwards;
-}
-
-@keyframes glyph-appear {
-  from { opacity: 0; transform: scale(0.95); }
-  to   { opacity: 1; transform: scale(1); }
-}
-
-@keyframes glow-pulse {
+@keyframes wire-glow {
   0%   { opacity: 0; }
-  50%  { opacity: 0.6; }
-  100% { opacity: 0; }
+  35%  { opacity: 0.7; }
+  100% { opacity: 0.16; }
 }
 
-/* reduced-motion: show fully connected, no animation */
+/* reduced-motion: render the fully-connected resting state, no animation */
 @media (prefers-reduced-motion: reduce) {
-  .wire-path {
+  .hero-screen {
+    opacity: 1;
+    transform: none;
+    animation: none;
+  }
+  .hero-wire {
     stroke-dashoffset: 0;
     animation: none;
   }
-  .screen-glyph {
-    opacity: 1;
-    animation: none;
-  }
-  .wire-glow {
-    opacity: 0;
+  .hero-wire-glow {
+    opacity: 0.16;
     animation: none;
   }
 }

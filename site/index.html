@@ -12,9 +12,10 @@
   <meta property="og:description" content="Screen-share, talk, and draw on each other's screens. Peer-to-peer, no account." />
   <meta property="og:image" content="/assets/logo.png" />
 
-  <!-- Favicon -->
-  <link rel="icon" href="/assets/logo.png" type="image/png" />
-  <link rel="apple-touch-icon" href="/assets/logo.png" />
+  <!-- Favicon: scalable SVG app-icon first, PNG fallback for older browsers -->
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/assets/icon-512.png" sizes="512x512" type="image/png" />
+  <link rel="apple-touch-icon" href="/assets/icon-180.png" />
 
   <!-- Fonts: preconnect first so the browser can establish the connection
        before the @import in styles.css fires, eliminating FOUT -->
@@ -35,7 +36,20 @@
     <div class="wrap nav-inner">
 
       <a href="/" class="nav-logo" aria-label="Pairwire home">
-        <img src="/assets/logo.png" alt="" width="28" height="28" />
+        <!-- Inline so the mark always renders, independent of asset paths/caching -->
+        <svg class="nav-mark" viewBox="0 0 128 66" width="47" height="24" fill="none"
+          aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+          <rect x="8" y="7" width="42" height="52" rx="10" fill="#e3e4f1"/>
+          <rect x="14" y="13" width="30" height="40" rx="3" fill="#0d1020"/>
+          <path d="M44 19 H21 V47 H44" stroke="#e3e4f1" stroke-width="5" stroke-linejoin="miter"/>
+          <rect x="40" y="27.5" width="9" height="11" rx="1.5" fill="#e3e4f1"/>
+          <rect x="78" y="7" width="42" height="52" rx="10" fill="#e3e4f1"/>
+          <rect x="84" y="13" width="30" height="40" rx="3" fill="#0d1020"/>
+          <path d="M84 19 H107 V47 H84" stroke="#e3e4f1" stroke-width="5" stroke-linejoin="miter"/>
+          <rect x="79" y="27.5" width="9" height="11" rx="1.5" fill="#e3e4f1"/>
+          <path d="M50 33 C54 33 56 32 58 30 C52 25 53 17 60 17 C67 17 68 27 62 31 C60 32 60 33 63 34 C66 35 68 36 70 39 C76 44 75 51 68 51 C61 51 60 41 66 38 C68 36 70 35 72 34 C74 33 76 33 78 33"
+            stroke="#8b90f0" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
         <span class="nav-wordmark">pair<span class="wire">wire</span></span>
       </a>
 
@@ -92,13 +106,15 @@
              Reduced-motion: rendered fully-connected, no animation.
              aria-hidden: decorative, role conveyed by headline. -->
         <div class="hero-motif" aria-hidden="true">
-          <svg
-            viewBox="0 0 360 160"
-            xmlns="http://www.w3.org/2000/svg"
-          >
+          <!-- Brand mark: two "screen" glyphs joined by the periwinkle figure-8
+               wire (same geometry as assets/mark.svg). The wire DRAWS in via
+               stroke-dashoffset on load; the screens settle in first, then a
+               soft glow pulses on "connect." Reduced-motion: static, connected. -->
+          <svg class="hero-mark" viewBox="0 0 128 66" fill="none"
+            xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <filter id="wire-glow-filter" x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="3" result="blur"/>
+              <filter id="wire-glow-filter" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="2.4" result="blur"/>
                 <feMerge>
                   <feMergeNode in="blur"/>
                   <feMergeNode in="SourceGraphic"/>
@@ -106,73 +122,33 @@
               </filter>
             </defs>
 
-            <!-- Left screen glyph -->
-            <g class="screen-glyph screen-glyph--left" transform="translate(20, 30)">
-              <!-- outer frame -->
-              <rect x="0" y="0" width="88" height="68" rx="10" ry="10"
-                fill="none"
-                stroke="oklch(0.80 0.030 264)"
-                stroke-width="2.5"/>
-              <!-- inner concentric detail (echo the logo) -->
-              <rect x="10" y="10" width="68" height="48" rx="6" ry="6"
-                fill="none"
-                stroke="oklch(0.65 0.025 264)"
-                stroke-width="1.5"/>
-              <!-- center port -->
-              <rect x="36" y="26" width="16" height="16" rx="4" ry="4"
-                fill="oklch(0.35 0.030 264)"
-                stroke="oklch(0.55 0.025 264)"
-                stroke-width="1"/>
+            <!-- Left screen: solid light square, dark squared-spiral + node -->
+            <g class="hero-screen hero-screen--left">
+              <rect x="8" y="7" width="42" height="52" rx="10" fill="#e3e4f1"/>
+              <rect x="14" y="13" width="30" height="40" rx="3" fill="#0d1020"/>
+              <path d="M44 19 H21 V47 H44" stroke="#e3e4f1" stroke-width="5" stroke-linejoin="miter"/>
+              <rect x="40" y="27.5" width="9" height="11" rx="1.5" fill="#e3e4f1"/>
             </g>
 
-            <!-- Right screen glyph -->
-            <g class="screen-glyph screen-glyph--right" transform="translate(252, 30)">
-              <!-- outer frame -->
-              <rect x="0" y="0" width="88" height="68" rx="10" ry="10"
-                fill="none"
-                stroke="oklch(0.80 0.030 264)"
-                stroke-width="2.5"/>
-              <!-- inner concentric detail -->
-              <rect x="10" y="10" width="68" height="48" rx="6" ry="6"
-                fill="none"
-                stroke="oklch(0.65 0.025 264)"
-                stroke-width="1.5"/>
-              <!-- center port -->
-              <rect x="36" y="26" width="16" height="16" rx="4" ry="4"
-                fill="oklch(0.35 0.030 264)"
-                stroke="oklch(0.55 0.025 264)"
-                stroke-width="1"/>
+            <!-- Right screen (mirror) -->
+            <g class="hero-screen hero-screen--right">
+              <rect x="78" y="7" width="42" height="52" rx="10" fill="#e3e4f1"/>
+              <rect x="84" y="13" width="30" height="40" rx="3" fill="#0d1020"/>
+              <path d="M84 19 H107 V47 H84" stroke="#e3e4f1" stroke-width="5" stroke-linejoin="miter"/>
+              <rect x="79" y="27.5" width="9" height="11" rx="1.5" fill="#e3e4f1"/>
             </g>
 
-            <!-- The periwinkle wire — looping figure-8 join, echoes the logo -->
-            <!-- Glow layer (animates after wire draws) -->
-            <path class="wire-glow"
-              d="M108,64 C130,64 148,80 180,80 C212,80 230,64 252,64"
-              fill="none"
-              stroke="oklch(0.715 0.140 274)"
-              stroke-width="6"
-              stroke-linecap="round"
-              filter="url(#wire-glow-filter)"
-              opacity="0"
-            />
-            <!-- Main wire draw path -->
-            <path class="wire-path"
-              d="M108,64
-                 C124,64 132,50 148,50
-                 C158,50 165,56 172,62
-                 C175,65 178,70 180,72
-                 C182,74 184,78 188,80
-                 C194,84 200,84 206,80
-                 C210,78 212,74 214,72
-                 C216,70 219,65 222,62
-                 C229,56 236,50 246,50
-                 C262,50 270,64 286,64"
-              fill="none"
-              stroke="oklch(0.715 0.140 274)"
-              stroke-width="2.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
+            <!-- Glow layer (pulses after the wire connects) -->
+            <path class="hero-wire-glow"
+              d="M50 33 C54 33 56 32 58 30 C52 25 53 17 60 17 C67 17 68 27 62 31 C60 32 60 33 63 34 C66 35 68 36 70 39 C76 44 75 51 68 51 C61 51 60 41 66 38 C68 36 70 35 72 34 C74 33 76 33 78 33"
+              stroke="#8b90f0" stroke-width="3.6" stroke-linecap="round"
+              stroke-linejoin="round" filter="url(#wire-glow-filter)"/>
+
+            <!-- The periwinkle figure-8 wire (length ≈ 108 — drives the draw) -->
+            <path class="hero-wire"
+              d="M50 33 C54 33 56 32 58 30 C52 25 53 17 60 17 C67 17 68 27 62 31 C60 32 60 33 63 34 C66 35 68 36 70 39 C76 44 75 51 68 51 C61 51 60 41 66 38 C68 36 70 35 72 34 C74 33 76 33 78 33"
+              stroke="#8b90f0" stroke-width="3.2" stroke-linecap="round"
+              stroke-linejoin="round"/>
           </svg>
         </div>
 
