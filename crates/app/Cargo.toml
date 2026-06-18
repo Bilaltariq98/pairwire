@@ -99,7 +99,7 @@ binaries = [{ path = "pairwire", main = true }]
 [package.metadata.packager.macos]
 minimum-system-version = "12.3"
 info-plist-path        = "../../packaging/Info.plist"
-entitlements-path      = "../../packaging/pairwire.entitlements"
+entitlements           = "../../packaging/pairwire.entitlements"
 # Signing identity — plain string as required by cargo-packager 0.11.
 # The just package recipe passes CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 # so this field is overridden at invocation time via the env var.

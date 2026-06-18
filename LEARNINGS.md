@@ -295,6 +295,15 @@ Each entry should include:
 - **Key insight — send overlay channels BEFORE the accept loop**: `overlay_tx` used to fire only after the first guest connected (inside the accept loop, when capture started), so the overlay (and now the tray) appeared only once a guest joined — useless for a tray whose job is copying the invite link *before* anyone connects. The overlay never renders the self-preview (`frame_rx` is dropped), so the late `frame_rx` it waited for was unnecessary. Channels are now sent once, before the loop, using `capture_config.width/height` (known early) and an empty preview watch. This also means the host overlay shows its "Waiting for guest…" banner immediately on start in gui-only builds too.
 - **cfg gotcha**: `run_transparent_host_overlay` (plain) is now `#[cfg(not(feature = "tray"))]` and `run_host_with_overlay` is `#[cfg(all(feature = "gui", not(feature = "tray")))]`, else they trip `dead_code` under `-D warnings` in the gui+tray combo. `TrayHandle::copy_item` / `set_invite_url` are `#[allow(dead_code)]` (used only by the tray-only host loop). NOTE: `just lint` only checks default features (tray, no gui), so gui/gui+tray lint regressions are invisible there — check `--features gui,tray` explicitly.
 
+### 2026-06-18 — cargo-packager 0.11 does not accept --features; entitlements plist must have no XML comments
+- **Area**: packaging, cargo-packager, codesign
+- **What**: Two issues discovered when running `just package` end-to-end for the first time:
+  1. `cargo packager 0.11.x` does NOT accept a `--features` flag. Passing `--features encode,capture,audio,gui,tray` directly to `cargo packager` exits with "unexpected argument '--features' found". The correct workflow is to run `cargo build --release -p pairwire --features ...` first, then run `cargo packager --release --formats app,dmg -p pairwire` separately.
+  2. `codesign` (via AMFI's `AMFIUnserializeXML`) rejects entitlements plist files that contain XML comments (`<!-- ... -->`). The error is: `Failed to parse entitlements: AMFIUnserializeXML: syntax error near line N`. Remove all XML comments from `.entitlements` files before signing.
+  3. cargo-packager 0.11 places output at `target/release/pairwire.app` and `target/release/pairwire_0.1.0_aarch64.dmg`, not in a `target/release/bundle/macos/` subdirectory. Update any hardcoded references to use `target/release/` directly.
+- **Resolution**: justfile `package` recipe split into two steps (cargo build, then cargo packager); `packaging/pairwire.entitlements` comments stripped; APP path in `bundle-dylibs` and `verify-bundle` recipes updated to `target/release/pairwire.app`.
+- **Key insight**: cargo-packager operates on already-compiled binaries — it is a post-build bundler, not a build wrapper. Always build the binary separately first, then invoke the packager.
+
 ### 2026-06-18 — FFmpeg static linking vs VideoToolbox in packaged .app
 - **Area**: ffmpeg, build, packaging
 - **What**: Attempted `CARGO_FEATURE_STATIC=1` build (P4.5.1.1 spike) for a self-contained .app with no Homebrew dependency.
