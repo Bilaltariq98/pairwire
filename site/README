@@ -1,0 +1,47 @@
+pairwire.dev — static landing + download site
+==============================================
+
+Plain HTML5 / CSS (OKLCH custom properties) / vanilla JS.
+No build tool, no bundler, no node_modules.
+
+Files
+-----
+  index.html    Main landing page
+  styles.css    All styles (OKLCH tokens, Geist font via Google Fonts)
+  download.js   Enhances the download button via GitHub Releases API
+  version.json  Update-check contract consumed by Workstream E
+  assets/       logo.png (brand mark + favicon)
+
+Download button strategy
+------------------------
+The <a> button carries a static href:
+
+  https://github.com/Bilaltariq98/pairwire/releases/latest/download/pairwire-macos.dmg
+
+This works with JavaScript disabled.
+
+download.js ENHANCES: on DOMContentLoaded it fetches
+  https://api.github.com/repos/Bilaltariq98/pairwire/releases/latest
+finds the first .dmg asset, and sets btn.href to its browser_download_url.
+It also populates the version label from tag_name.
+On any error it fails silently and the static href remains.
+
+IMPORTANT — release.yml requirement
+------------------------------------
+The release workflow (release.yml) MUST upload the macOS DMG asset under
+the stable name "pairwire-macos.dmg". This ensures the no-JS static path
+always resolves. The API-enhanced path finds any .dmg regardless of name.
+
+Local development
+-----------------
+  python3 -m http.server 8000 --directory site
+  open http://localhost:8000
+
+Or with just:
+  just serve-site
+  just check-site
+
+version.json schema
+-------------------
+Three string fields only. Consumed by crates/app/src/update_check.rs.
+  { "version": "x.y.z", "url": "https://...", "notes": "..." }

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pairwire — P2P screen sharing for pair programming</title>
+  <meta name="description" content="Screen-share, talk, and draw on each other's screens. Peer-to-peer, no account. Direct QUIC connection, end-to-end encrypted." />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Pairwire — P2P screen sharing for pair programming" />
+  <meta property="og:description" content="Screen-share, talk, and draw on each other's screens. Peer-to-peer, no account." />
+  <meta property="og:image" content="/assets/logo.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" href="/assets/logo.png" type="image/png" />
+  <link rel="apple-touch-icon" href="/assets/logo.png" />
+
+  <!-- Fonts: preconnect first so the browser can establish the connection
+       before the @import in styles.css fires, eliminating FOUT -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Skip navigation for screen readers and keyboard users -->
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       NAV
+       ═══════════════════════════════════════════════════════════ -->
+  <header class="site-nav" id="site-nav" role="banner">
+    <div class="wrap nav-inner">
+
+      <a href="/" class="nav-logo" aria-label="Pairwire home">
+        <img src="/assets/logo.png" alt="" width="28" height="28" />
+        <span class="nav-wordmark">pair<span class="wire">wire</span></span>
+      </a>
+
+      <nav class="nav-links" aria-label="Site navigation">
+        <!--
+          NOTE FOR CI: release.yml must upload the DMG asset with a stable
+          name of "pairwire-macos.dmg" so this static href continues to
+          resolve without JavaScript. download.js enhances this href via
+          the GitHub API at runtime.
+        -->
+        <a
+          id="download-btn"
+          class="nav-link nav-link--accent"
+          href="https://github.com/Bilaltariq98/pairwire/releases/latest/download/pairwire-macos.dmg"
+          aria-label="Download Pairwire for macOS"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+            <path d="M8 1v9M4 7l4 4 4-4M2 14h12" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Download
+        </a>
+
+        <a
+          href="https://github.com/Bilaltariq98/pairwire"
+          class="nav-link"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Pairwire on GitHub (opens in new tab)"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">
+            <path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          GitHub
+        </a>
+      </nav>
+
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       MAIN CONTENT
+       ═══════════════════════════════════════════════════════════ -->
+  <main id="main">
+
+    <!-- ── HERO ─────────────────────────────────────────────── -->
+    <section class="hero" aria-labelledby="hero-heading">
+      <div class="wrap">
+
+        <!-- Connect motif SVG
+             Two screen-glyphs joined by the periwinkle wire.
+             The wire DRAWS in via stroke-dashoffset on load (~900ms
+             cubic-bezier(0.16,1,0.3,1)) then settles into the looped
+             connection, echoing the logo's loop motif.
+             Reduced-motion: rendered fully-connected, no animation.
+             aria-hidden: decorative, role conveyed by headline. -->
+        <div class="hero-motif" aria-hidden="true">
+          <svg
+            viewBox="0 0 360 160"
+            xmlns="http://www.w3.org/2000/svg"
+            role="img"
+            aria-label="Two screens connected by a wire — the Pairwire motif"
+          >
+            <defs>
+              <filter id="wire-glow-filter" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3" result="blur"/>
+                <feMerge>
+                  <feMergeNode in="blur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </defs>
+
+            <!-- Left screen glyph -->
+            <g class="screen-glyph screen-glyph--left" transform="translate(20, 30)">
+              <!-- outer frame -->
+              <rect x="0" y="0" width="88" height="68" rx="10" ry="10"
+                fill="none"
+                stroke="oklch(0.80 0.030 264)"
+                stroke-width="2.5"/>
+              <!-- inner concentric detail (echo the logo) -->
+              <rect x="10" y="10" width="68" height="48" rx="6" ry="6"
+                fill="none"
+                stroke="oklch(0.65 0.025 264)"
+                stroke-width="1.5"/>
+              <!-- center port -->
+              <rect x="36" y="26" width="16" height="16" rx="4" ry="4"
+                fill="oklch(0.35 0.030 264)"
+                stroke="oklch(0.55 0.025 264)"
+                stroke-width="1"/>
+            </g>
+
+            <!-- Right screen glyph -->
+            <g class="screen-glyph screen-glyph--right" transform="translate(252, 30)">
+              <!-- outer frame -->
+              <rect x="0" y="0" width="88" height="68" rx="10" ry="10"
+                fill="none"
+                stroke="oklch(0.80 0.030 264)"
+                stroke-width="2.5"/>
+              <!-- inner concentric detail -->
+              <rect x="10" y="10" width="68" height="48" rx="6" ry="6"
+                fill="none"
+                stroke="oklch(0.65 0.025 264)"
+                stroke-width="1.5"/>
+              <!-- center port -->
+              <rect x="36" y="26" width="16" height="16" rx="4" ry="4"
+                fill="oklch(0.35 0.030 264)"
+                stroke="oklch(0.55 0.025 264)"
+                stroke-width="1"/>
+            </g>
+
+            <!-- The periwinkle wire — looping figure-8 join, echoes the logo -->
+            <!-- Glow layer (animates after wire draws) -->
+            <path class="wire-glow"
+              d="M108,64 C130,64 148,80 180,80 C212,80 230,64 252,64"
+              fill="none"
+              stroke="oklch(0.715 0.140 274)"
+              stroke-width="6"
+              stroke-linecap="round"
+              filter="url(#wire-glow-filter)"
+              opacity="0"
+            />
+            <!-- Main wire draw path -->
+            <path class="wire-path"
+              d="M108,64
+                 C124,64 132,50 148,50
+                 C158,50 165,56 172,62
+                 C175,65 178,70 180,72
+                 C182,74 184,78 188,80
+                 C194,84 200,84 206,80
+                 C210,78 212,74 214,72
+                 C216,70 219,65 222,62
+                 C229,56 236,50 246,50
+                 C262,50 270,64 286,64"
+              fill="none"
+              stroke="oklch(0.715 0.140 274)"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </div>
+
+        <!-- Headline -->
+        <h1 class="hero-headline" id="hero-heading">
+          Screen-share, talk, and draw on each other's screens.
+        </h1>
+
+        <p class="hero-sub">
+          Peer-to-peer, no account. One invite link and you're paired — direct QUIC connection,
+          end-to-end encrypted, no server in the media path.
+        </p>
+
+        <!-- Download CTA -->
+        <div class="cta-group">
+          <!--
+            Static href works with no JS.
+            download.js enhances: fetches GitHub API, updates href to latest
+            .dmg asset, shows version in version-label.
+            NOTE: release.yml must publish the asset as "pairwire-macos.dmg"
+            for the static path to resolve.
+          -->
+          <a
+            id="hero-download-btn"
+            class="btn-download"
+            href="https://github.com/Bilaltariq98/pairwire/releases/latest/download/pairwire-macos.dmg"
+            aria-label="Download Pairwire .dmg for macOS"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+              <path d="M8 1v9M4 7l4 4 4-4M2 14h12" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Download for macOS
+          </a>
+
+          <p class="hero-meta" role="note">
+            <span>macOS 12.3+</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span>unsigned beta</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span>no sign-up</span>
+            <span class="meta-sep version-sep" aria-hidden="true">·</span>
+            <span id="version-label" hidden class="version-label" aria-live="polite"></span>
+          </p>
+        </div>
+
+      </div>
+    </section>
+
+    <div class="wrap">
+
+      <!-- ── EXPERIMENT BANNER ─────────────────────────────── -->
+      <div class="experiment-banner" role="note" aria-label="Project status">
+        <span class="banner-dot" aria-hidden="true"></span>
+        <p class="banner-text">
+          This is an experiment. It's rough, unsigned, and may break.
+          If people find it useful, I'll polish it and give it more time.
+          <a href="https://github.com/Bilaltariq98/pairwire/issues" target="_blank" rel="noopener noreferrer">Send feedback on GitHub.</a>
+        </p>
+      </div>
+
+      <!-- ── HOW IT WORKS ─────────────────────────────────── -->
+      <section class="section how-it-works" id="how-it-works" aria-labelledby="how-heading">
+
+        <h2 class="section-heading" id="how-heading">Roughly how it works</h2>
+        <p class="section-sub">Three steps. No accounts, no calls to schedule.</p>
+
+        <ol class="steps-wire" role="list">
+
+          <li class="step-item will-animate">
+            <div class="step-node" aria-hidden="true">
+              <span class="step-node-dot"></span>
+            </div>
+            <div class="step-body">
+              <span class="step-label">Step 1 — Host</span>
+              <p class="step-text">
+                Open Pairwire, click <strong>Host</strong>.
+                You get an invite link. Send it to whoever you're pairing with — Slack, iMessage, whatever's open.
+              </p>
+            </div>
+          </li>
+
+          <li class="step-item will-animate">
+            <div class="step-node" aria-hidden="true">
+              <span class="step-node-dot"></span>
+            </div>
+            <div class="step-body">
+              <span class="step-label">Step 2 — Join</span>
+              <p class="step-text">
+                They open the link or paste it into <strong>Join</strong>.
+                Your screen appears on their end. They can talk and draw on it.
+                <span class="step-note">No account on either side. The link is the invite.</span>
+              </p>
+            </div>
+          </li>
+
+          <li class="step-item will-animate">
+            <div class="step-node" aria-hidden="true">
+              <span class="step-node-dot"></span>
+            </div>
+            <div class="step-body">
+              <span class="step-label">Step 3 — Pair</span>
+              <p class="step-text">
+                It's a direct device-to-device connection over QUIC (<a href="https://iroh.computer" target="_blank" rel="noopener noreferrer">iroh</a>) — encrypted end-to-end.
+                Your screen and audio are never stored on a server.
+                <span class="step-note">NAT traversal via a relay when a direct path isn't possible — relay sees only ciphertext.</span>
+              </p>
+            </div>
+          </li>
+
+        </ol>
+
+      </section>
+
+      <!-- ── FIRST-LAUNCH HELP ─────────────────────────────── -->
+      <section class="section" id="first-launch" aria-labelledby="launch-heading">
+
+        <h2 class="section-heading" id="launch-heading">Opening it the first time</h2>
+        <p class="section-sub">
+          macOS will object. Here's how to get past it.
+          All text below — readable by screen readers, no screenshots required.
+        </p>
+
+        <div class="help-group">
+
+          <!-- Gatekeeper -->
+          <details class="help-item" id="gatekeeper">
+            <summary class="help-summary">
+              <span>Gatekeeper: "cannot be opened" — System Settings ▸ Open Anyway</span>
+              <svg class="summary-chevron" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" focusable="false">
+                <path d="M4.5 6.75 9 11.25l4.5-4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+
+            <div class="help-content">
+              <p>
+                Pairwire is not signed with an Apple Developer certificate yet.
+                macOS Gatekeeper will block it on first launch. This takes about 30 seconds to work around.
+              </p>
+
+              <ol class="help-steps">
+                <li class="help-step">
+                  <span class="help-step-num">1</span>
+                  <span class="help-step-text">
+                    Double-click <code class="mono-path">pairwire-macos.dmg</code> to mount it.
+                    Drag <strong>Pairwire</strong> to your Applications folder.
+                  </span>
+                </li>
+                <li class="help-step">
+                  <span class="help-step-num">2</span>
+                  <span class="help-step-text">
+                    Double-click <strong>Pairwire</strong> in Applications.
+                    macOS shows: <em>"Pairwire cannot be opened because Apple cannot check it for malicious software."</em>
+                    Click <strong>Done</strong> — do not click Move to Trash.
+                  </span>
+                </li>
+                <li class="help-step">
+                  <span class="help-step-num">3</span>
+                  <span class="help-step-text">
+                    Go to <code class="mono-path">System Settings</code> → <code class="mono-path">Privacy &amp; Security</code>.
+                    Scroll to the <strong>Security</strong> section.
+                    You'll see: <em>"Pairwire was blocked from use because it is not from an identified developer."</em>
+                  </span>
+                </li>
+                <li class="help-step">
+                  <span class="help-step-num">4</span>
+                  <span class="help-step-text">
+                    Click <strong>Open Anyway</strong>. Enter your macOS password when prompted. Click <strong>OK</strong>.
+                  </span>
+                </li>
+                <li class="help-step">
+                  <span class="help-step-num">5</span>
+                  <span class="help-step-text">
+                    Double-click <strong>Pairwire</strong> in Applications again.
+                    macOS shows a final confirmation dialog — click <strong>Open</strong>.
+                    It launches. macOS remembers your choice for this build.
+                  </span>
+                </li>
+              </ol>
+
+              <span class="help-note" role="note">
+                After step 5, you won't see this dialog again for this build. When a new version is downloaded, you'll need to repeat it once.
+              </span>
+            </div>
+          </details>
+
+          <!-- Permissions -->
+          <details class="help-item" id="permissions">
+            <summary class="help-summary">
+              <span>Screen Recording + Microphone — granting permissions on first launch</span>
+              <svg class="summary-chevron" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" focusable="false">
+                <path d="M4.5 6.75 9 11.25l4.5-4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+
+            <div class="help-content">
+              <p>
+                macOS requires explicit permission before Pairwire can capture your screen or use the microphone.
+                You'll see these prompts on first launch. Grant them, then reopen the app.
+              </p>
+
+              <ol class="help-steps">
+                <li class="help-step">
+                  <span class="help-step-num">1</span>
+                  <span class="help-step-text">
+                    Launch Pairwire. macOS shows: <em>"Pairwire would like to record your screen."</em>
+                    Click <strong>Open System Settings</strong>.
+                  </span>
+                </li>
+                <li class="help-step">
+                  <span class="help-step-num">2</span>
+                  <span class="help-step-text">
+                    In <code class="mono-path">System Settings</code> → <code class="mono-path">Privacy &amp; Security</code> → <code class="mono-path">Screen Recording</code>,
+                    find <strong>Pairwire</strong> and toggle it <strong>on</strong>.
+                  </span>
+                </li>
+                <li class="help-step">
+                  <span class="help-step-num">3</span>
+                  <span class="help-step-text">
+                    Click <strong>Quit &amp; Reopen</strong> when prompted. Pairwire restarts with screen capture enabled.
+                  </span>
+                </li>
+                <li class="help-step">
+                  <span class="help-step-num">4</span>
+                  <span class="help-step-text">
+                    On first launch with audio, macOS asks for <strong>Microphone</strong> access.
+                    Click <strong>Allow</strong>.
+                    If you missed it: <code class="mono-path">System Settings</code> → <code class="mono-path">Privacy &amp; Security</code> → <code class="mono-path">Microphone</code> → toggle Pairwire on.
+                  </span>
+                </li>
+              </ol>
+
+              <span class="help-note" role="note">
+                Both permissions persist across relaunches — you won't be prompted again unless you revoke them in System Settings.
+              </span>
+            </div>
+          </details>
+
+        </div>
+
+      </section>
+
+    </div><!-- /wrap -->
+
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       FOOTER
+       ═══════════════════════════════════════════════════════════ -->
+  <footer class="site-footer" role="contentinfo">
+    <div class="wrap footer-inner">
+
+      <div class="footer-brand">
+        <span class="footer-wordmark">pair<span class="wire">wire</span></span>
+        <p class="footer-fine">
+          P2P screen share over QUIC. End-to-end encrypted.
+          Your screen and audio are never stored on a server.
+          Relay sees only ciphertext.
+          macOS 12.3+. Unsigned beta.
+        </p>
+      </div>
+
+      <div class="footer-links">
+        <a
+          href="https://github.com/Bilaltariq98/pairwire/issues"
+          class="footer-link"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Send feedback on GitHub Issues (opens in new tab)"
+        >Send feedback</a>
+
+        <a
+          href="https://github.com/Bilaltariq98/pairwire"
+          class="footer-link"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Pairwire source on GitHub (opens in new tab)"
+        >Source on GitHub</a>
+
+        <a
+          href="/version.json"
+          class="footer-link"
+          aria-label="version.json (update-check contract)"
+        >version.json</a>
+
+        <p class="footer-version" id="footer-version" aria-live="polite">v0.1.0</p>
+      </div>
+
+    </div>
+  </footer>
+
+  <!-- Nav scroll effect + step reveal + download enhancement -->
+  <script src="download.js"></script>
+  <script>
+    /* Nav: hairline border on scroll */
+    (function () {
+      var nav = document.getElementById('site-nav');
+      if (!nav) return;
+      var observer = new IntersectionObserver(
+        function (entries) {
+          nav.classList.toggle('scrolled', !entries[0].isIntersecting);
+        },
+        { threshold: 0, rootMargin: '-56px 0px 0px 0px' }
+      );
+      /* sentinel: a 1px element at the top of main */
+      var sentinel = document.createElement('div');
+      sentinel.setAttribute('aria-hidden', 'true');
+      sentinel.style.cssText = 'position:absolute;top:0;height:1px;width:1px;pointer-events:none;';
+      document.body.insertBefore(sentinel, document.body.firstChild);
+      observer.observe(sentinel);
+    }());
+
+    /* Step reveal: staggered fade+rise on scroll */
+    (function () {
+      var steps = document.querySelectorAll('.step-item.will-animate');
+      if (!steps.length) return;
+
+      /* Respect reduced-motion — don't animate if user prefers */
+      var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduceMotion) {
+        steps.forEach(function (el) {
+          el.classList.remove('will-animate');
+        });
+        return;
+      }
+
+      var observer = new IntersectionObserver(
+        function (entries) {
+          entries.forEach(function (entry, i) {
+            if (entry.isIntersecting) {
+              /* stagger by index within the NodeList */
+              var delay = Array.from(steps).indexOf(entry.target) * 80;
+              setTimeout(function () {
+                entry.target.classList.add('revealed');
+              }, delay);
+              observer.unobserve(entry.target);
+            }
+          });
+        },
+        { threshold: 0.15 }
+      );
+
+      steps.forEach(function (el) {
+        observer.observe(el);
+      });
+    }());
+
+    /* Footer version: keep in sync with version-label once JS loads */
+    (function () {
+      var versionLabel = document.getElementById('version-label');
+      var footerVersion = document.getElementById('footer-version');
+      if (!versionLabel || !footerVersion) return;
+
+      /* MutationObserver: when download.js sets version-label, mirror it */
+      var mo = new MutationObserver(function () {
+        var text = versionLabel.textContent.trim();
+        if (text) footerVersion.textContent = text;
+      });
+      mo.observe(versionLabel, { childList: true, characterData: true, subtree: true });
+    }());
+
+    /* Hero download btn: download.js targets #download-btn (nav), wire
+       hero button to the same URL once it's resolved */
+    (function () {
+      var navBtn = document.getElementById('download-btn');
+      var heroBtn = document.getElementById('hero-download-btn');
+      if (!navBtn || !heroBtn) return;
+
+      var mo = new MutationObserver(function () {
+        var href = navBtn.getAttribute('href');
+        if (href && href !== '#') heroBtn.href = href;
+      });
+      mo.observe(navBtn, { attributes: true, attributeFilter: ['href'] });
+    }());
+  </script>
+
+</body>
+</html>
