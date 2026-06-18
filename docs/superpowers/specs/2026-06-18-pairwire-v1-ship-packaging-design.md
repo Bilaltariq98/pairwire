@@ -78,7 +78,9 @@ are exactly the ones we omit. Config-driven so Developer ID flips in later.
    `NSScreenCaptureUsageDescription`, `NSMicrophoneUsageDescription`.
    *(Missing screen-capture key = process killed on first ScreenCaptureKit call, no error.)*
 3. **`pairwire.entitlements`** — hardened runtime, `com.apple.security.device.audio-input`,
-   `com.apple.security.device.camera` (not needed — omit), JIT/unsigned-memory only if wgpu/FFmpeg require.
+   **`com.apple.security.cs.disable-library-validation` (REQUIRED — without it hardened-runtime
+   library validation rejects the bundled/Homebrew FFmpeg dylibs by Team ID and the app crashes
+   in dyld at launch; observed 2026-06-18, see LEARNINGS)**, JIT/unsigned-memory only if wgpu requires.
 4. **FFmpeg bundling** — see spike below. Goal: clean machine runs with **no `brew install`**.
 5. **Release build** — `--release` with `encode,capture,audio,gui,tray` features.
 6. **ad-hoc codesign** the inner binaries bottom-up, then the `.app` with `--options runtime`.
@@ -210,6 +212,26 @@ If newer → non-blocking notification ("Update available → download") linking
 page. **No in-place install** in v1. Wire into the existing tray/overlay notification surface.
 
 **Risks:** low. Network call must be non-blocking and fail-silent.
+
+---
+
+## Workstream F — Launch host/join chooser  (effort: S-M)  [added 2026-06-18]
+
+A double-clicked `.app` passes **no CLI args**; today that path `bail!`s, so the packaged app
+"does nothing" on launch. v1 must present a **native Host/Join chooser** on no-arg launch and
+dispatch to the existing host/join flows. This is essential for the DMG to be usable without a
+terminal (PLAN P4.5.4), so it is **in v1 scope** (it is what makes the DMG a real product, not a
+QoL extra).
+
+**Design:** no-arg → `Command::Launcher` → a **native macOS `NSAlert`** dialog (Host / Join +
+invite field) → call existing `run_host_command` / `run_join_command` in-process. **Must be
+native, not eframe** — winit allows only one `EventLoop` per process, and the host overlay /
+viewer each create it after the choice; an egui launcher would consume the EventLoop and the
+subsequent `eframe::run_native` would panic. `objc2-app-kit` is already a dependency.
+
+**Plan:** `docs/superpowers/plans/2026-06-18-F-launch-chooser.md`. CLI `pairwire host` /
+`pairwire join <url>` remain unchanged. Host options (fps/res) in the dialog and a richer egui
+launcher (which would need a re-exec to dodge the one-EventLoop limit) are deferred.
 
 ---
 

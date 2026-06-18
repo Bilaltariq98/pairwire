@@ -1050,6 +1050,7 @@
 
 ### P4.5.4: Opinionated GUI Mode
 - **Status**: `[ ]`
+- **Plan (v1 slice)**: `docs/superpowers/plans/2026-06-18-F-launch-chooser.md` — no-arg launch shows a **native NSAlert Host/Join chooser** (not eframe — winit allows one EventLoop/process) and dispatches to the existing host/join flows. Required for the v1 DMG to be usable without a terminal.
 - **Description**: Default launch (double-click / no args) opens a "start session" GUI instead of requiring CLI arguments. The CLI remains fully functional for power users.
 - **Design**:
   - No args → opens a small window: "Host a Session" / "Join a Session" buttons

@@ -729,6 +729,20 @@ plutil -lint packaging/Info.plist
     <key>com.apple.security.device.audio-input</key>
     <true/>
 
+    <!-- REQUIRED for FFmpeg dylibs. Under hardened runtime, library validation
+         only loads dylibs signed with the SAME Team ID (or platform libs). Our
+         bundled FFmpeg dylibs are ad-hoc signed (no Team ID) and the system
+         Homebrew copies carry Homebrew's Team ID — both are rejected without
+         this entitlement. Observed crash (2026-06-18) on the first packaged app:
+           dyld: Library not loaded: .../libavcodec.62.dylib
+           Reason: ... not valid for use in process: mapping process and mapped
+           file (non-platform) have different Team IDs
+         This entitlement is the fix that keeps hardened runtime (for TCC prompts
+         + notarization-readiness) while allowing the bundled dylibs to load.
+         See LEARNINGS.md 2026-06-18 (dyld library-validation crash). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
     <!-- Screen recording entitlement is NOT required here — ScreenCaptureKit
          TCC permission is governed by NSScreenCaptureUsageDescription in Info.plist
          and the TCC database, not by a hardened-runtime entitlement. -->
