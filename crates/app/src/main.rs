@@ -13,6 +13,7 @@ mod host_overlay_transparent;
 // run_launcher stub in main.rs does not need the module at all).
 #[cfg(feature = "gui")]
 mod launcher;
+mod permissions;
 mod reconnect;
 mod session;
 mod tray;
@@ -97,6 +98,22 @@ fn run_launcher(_rt: &tokio::runtime::Runtime) -> Result<()> {
 }
 
 fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    // ── Screen Recording permission gate (macOS + capture feature only) ───────
+    // Check and, if necessary, request the macOS TCC Screen Recording permission
+    // BEFORE launching the overlay or session. If not granted, the function
+    // shows a native guidance dialog and returns false — we exit gracefully here
+    // so the user never sees the blue-screen error that would occur later when
+    // the capture thread fails to start inside run_host().
+    //
+    // This gate covers BOTH the `pairwire host` CLI path and the Launcher's
+    // "Host" choice, since both paths call this function.
+    #[cfg(feature = "capture")]
+    {
+        if !permissions::ensure_screen_recording_or_guide() {
+            return Ok(());
+        }
+    }
+
     // Three valid configurations:
     //   1. gui (overlay on main thread, tray ignored if compiled in)
     //   2. tray only — no gui (tray on main thread)
