@@ -38,7 +38,7 @@ pub fn show_launcher() -> anyhow::Result<Option<LaunchChoice>> {
         NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSApplication,
         NSApplicationActivationPolicy, NSTextField,
     };
-    use objc2_foundation::{MainThreadMarker, ns_string};
+    use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, ns_string};
 
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("launcher must run on the main thread"))?;
@@ -65,11 +65,49 @@ pub fn show_launcher() -> anyhow::Result<Option<LaunchChoice>> {
     alert.addButtonWithTitle(ns_string!("Cancel"));
 
     // Accessory text field for the invite link (only consumed for Join).
+    // Fix: give the field a real 320×24pt frame so it is visible inside the
+    // NSAlert panel; a zero-sized view is invisible and receives no focus.
+    // Give the field a real 320×24pt frame — a zero-sized view is invisible
+    // and receives no keyboard focus inside NSAlert.
+    // setFrame is a safe method on NSView (grandparent of NSTextField via
+    // NSTextField → NSControl → NSView). The Deref chain surfaces it on `field`.
     let field = NSTextField::new(mtm);
+    field.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(320.0, 24.0),
+    ));
+    // Make it a standard editable text input with a bezel.
+    // setBezeled/setEditable/setSelectable are safe fns on NSTextField in
+    // objc2-app-kit 0.3 (the `#[unsafe(method(...))]` attr governs the ObjC
+    // dispatch machinery, not the Rust-side safety of the generated wrapper).
+    field.setBezeled(true);
+    field.setEditable(true);
+    field.setSelectable(true);
     field.setPlaceholderString(Some(ns_string!("pairwire://… (only needed to Join)")));
+
+    // Pre-fill from clipboard when it looks like an invite URL, so most users
+    // can just click Join without pasting manually. Any clipboard error is
+    // silently ignored — the field just stays empty.
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        if let Ok(text) = cb.get_text() {
+            if text.trim().starts_with("pairwire://") {
+                // setStringValue is a safe fn on NSControl (superclass of NSTextField).
+                field.setStringValue(&objc2_foundation::NSString::from_str(text.trim()));
+                tracing::debug!("launcher: pre-filled invite field from clipboard");
+            }
+        }
+    }
+
     // NSTextField inherits NSView via NSControl; the Deref chain (NSTextField →
     // NSControl → NSView) lets us borrow it as &NSView for setAccessoryView.
     alert.setAccessoryView(Some(&**field));
+
+    // Focus the field so Cmd+V / typing work immediately without an extra click.
+    // setInitialFirstResponder is gated on cfg(feature = "NSView") in NSWindow.rs
+    // and takes Option<&NSView>; &**field derefs NSTextField → NSControl → NSView.
+    // alert.window() returns Retained<NSWindow> valid for this stack frame;
+    // the &NSView ref is valid as long as `field` is alive (it outlives runModal).
+    alert.window().setInitialFirstResponder(Some(&**field));
 
     let response = alert.runModal();
 
