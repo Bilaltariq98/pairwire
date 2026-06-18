@@ -4,12 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pairwire — P2P screen sharing for pair programming</title>
-  <meta name="description" content="Screen-share, talk, and draw on each other's screens. Peer-to-peer, no account. Direct QUIC connection, end-to-end encrypted." />
+  <meta name="description" content="Screen-share, talk, and draw on each other’s screens. Peer-to-peer, no account. Direct QUIC connection, end-to-end encrypted." />
 
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Pairwire — P2P screen sharing for pair programming" />
-  <meta property="og:description" content="Screen-share, talk, and draw on each other's screens. Peer-to-peer, no account." />
+  <meta property="og:description" content="Screen-share, talk, and draw on each other’s screens. Peer-to-peer, no account." />
   <meta property="og:image" content="/assets/logo.png" />
 
   <!-- Favicon: scalable SVG app-icon first, PNG fallback for older browsers -->
@@ -17,10 +17,10 @@
   <link rel="icon" href="/assets/icon-512.png" sizes="512x512" type="image/png" />
   <link rel="apple-touch-icon" href="/assets/icon-180.png" />
 
-  <!-- Fonts: preconnect first so the browser can establish the connection
-       before the @import in styles.css fires, eliminating FOUT -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- Self-hosted fonts: preload the two critical weights to avoid FOUT.
+       No third-party request (fits a privacy-first P2P tool). -->
+  <link rel="preload" href="/assets/fonts/geist-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/assets/fonts/geist-600.woff2" as="font" type="font/woff2" crossorigin />
 
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -102,7 +102,7 @@
              Two screen-glyphs joined by the periwinkle wire.
              The wire DRAWS in via stroke-dashoffset on load (~900ms
              cubic-bezier(0.16,1,0.3,1)) then settles into the looped
-             connection, echoing the logo's loop motif.
+             connection, echoing the logo’s loop motif.
              Reduced-motion: rendered fully-connected, no animation.
              aria-hidden: decorative, role conveyed by headline. -->
         <div class="hero-motif" aria-hidden="true">
@@ -154,11 +154,11 @@
 
         <!-- Headline -->
         <h1 class="hero-headline" id="hero-heading">
-          Screen-share, talk, and draw on each other's screens.
+          Screen-share, talk, and draw on each other’s screens.
         </h1>
 
         <p class="hero-sub">
-          Peer-to-peer, no account. One invite link and you're paired — direct QUIC connection,
+          Peer-to-peer, no account. One invite link and you’re paired — direct QUIC connection,
           end-to-end encrypted, no server in the media path.
         </p>
 
@@ -189,7 +189,7 @@
             <span>unsigned beta</span>
             <span class="meta-sep" aria-hidden="true">·</span>
             <span>no sign-up</span>
-            <span class="meta-sep version-sep" aria-hidden="true">·</span>
+            <span class="meta-sep version-sep" aria-hidden="true" hidden>·</span>
             <span id="version-label" hidden class="version-label" aria-live="polite"></span>
           </p>
         </div>
@@ -203,8 +203,8 @@
       <div class="experiment-banner" role="note" aria-label="Project status">
         <span class="banner-dot" aria-hidden="true"></span>
         <p class="banner-text">
-          This is an experiment. It's rough, unsigned, and may break.
-          If people find it useful, I'll polish it and give it more time.
+          This is an experiment. It’s rough, unsigned, and may break.
+          If people find it useful, I’ll polish it and give it more time.
           <a href="https://github.com/Bilaltariq98/pairwire/issues" target="_blank" rel="noopener noreferrer">Send feedback on GitHub.</a>
         </p>
       </div>
@@ -222,10 +222,10 @@
               <span class="step-node-dot"></span>
             </div>
             <div class="step-body">
-              <span class="step-label">Step 1 — Host</span>
+              <span class="step-label">Host</span>
               <p class="step-text">
                 Open Pairwire, click <strong>Host</strong>.
-                You get an invite link. Send it to whoever you're pairing with — Slack, iMessage, whatever's open.
+                You get an invite link. Send it to whoever you’re pairing with — Slack, iMessage, whatever’s open.
               </p>
             </div>
           </li>
@@ -235,7 +235,7 @@
               <span class="step-node-dot"></span>
             </div>
             <div class="step-body">
-              <span class="step-label">Step 2 — Join</span>
+              <span class="step-label">Join</span>
               <p class="step-text">
                 They open the link or paste it into <strong>Join</strong>.
                 Your screen appears on their end. They can talk and draw on it.
@@ -249,11 +249,11 @@
               <span class="step-node-dot"></span>
             </div>
             <div class="step-body">
-              <span class="step-label">Step 3 — Pair</span>
+              <span class="step-label">Pair</span>
               <p class="step-text">
-                It's a direct device-to-device connection over QUIC (<a href="https://iroh.computer" target="_blank" rel="noopener noreferrer">iroh</a>) — encrypted end-to-end.
+                It’s a direct device-to-device connection over QUIC (<a href="https://iroh.computer" target="_blank" rel="noopener noreferrer">iroh</a>) — encrypted end-to-end.
                 Your screen and audio are never stored on a server.
-                <span class="step-note">NAT traversal via a relay when a direct path isn't possible — relay sees only ciphertext.</span>
+                <span class="step-note">NAT traversal via a relay when a direct path isn’t possible — relay sees only ciphertext.</span>
               </p>
             </div>
           </li>
@@ -267,7 +267,7 @@
 
         <h2 class="section-heading" id="launch-heading">Opening it the first time</h2>
         <p class="section-sub">
-          macOS will object. Here's how to get past it.
+          macOS will object. Here’s how to get past it.
           All text below — readable by screen readers, no screenshots required.
         </p>
 
@@ -309,7 +309,7 @@
                   <span class="help-step-text">
                     Go to <code class="mono-path">System Settings</code> → <code class="mono-path">Privacy &amp; Security</code>.
                     Scroll to the <strong>Security</strong> section.
-                    You'll see: <em>"Pairwire was blocked from use because it is not from an identified developer."</em>
+                    You’ll see: <em>"Pairwire was blocked from use because it is not from an identified developer."</em>
                   </span>
                 </li>
                 <li class="help-step">
@@ -329,7 +329,7 @@
               </ol>
 
               <span class="help-note" role="note">
-                After step 5, you won't see this dialog again for this build. When a new version is downloaded, you'll need to repeat it once.
+                After step 5, you won’t see this dialog again for this build. When a new version is downloaded, you’ll need to repeat it once.
               </span>
             </div>
           </details>
@@ -346,7 +346,7 @@
             <div class="help-content">
               <p>
                 macOS requires explicit permission before Pairwire can capture your screen or use the microphone.
-                You'll see these prompts on first launch. Grant them, then reopen the app.
+                You’ll see these prompts on first launch. Grant them, then reopen the app.
               </p>
 
               <ol class="help-steps">
@@ -381,7 +381,7 @@
               </ol>
 
               <span class="help-note" role="note">
-                Both permissions persist across relaunches — you won't be prompted again unless you revoke them in System Settings.
+                Both permissions persist across relaunches — you won’t be prompted again unless you revoke them in System Settings.
               </span>
             </div>
           </details>

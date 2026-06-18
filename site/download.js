@@ -61,6 +61,9 @@ function fetchLatestRelease(btn, versionEl) {
       if (version && versionEl) {
         versionEl.textContent = tag; /* keep the v-prefix for display */
         versionEl.removeAttribute('hidden');
+        /* reveal the leading separator only once there's a version after it */
+        var sep = document.querySelector('.version-sep');
+        if (sep) sep.removeAttribute('hidden');
       }
     })
     .catch(function () {

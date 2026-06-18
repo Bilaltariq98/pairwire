@@ -3,8 +3,13 @@
    Dark theme. OKLCH design tokens. No framework.
    ============================================================ */
 
-/* ── Google Fonts: Geist + Geist Mono ────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
+/* ── Geist + Geist Mono — self-hosted (no third-party request) ──── */
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 400; font-display: swap; src: url('/assets/fonts/geist-400.woff2') format('woff2'); }
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 500; font-display: swap; src: url('/assets/fonts/geist-500.woff2') format('woff2'); }
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 600; font-display: swap; src: url('/assets/fonts/geist-600.woff2') format('woff2'); }
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 700; font-display: swap; src: url('/assets/fonts/geist-700.woff2') format('woff2'); }
+@font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('/assets/fonts/geist-mono-400.woff2') format('woff2'); }
+@font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url('/assets/fonts/geist-mono-500.woff2') format('woff2'); }
 
 /* ── Design Tokens ──────────────────────────────────────────
    Derived from logo.png: deep navy-black canvas, periwinkle wire.
@@ -126,7 +131,7 @@ p, li {
   z-index: var(--z-overlay);
   transition: top 0.2s ease;
 }
-.skip-link:focus {
+.skip-link:focus-visible {
   top: 16px;
 }
 
@@ -215,6 +220,12 @@ p, li {
   background: var(--accent);
   color: var(--accent-ink);
   font-weight: 600;
+  /* override base .nav-link transition so the lift + halo ease, not snap */
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
 }
 
 @media (hover: hover) {
@@ -227,7 +238,7 @@ p, li {
 }
 
 .nav-link--accent:active {
-  transform: translateY(0);
+  transform: translateY(0) scale(0.97);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -243,6 +254,7 @@ p, li {
   display: flex;
   justify-content: center;
   margin-bottom: clamp(32px, 5vw, 48px);
+  pointer-events: none;
 }
 
 .hero-mark {
@@ -262,17 +274,21 @@ p, li {
 .hero-screen--left  { animation-delay: 120ms; }
 .hero-screen--right { animation-delay: 260ms; }
 
-/* The wire draws between the screens once they've settled (≈700ms in). */
+/* The wire draws AFTER both screens finish settling (right screen ends 720ms;
+   start at 800ms for an 80ms beat). Draw ends at 1700ms. */
 .hero-wire {
   stroke-dasharray: 108;
   stroke-dashoffset: 108;
-  animation: wire-draw 900ms cubic-bezier(0.16, 1, 0.3, 1) 700ms forwards;
+  animation: wire-draw 900ms cubic-bezier(0.16, 1, 0.3, 1) 800ms forwards;
 }
 
-/* Glow: dark until the wire connects, a soft pulse, then a faint resting halo. */
+/* Glow: dark until the wire connects (1700ms), a crisp pulse to a resting
+   halo, then a slow idle shimmer so the connection reads as "live." */
 .hero-wire-glow {
   opacity: 0;
-  animation: wire-glow 1400ms ease-out 1450ms forwards;
+  animation:
+    wire-glow 600ms ease-out 1750ms forwards,
+    wire-shimmer 3s ease-in-out 2350ms infinite;
 }
 
 @keyframes screen-settle {
@@ -285,8 +301,14 @@ p, li {
 
 @keyframes wire-glow {
   0%   { opacity: 0; }
-  35%  { opacity: 0.7; }
+  40%  { opacity: 0.65; }
   100% { opacity: 0.16; }
+}
+
+/* gentle breathe on the resting halo — no spatial motion */
+@keyframes wire-shimmer {
+  0%, 100% { opacity: 0.16; }
+  50%      { opacity: 0.32; }
 }
 
 /* reduced-motion: render the fully-connected resting state, no animation */
@@ -356,7 +378,7 @@ p, li {
   transition:
     background 160ms ease,
     box-shadow 160ms ease,
-    transform 120ms ease;
+    transform 160ms ease;
 }
 
 @media (hover: hover) {
@@ -368,7 +390,7 @@ p, li {
 }
 
 .btn-download:active {
-  transform: translateY(0);
+  transform: translateY(0) scale(0.97);
 }
 
 .btn-download svg {
@@ -403,7 +425,8 @@ p, li {
   font-variant-numeric: tabular-nums;
 }
 
-.version-label[hidden] {
+.version-label[hidden],
+.meta-sep[hidden] {
   display: none;
 }
 
@@ -544,13 +567,13 @@ p, li {
   padding-bottom: 4px;
 }
 
+/* Sentence-case identifier, not a tracked-uppercase eyebrow (banned per
+   DESIGN.md). The node dots + vertical wire already carry the sequence. */
 .step-label {
-  font-size: 0.6875rem;
+  font-size: 0.9375rem;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--accent);
-  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+  color: var(--faint);
   margin-bottom: 4px;
   display: block;
 }
@@ -634,6 +657,13 @@ summary.help-summary {
   color: var(--ink);
   user-select: none;
   min-height: 54px; /* touch target */
+  transition: background 160ms ease;
+}
+
+@media (hover: hover) {
+  summary.help-summary:hover {
+    background: var(--surface-2);
+  }
 }
 
 summary.help-summary::-webkit-details-marker {
@@ -643,7 +673,7 @@ summary.help-summary::-webkit-details-marker {
 .summary-chevron {
   flex-shrink: 0;
   color: var(--faint);
-  transition: transform 200ms ease;
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 details[open] .summary-chevron {
@@ -653,6 +683,18 @@ details[open] .summary-chevron {
 .help-content {
   padding: 0 20px 20px;
   border-top: 1px solid var(--border);
+}
+
+/* Native <details> can't interpolate height cross-browser (closed content is
+   display:none), but a CSS animation fires when the panel opens — so the
+   reveal gets a smooth fade+rise. Close stays instant (the native behaviour). */
+details[open] .help-content {
+  animation: help-reveal 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes help-reveal {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .help-content p {
@@ -785,17 +827,21 @@ details[open] .summary-chevron {
 .footer-link {
   font-size: 0.8125rem;
   color: var(--muted);
-  text-decoration: none;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 28px;
-  transition: color 160ms ease;
+  min-height: 44px;
+  padding-block: 4px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: transparent;
+  transition: color 160ms ease, text-decoration-color 160ms ease;
 }
 
 @media (hover: hover) {
   .footer-link:hover {
     color: var(--ink);
+    text-decoration-color: var(--muted);
   }
 }
 
@@ -827,12 +873,79 @@ details[open] .summary-chevron {
   .nav-wordmark {
     font-size: 0.9rem;
   }
+  /* The 40px floor + 18ch overran the column on 361–480px phones and the
+     body's overflow-x:hidden clipped it silently. Cap to the column. */
+  .hero-headline {
+    font-size: clamp(1.875rem, 7.6vw, 2.5rem);
+    max-width: 100%;
+    overflow-wrap: break-word;
+  }
+  .hero-sub {
+    max-width: 100%;
+  }
 }
 
 @media (max-width: 360px) {
   .hero-headline {
     /* prevent overflow on narrowest phones */
-    font-size: clamp(2rem, 8.5vw, 2.5rem);
-    letter-spacing: -0.035em;
+    font-size: clamp(1.75rem, 8.5vw, 2.25rem);
+    letter-spacing: -0.03em;
+  }
+  /* Free space so the Download CTA never clips — GitHub stays in the footer. */
+  .nav-link:not(.nav-link--accent) {
+    display: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   INTERACTION + MOTION SAFETY (audit pass)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Kill the 300ms double-tap delay on the primary actions. */
+a, button, summary, [role='button'] {
+  touch-action: manipulation;
+}
+
+/* Sitewide link affordance: accent underline grows on hover. */
+.step-text a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--accent-soft);
+  transition: text-decoration-color 160ms ease;
+}
+
+@media (hover: hover) {
+  .step-text a:hover {
+    text-decoration-color: var(--accent);
+  }
+}
+
+/* Honour prefers-reduced-motion across every remaining animated surface:
+   no smooth scroll, no hover lifts, no idle shimmer, no chevron easing. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .site-nav,
+  .nav-link,
+  .nav-link--accent,
+  .btn-download,
+  .btn-download svg,
+  .summary-chevron,
+  .skip-link,
+  .help-summary,
+  .footer-link,
+  .banner-text a,
+  .step-text a,
+  .step-item {
+    transition: none;
+  }
+  .btn-download:hover,
+  .nav-link--accent:hover {
+    transform: none;
+  }
+  details[open] .help-content {
+    animation: none;
   }
 }
