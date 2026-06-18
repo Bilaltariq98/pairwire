@@ -13,6 +13,8 @@ pub enum Command {
     Host(HostArgs),
     /// Join a session using an invite link.
     Join(JoinArgs),
+    /// No subcommand given (double-clicked app): show the native Host/Join chooser.
+    Launcher,
     /// Print the version string and exit.
     Version,
     /// Print usage help and exit.
@@ -179,7 +181,7 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
         Some(cmd) => {
             anyhow::bail!("unknown command: {cmd}\nUsage: pairwire host | pairwire join <invite>")
         }
-        None => anyhow::bail!("Usage: pairwire host | pairwire join <invite>"),
+        None => Ok(Command::Launcher),
     }
 }
 
@@ -187,6 +189,18 @@ fn parse_u32(args: &[String], i: usize, flag: &str) -> anyhow::Result<u32> {
     args.get(i)
         .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))
         .and_then(|v| u32::from_str(v).map_err(|_| anyhow::anyhow!("{flag} must be a number")))
+}
+
+/// Validate an invite URL at the boundary. Pairwire invites are `pairwire://...`.
+pub fn validate_invite(url: &str) -> anyhow::Result<()> {
+    let url = url.trim();
+    if url.is_empty() {
+        anyhow::bail!("invite link is empty");
+    }
+    if !url.starts_with("pairwire://") {
+        anyhow::bail!("invite link must start with pairwire://");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -322,8 +336,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_no_args_errors() {
-        assert!(parse(&[]).is_err());
+    fn parse_no_args_returns_launcher() {
+        let cmd = parse(&[]).unwrap();
+        assert!(matches!(cmd, Command::Launcher));
+    }
+
+    #[test]
+    fn validate_invite_accepts_pairwire_url() {
+        assert!(validate_invite("pairwire://abc?token=0000000000000000000000000000000000").is_ok());
+    }
+
+    #[test]
+    fn validate_invite_rejects_empty_and_non_pairwire() {
+        assert!(validate_invite("").is_err());
+        assert!(validate_invite("https://example.com").is_err());
     }
 
     #[test]

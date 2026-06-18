@@ -58,6 +58,10 @@ fn main() -> Result<()> {
         }
         // Version and Help are handled above before the runtime is built.
         cli::Command::Version | cli::Command::Help => {}
+        // Launcher dispatch is wired in Task 3 (P4.5.4); placeholder until then.
+        cli::Command::Launcher => {
+            anyhow::bail!("launch chooser not yet wired — run `pairwire host` or `pairwire join <invite>`");
+        }
     }
 
     Ok(())
