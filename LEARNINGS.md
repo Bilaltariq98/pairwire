@@ -360,6 +360,21 @@ Each entry should include:
   4. **`LSMinimumSystemVersion` plist check**: The spec's prose verification steps (Task 7, step "Verify TCC usage strings") included this check, but the `verify-bundle` recipe template in the same task omitted it. The justfile and the plan doc recipe template have both been updated to include the `LSMinimumSystemVersion` PlistBuddy check.
 - **Commit message note**: The actual commit message for 9d7f798 was `feat(P4.5.1.7): verify-bundle recipe + ad-hoc codesign verification` instead of the spec-required `feat(P4.5.1.7): verify-bundle recipe + inner-binary codesign + spctl/plist verification steps`. A follow-up commit records the spec-compliance fixes. Future commits should use the exact message from the plan.
 
+### 2026-06-18 — P4.5.4 launch chooser: NSAlert blocks main thread; setActivationPolicy(Regular) brings dialog to front
+
+- **Area**: app, gui, NSAlert, launcher
+- **What**: During Task 3 manual-run verification (`cargo run -p pairwire --features gui,tray,encode,capture,audio` with no args), the process:
+  1. Logged "pairwire starting"
+  2. Called `show_launcher()` → `NSAlert::runModal()` — this is a **blocking synchronous call** on the main thread; the process stayed alive and alive waiting for a button click (no crash, no error log).
+  3. When "Host" was clicked, the full host path fired immediately: iroh endpoint bound, invite link printed, overlay + tray created — indistinguishable from `pairwire host`.
+- **NSAlert quirks observed**:
+  - `setActivationPolicy(Regular)` **before** `NSAlert::runModal()` is required to bring the dialog to the foreground for an `LSUIElement=true` bundle. Without it the dialog hides behind the active application.
+  - `NSAlert::new(mtm)` and all method calls (`addButtonWithTitle`, `setAccessoryView`, `runModal`, etc.) do NOT require an extra `unsafe {}` block in objc2-app-kit 0.3 — the `#[unsafe(method(...))]` safety annotation is on the generated method, but the Rust call site is safe. Only raw pointer dereferences or `AnyObject` casts need `unsafe` here.
+  - `NSTextField::new(mtm)` exists and returns an `Id<NSTextField>`; `field.setPlaceholderString(Some(ns_string!(...)))` and `field.stringValue()` are both safe calls. The Deref coercion chain `NSTextField → NSControl → NSView` makes `&**field` a `&NSView` for `setAccessoryView`.
+  - `NSAlertFirstButtonReturn` / `NSAlertSecondButtonReturn` / `NSAlertThirdButtonReturn` are `NSModalResponse` newtypes (isize wrappers). Comparing with `==` works; the `.0` inner field is not needed — compare the enum constants directly.
+- **Cancel path**: The process exits cleanly (exit code 0) when the dialog is dismissed. Confirmed: `run_launcher` returns `Ok(())` on `None`, and `main()` returns `Ok(())`.
+- **One-EventLoop constraint confirmed**: The NSAlert path creates no winit/eframe `EventLoop`, so the subsequent `run_host_with_overlay_and_tray` → `eframe::run_native` starts cleanly. If a future task tries to replace the NSAlert with an eframe window, the host overlay `EventLoop` will panic with "EventLoop already exists" — document this constraint and keep the native NSAlert.
+
 ### 2026-06-18 — iroh-relay port matrix: TCP 443 WebSocket required, UDP optional, STUN dead
 - **Area**: iroh, relay, hosting, deployment
 - **What**: While scoping a self-hosted relay for ship, verified iroh-relay's actual network requirements (workspace pins `iroh` + `iroh-relay` at **0.97.0** per Cargo.lock; an earlier assumption that it "needs raw UDP STUN/QAD on 3478" was WRONG):
