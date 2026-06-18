@@ -135,7 +135,9 @@ mod tests {
     /// require a live DSN). The closure is the same code that runs in production.
     #[test]
     fn before_send_drops_event_when_not_consented() {
-        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         consent::reset_for_test();
         // consent is NOT set → gate is shut
 
@@ -155,7 +157,9 @@ mod tests {
     /// `before_send` forwards events when consent has been granted.
     #[test]
     fn before_send_forwards_event_when_consented() {
-        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         consent::reset_for_test();
         consent::set_consent(true);
 

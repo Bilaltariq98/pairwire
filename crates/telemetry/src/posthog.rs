@@ -49,7 +49,7 @@
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::events::TelemetryEvent;
+use crate::events::{EventSink, TelemetryEvent};
 
 /// PostHog EU REST endpoint. Immutable — EU region only.
 const EU_ENDPOINT: &str = "https://eu.i.posthog.com";
@@ -64,19 +64,31 @@ fn api_key() -> Option<String> {
         .or_else(|| BAKED_API_KEY.map(str::to_owned))
 }
 
-/// Fire a telemetry event to PostHog EU.
+/// The production [`EventSink`] — dispatches events to PostHog EU.
 ///
 /// Non-blocking: spawns a `tokio::spawn` task for fire-and-forget dispatch.
 ///
 /// **Pre-condition**: caller must check [`crate::consent::is_consented()`]
-/// before calling this function. `send` does NOT re-check consent.
+/// before calling `send`. `PostHogSink::send` does NOT re-check consent.
 ///
 /// # Panics
 ///
 /// Panics if called outside a tokio async runtime context. This function
 /// internally calls [`tokio::spawn`], which requires an active tokio runtime.
 /// Ensure a runtime (e.g. `#[tokio::main]`) is active before calling `send`.
-pub fn send(event: TelemetryEvent) {
+pub struct PostHogSink;
+
+impl EventSink for PostHogSink {
+    fn send(&self, event: TelemetryEvent) {
+        send(event);
+    }
+}
+
+/// Fire a telemetry event to PostHog EU (internal helper used by [`PostHogSink`]).
+///
+/// **Pre-condition**: caller must check [`crate::consent::is_consented()`]
+/// before calling this function. `send` does NOT re-check consent.
+pub(crate) fn send(event: TelemetryEvent) {
     let Some(key) = api_key() else {
         debug!(
             "PostHog key not set — event dropped: {}",

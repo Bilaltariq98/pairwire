@@ -78,7 +78,7 @@ pub mod fake {
 
     #[derive(Debug, Clone, Default)]
     pub struct FakeSink {
-        pub events: Arc<Mutex<Vec<TelemetryEvent>>>,
+        pub(crate) events: Arc<Mutex<Vec<TelemetryEvent>>>,
     }
 
     impl FakeSink {
@@ -125,32 +125,36 @@ mod tests {
     /// Consent gate suppresses all events when consent is None/false.
     ///
     /// This test verifies the core privacy guarantee: nothing is sent before
-    /// the user opts in.
+    /// the user opts in. It calls `crate::record_with_sink()` so the real
+    /// consent-gate logic in `lib.rs` is exercised — a bug there would be caught.
     #[test]
     fn consent_gate_suppresses_events_when_not_consented() {
-        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         consent::reset_for_test();
         // consent is NOT set → gate is shut
 
         let sink = FakeSink::new();
 
-        // Simulate what `crate::record()` does, but using the FakeSink directly
-        // so we don't need the global PostHog client.
-        let check_and_send = |event: TelemetryEvent| {
-            if consent::is_consented() {
-                sink.send(event);
-            }
-        };
-
-        check_and_send(TelemetryEvent::AppLaunched {
-            version: "0.1.0".into(),
-            os_family: "macos".into(),
-        });
-        check_and_send(TelemetryEvent::ConnectionEstablished { relayed: false });
-        check_and_send(TelemetryEvent::ConnectionFailed {
-            reason: "timeout".into(),
-        });
-        check_and_send(TelemetryEvent::SessionEnded { duration_secs: 300 });
+        crate::record_with_sink(
+            TelemetryEvent::AppLaunched {
+                version: "0.1.0".into(),
+                os_family: "macos".into(),
+            },
+            &sink,
+        );
+        crate::record_with_sink(
+            TelemetryEvent::ConnectionEstablished { relayed: false },
+            &sink,
+        );
+        crate::record_with_sink(
+            TelemetryEvent::ConnectionFailed {
+                reason: "timeout".into(),
+            },
+            &sink,
+        );
+        crate::record_with_sink(TelemetryEvent::SessionEnded { duration_secs: 300 }, &sink);
 
         assert!(
             sink.is_empty(),
@@ -162,25 +166,29 @@ mod tests {
     }
 
     /// Consent gate allows events when consented.
+    ///
+    /// Calls `crate::record_with_sink()` so the real consent-gate path is tested.
     #[test]
     fn consent_gate_allows_events_when_consented() {
-        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         consent::reset_for_test();
         consent::set_consent(true);
 
         let sink = FakeSink::new();
 
-        let check_and_send = |event: TelemetryEvent| {
-            if consent::is_consented() {
-                sink.send(event);
-            }
-        };
-
-        check_and_send(TelemetryEvent::AppLaunched {
-            version: "0.1.0".into(),
-            os_family: "macos".into(),
-        });
-        check_and_send(TelemetryEvent::ConnectionEstablished { relayed: true });
+        crate::record_with_sink(
+            TelemetryEvent::AppLaunched {
+                version: "0.1.0".into(),
+                os_family: "macos".into(),
+            },
+            &sink,
+        );
+        crate::record_with_sink(
+            TelemetryEvent::ConnectionEstablished { relayed: true },
+            &sink,
+        );
 
         assert_eq!(
             sink.len(),
@@ -253,6 +261,48 @@ mod tests {
         ];
         for event in &events {
             assert!(!event.event_name().is_empty());
+        }
+    }
+
+    /// `event_name()` must match the `"event"` field produced by serde.
+    ///
+    /// The enum carries `#[serde(tag = "event", rename_all = "snake_case")]`,
+    /// so the serialised JSON contains `"event": "<snake_case_variant_name>"`.
+    /// `event_name()` hand-rolls the same strings. This test detects any
+    /// divergence between the two sources of truth at test time.
+    #[test]
+    fn event_name_matches_serde_tag() {
+        let events = vec![
+            TelemetryEvent::AppLaunched {
+                version: "0.1.0".into(),
+                os_family: "macos".into(),
+            },
+            TelemetryEvent::ConnectionEstablished { relayed: false },
+            TelemetryEvent::ConnectionFailed {
+                reason: "timeout".into(),
+            },
+            TelemetryEvent::SessionEnded { duration_secs: 0 },
+        ];
+
+        for event in &events {
+            let value = serde_json::to_value(event)
+                .unwrap_or_else(|e| panic!("serialisation failed for {:?}: {}", event, e));
+            let serde_tag = value
+                .get("event")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "serialised event {:?} has no 'event' tag field",
+                        event.event_name()
+                    )
+                });
+            assert_eq!(
+                serde_tag,
+                event.event_name(),
+                "event_name() = {:?} does not match serde tag = {:?} for variant",
+                event.event_name(),
+                serde_tag,
+            );
         }
     }
 }

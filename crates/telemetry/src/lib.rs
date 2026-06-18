@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 
 pub use config::TelemetryConfig;
 pub use consent::{consent_was_set, is_consented, set_consent};
-pub use events::TelemetryEvent;
+pub use events::{EventSink, TelemetryEvent};
 pub use sentry_init::init_sentry;
 
 /// Initialise telemetry on startup.
@@ -55,13 +55,22 @@ pub fn init() -> (TelemetryConfig, sentry::ClientInitGuard) {
     (cfg, guard)
 }
 
-/// Fire a telemetry event if consent is granted.
+/// Fire a telemetry event through the provided sink if consent is granted.
 ///
-/// The check is a single atomic load — effectively free on the hot path when
-/// consent is not granted. When granted, dispatches asynchronously to PostHog.
-pub fn record(event: TelemetryEvent) {
+/// The consent check is a single atomic load — effectively free on the hot
+/// path when consent is not granted. This function is the single source of
+/// truth for the consent gate, used by both production dispatch and tests.
+pub fn record_with_sink(event: TelemetryEvent, sink: &impl EventSink) {
     if !is_consented() {
         return;
     }
-    posthog::send(event);
+    sink.send(event);
+}
+
+/// Fire a telemetry event if consent is granted.
+///
+/// Dispatches to the production PostHog EU sink. The check is a single atomic
+/// load — effectively free on the hot path when consent is not granted.
+pub fn record(event: TelemetryEvent) {
+    record_with_sink(event, &posthog::PostHogSink);
 }

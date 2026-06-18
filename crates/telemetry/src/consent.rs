@@ -63,7 +63,9 @@ mod tests {
     use super::*;
 
     fn with_reset<F: FnOnce()>(f: F) {
-        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         reset_for_test();
         f();
         reset_for_test();
