@@ -43,3 +43,20 @@ test-crate crate:
 # Check a specific crate
 check-crate crate:
     cargo check -p {{crate}}
+
+# Test static FFmpeg linkage — decides P4.5.1 bundling strategy.
+# Requires: brew install nasm pkg-config
+# If this succeeds and VideoToolbox works in a clean VM → use static.
+# If VideoToolbox breaks → use dylibbundler (see Task 4 fallback).
+ffmpeg-spike:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unset FFMPEG_DIR BINDGEN_EXTRA_CLANG_ARGS 2>/dev/null || true
+    CARGO_FEATURE_STATIC=1 \
+    cargo build -p pairwire \
+        --release \
+        --features encode,capture,audio,gui,tray \
+        2>&1 | tee /tmp/ffmpeg-spike.log
+    echo "=== Spike build complete. Check /tmp/ffmpeg-spike.log for errors. ==="
+    echo "=== otool -L output follows — check for Homebrew paths: ==="
+    otool -L target/release/pairwire | grep -E "libav|libsw|libpostproc|homebrew" || true
