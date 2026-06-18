@@ -16,3 +16,6 @@ crash.*.log
 
 # Generated plan output files
 *.tfplan
+
+# Provider lock file — outside Task 5 scope; will be committed when spec authorises it
+.terraform.lock.hcl
