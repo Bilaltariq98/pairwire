@@ -626,7 +626,7 @@ done
   and can't be opened." The system log shows: `mapped file has no cdhash, skipping
   validation`. The binary itself may be correctly signed but the unsigned dylibs
   trigger the rejection.
-- **Resolution**: Ad-hoc sign each dylib (`codesign --sign - --options runtime`) BEFORE
+- **Resolution**: Ad-hoc sign each dylib (`codesign --sign -`) BEFORE
   signing the outer .app. Bottom-up signing order is mandatory: dylibs first, then the
   binary, then the .app bundle. dylibbundler rewrites @rpath references; signing must
   happen after dylibbundler runs (signing is invalidated by any file modification).
