@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  macos-dmg:
+    name: macOS DMG (arm64)
+    runs-on: macos-latest   # Apple Silicon runner; macos-latest → macOS 15 (Sequoia) arm64 as of 2026
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: macos-release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-release-cargo-
+          # Note: the `target` directory can grow to multiple GB. Monitor cache
+          # usage in the Actions tab and add a size limit step if costs rise.
+
+      - name: Install FFmpeg and dylibbundler
+        run: brew install ffmpeg pkg-config dylibbundler
+
+      - name: Set FFmpeg bindgen env
+        run: |
+          FFMPEG_PREFIX=$(brew --prefix ffmpeg)
+          echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-I${FFMPEG_PREFIX}/include" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version "0.11" --locked
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary + produce .app and .dmg
+        env:
+          CODESIGN_IDENTITY: "-"    # Ad-hoc sign. Change to Developer ID cert name when enrolled.
+        run: |
+          # IMPORTANT: --features must come before '--' (there is no '--' needed here;
+          # features are cargo flags, not binary runtime flags).
+          cargo packager \
+            --release \
+            --formats app,dmg \
+            -p pairwire \
+            --features encode,capture,audio,gui,tray
+
+      - name: Bundle FFmpeg dylibs into .app
+        # dylibbundler copies Homebrew FFmpeg .dylib files into Contents/libs/,
+        # rewrites @rpath references with install_name_tool, and ad-hoc signs each
+        # dylib individually (bottom-up signing order required — unsigned dylibs inside
+        # a hardened-runtime .app trigger the "mapped file has no cdhash" Gatekeeper
+        # rejection). Must run AFTER cargo packager creates the .app skeleton and BEFORE
+        # the outer bundle codesign verification.
+        env:
+          CODESIGN_IDENTITY: "-"
+        run: just bundle-dylibs
+
+      - name: Verify bundle signing (inner binary + outer bundle)
+        run: |
+          APP="target/release/bundle/macos/pairwire.app"
+          plutil -lint "$APP/Contents/Info.plist"
+          echo "=== Inner binary codesign ==="
+          codesign -dv "$APP/Contents/MacOS/pairwire" 2>&1 | grep -E "Signature|Identifier"
+          echo "=== Outer bundle codesign + entitlements ==="
+          codesign -d --entitlements - -vvv "$APP" 2>&1
+          echo "=== spctl ==="
+          spctl --assess --type execute --verbose "$APP" 2>&1 || true
+          echo "=== Version check ==="
+          "$APP/Contents/MacOS/pairwire" --version
+
+      - name: List produced artifacts
+        run: ls -lh target/release/bundle/macos/
+
+      - name: Upload DMG to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/bundle/macos/*.dmg
+          name: pairwire v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## pairwire v${{ steps.version.outputs.VERSION }}
+
+            ### macOS Installation (arm64)
+            1. Download `pairwire_${{ steps.version.outputs.VERSION }}_aarch64.dmg`
+            2. Open the DMG and drag pairwire.app to /Applications
+            3. **First launch:** macOS will block the unsigned app. Go to:
+               System Settings → Privacy & Security → scroll down → "Open Anyway"
+               Enter your admin password when prompted.
+            4. Grant Screen Recording and Microphone permissions when macOS asks.
+
+            ### Requirements
+            - macOS 12.3 (Monterey) or later
+            - Apple Silicon Mac (arm64) — x86_64 (Intel) support is deferred
+
+            ### This build is unsigned (v1 beta)
+            Ad-hoc codesigned. No Apple notarization. Gatekeeper "Open Anyway" is required.
+            Granted TCC permissions persist across launches once approved.
+          draft: false
+          prerelease: true   # Mark as pre-release until Developer ID signing is added
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
