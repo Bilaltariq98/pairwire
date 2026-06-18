@@ -95,6 +95,21 @@ mod inner {
     #[cfg(feature = "tray")]
     use crate::tray::{TrayAction, TrayHandle};
 
+    use pairwire_telemetry::TelemetryConfig;
+
+    // ── First-run consent dialog ──────────────────────────────────────────────────
+
+    /// State of the first-run telemetry consent dialog.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ConsentDialogState {
+        /// Not yet shown (waiting for session channels to be live).
+        Pending,
+        /// Currently displayed to the user.
+        Visible,
+        /// User has responded; do not show again.
+        Done,
+    }
+
     // ── Tray bridge (gui + tray builds) ─────────────────────────────────────────
 
     /// Control + lifecycle plumbing the overlay needs to drive the menu-bar tray.
@@ -368,6 +383,10 @@ mod inner {
         /// main thread. Polled each `update()`.
         #[cfg(feature = "tray")]
         tray: Option<TrayState>,
+        /// Tracks the first-run consent dialog lifecycle.
+        consent_dialog_state: ConsentDialogState,
+        /// Loaded telemetry config — needed to persist the user's choice.
+        telemetry_cfg: TelemetryConfig,
     }
 
     impl TransparentHostOverlayApp {
@@ -397,6 +416,13 @@ mod inner {
                 chrome_init: false,
                 #[cfg(feature = "tray")]
                 tray: None,
+                consent_dialog_state: if pairwire_telemetry::consent_was_set() {
+                    // User decided on a previous run — skip the dialog.
+                    ConsentDialogState::Done
+                } else {
+                    ConsentDialogState::Pending
+                },
+                telemetry_cfg: pairwire_telemetry::config::load().unwrap_or_default(),
             }
         }
 
@@ -811,6 +837,66 @@ mod inner {
         }
     }
 
+    impl TransparentHostOverlayApp {
+        /// Render the first-run telemetry consent dialog.
+        ///
+        /// The dialog is anchored bottom-right to avoid obscuring the annotation
+        /// canvas. Clicking "Yes" or "No thanks" calls `apply_consent` which
+        /// updates the process-global gate and persists the choice to disk.
+        fn render_consent_dialog(&mut self, ctx: &Context) {
+            let screen_rect = ctx.screen_rect();
+            let dialog_size = egui::vec2(360.0, 160.0);
+            let dialog_pos = egui::pos2(
+                screen_rect.max.x - dialog_size.x - 16.0,
+                screen_rect.max.y - dialog_size.y - 16.0,
+            );
+
+            // egui 0.31 does not have `Frame::window()`. Use `Frame::NONE.fill()`
+            // with the panel fill colour from the current style — matches the
+            // pattern used elsewhere in this codebase.
+            let panel_fill = ctx.style().visuals.panel_fill;
+            egui::Window::new("##telemetry_consent")
+                .fixed_pos(dialog_pos)
+                .fixed_size(dialog_size)
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .frame(egui::Frame::NONE.fill(panel_fill))
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.heading("Help improve Pairwire?");
+                        ui.add_space(6.0);
+                        ui.label(
+                            "Send anonymous usage stats and crash reports to the Pairwire team.\n\
+                             No screen content, audio, keystrokes, or invite links are ever sent.\n\
+                             You can change this in settings at any time.",
+                        );
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Yes, send anonymous data").clicked() {
+                                self.apply_consent(true);
+                            }
+                            if ui.button("No thanks").clicked() {
+                                self.apply_consent(false);
+                            }
+                        });
+                    });
+                });
+        }
+
+        /// Apply the user's consent choice: update the gate, persist to disk,
+        /// and transition the dialog to `Done`.
+        fn apply_consent(&mut self, consented: bool) {
+            pairwire_telemetry::set_consent(consented);
+            self.telemetry_cfg.consent = Some(consented);
+            if let Err(e) = pairwire_telemetry::config::save(&self.telemetry_cfg) {
+                warn!(error = %e, "failed to persist telemetry consent");
+            }
+            self.consent_dialog_state = ConsentDialogState::Done;
+            info!(consented, "telemetry consent dialog completed");
+        }
+    }
+
     impl eframe::App for TransparentHostOverlayApp {
         /// Clear the wgpu surface with a fully-transparent color every frame.
         ///
@@ -852,6 +938,14 @@ mod inner {
                 return;
             }
 
+            // Transition consent dialog from Pending → Visible once the session
+            // channels are live (endpoint is online). The overlay only receives
+            // `HostOverlayChannels` after the endpoint is ready, so by the time
+            // `update()` is first called the endpoint is already listening.
+            if self.consent_dialog_state == ConsentDialogState::Pending {
+                self.consent_dialog_state = ConsentDialogState::Visible;
+            }
+
             let canvas = ctx.screen_rect();
 
             egui::CentralPanel::default()
@@ -861,6 +955,11 @@ mod inner {
                     self.render_session_banner(ui, canvas);
                     self.render_hud(ui, canvas);
                 });
+
+            // Render the first-run consent dialog on top of the canvas when needed.
+            if self.consent_dialog_state == ConsentDialogState::Visible {
+                self.render_consent_dialog(ctx);
+            }
 
             self.capture_input_events(ctx, canvas, frame);
         }

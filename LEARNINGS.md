@@ -303,3 +303,24 @@ Each entry should include:
   - **QAD is a separate, OPTIONAL UDP server** (default port **7842**, `QuicConfig` in `iroh_relay::server::ServerConfig`). `quic: None` disables it and the relay still starts and forwards traffic; you only lose this host as a QAD address-discovery endpoint (n0's public relays already provide QAD).
 - **Resolution**: A self-hosted relay needs a VPS with a public IP and inbound **TCP 443** (required) + **UDP 7842** (recommended, for QAD). Hetzner CX22 fits. **Cloudflare Containers cannot host it** — all container ingress is proxied through a Worker ("end-users cannot make non-HTTP TCP or UDP requests to a Container instance"), which breaks the e2e-encrypted WebSocket QUIC tunnel and blocks UDP entirely. **Cloudflare's managed MoQ relay is irrelevant** — it speaks IETF moq-transport (draft-07→14), not moq-lite, and sits at the wrong layer (would require replacing iroh). Fly.io supports raw UDP + dedicated IPv4 but egress is ~$0.02/GB vs Hetzner's 20 TB included — pricier for relayed video.
 - **Key insight**: Wire the relay via `Endpoint::builder().relay_mode(RelayMode::Custom(vec![relay_url]))`. Keep n0's public relays as a fallback so a relay outage degrades (more relay-via-public / slower hole-punch) rather than hard-fails.
+
+### 2026-06-18 — Telemetry consent gate must use --test-threads=1
+- **Area**: telemetry, testing
+- **What**: `consent::reset_for_test()` mutates process-global `AtomicBool` statics (`CONSENT`, `CONSENT_SET`). When `cargo test` runs multiple consent tests in parallel, a `reset_for_test()` in one test can race with an `is_consented()` check in another, causing intermittent failures.
+- **Resolution**: Run `pairwire-telemetry` tests with `--test-threads=1`. In CI, add `RUST_TEST_THREADS=1` for this crate only or use `cargo test -p pairwire-telemetry -- --test-threads=1`.
+- **Note**: The production code uses `Ordering::Relaxed` intentionally — a transient wrong consent read costs at most one extra/missed telemetry event, which is acceptable. The test isolation problem is a testing concern, not a production concern.
+
+### 2026-06-18 — sentry crate: pin to exact version, use before_send for consent
+- **Area**: telemetry, sentry
+- **What**: `sentry` is pre-1.0 and breaks on minor bumps. Also, setting `enabled: false` at init time prevents re-enabling at runtime — the correct GDPR pattern is to leave Sentry enabled but gate events via `before_send` so consent can be toggled mid-session. The panic hook is auto-registered by the `panic` feature flag — no explicit `register_panic_handler()` call is needed.
+- **Resolution**: Pin to exact version (verified: `=0.48.2` at 2026-06-18). Use `before_send` callback that calls `pairwire_telemetry::consent::is_consented()` and returns `None` (drop) when not consented. Never use `ClientOptions { enabled: false }` for the consent gate.
+
+### 2026-06-18 — posthog-rs version: 0.4 is not published; use 0.13.x builder API
+- **Area**: telemetry, posthog
+- **What**: `posthog-rs = "0.4"` is not published on crates.io. The latest stable version at 2026-06-18 is `0.13.1`. The v0.13 API is builder-style: `ClientOptions::new(key).endpoint(url)` then `posthog_rs::client(options)`, vs the old `posthog_rs::client(key, endpoint)` free-function form.
+- **Resolution**: Pin to `"0.13.1"`. Always verify with `cargo search posthog-rs` before adding to `Cargo.toml`. Verify method signatures at implementation time with `cargo doc -p posthog-rs --open`.
+
+### 2026-06-18 — egui 0.31: no Frame::window() — use Frame::NONE.fill()
+- **Area**: UI, egui
+- **What**: `egui::Frame::window(&ctx.style())` does not exist in egui 0.31. The workspace uses egui 0.31 (`Cargo.toml:48`). The correct pattern for a styled frame in egui 0.31 is `egui::Frame::NONE.fill(ctx.style().visuals.panel_fill)`. This is used at `host_overlay_transparent.rs:858` and `viewer.rs:749`.
+- **Resolution**: Always check existing files for egui API usage before writing new egui widget code. Do not reference egui docs for versions other than 0.31.

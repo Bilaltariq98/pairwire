@@ -324,6 +324,10 @@ pub async fn run_host(
             video_codec = ?session.video_codec,
             "handshake complete"
         );
+        let session_start = std::time::Instant::now();
+        pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::ConnectionEstablished {
+            relayed: false, // TODO(P4.6.3): derive from iroh path info when available
+        });
 
         // Persistent control channel — must be the first post-handshake bidi accept.
         let (host_ctrl_outbound_tx, host_ctrl_outbound_rx) =
@@ -934,6 +938,12 @@ pub async fn run_host(
         }
 
         // ── Per-connection teardown (loop continues to next accept) ────────────
+        {
+            let duration_secs = session_start.elapsed().as_secs();
+            pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::SessionEnded {
+                duration_secs,
+            });
+        }
         cursor_poll_task.abort();
         let _ = cursor_poll_task.await;
         host_cursor_log_task.abort();
@@ -1111,6 +1121,9 @@ pub async fn run_join(
         Ok(conn) => Arc::new(conn),
         Err(error) => {
             close_transport_with_timeout(transport, "guest connect failed").await;
+            pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::ConnectionFailed {
+                reason: "transport_connect".to_owned(),
+            });
             return Err(error).context("failed to connect to host");
         }
     };
@@ -1123,6 +1136,9 @@ pub async fn run_join(
         video_codec = ?session.video_codec,
         "handshake complete"
     );
+    pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::ConnectionEstablished {
+        relayed: false, // TODO(P4.6.3): derive from iroh path info when available
+    });
 
     // Persistent control channel — must be the first post-handshake bidi open so
     // the ordinal position matches the host's `accept_bi` sequence above.
@@ -1179,12 +1195,18 @@ pub async fn run_join(
                 conn.close(0, b"host ready wait failed");
                 guest_ctrl_handle.stop().await;
                 close_transport_with_timeout(transport, "HostReady wait failed").await;
+                pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::ConnectionFailed {
+                    reason: "handshake_timeout".to_owned(),
+                });
                 return Err(e);
             }
             Err(_) => {
                 conn.close(0, b"host ready timeout");
                 guest_ctrl_handle.stop().await;
                 close_transport_with_timeout(transport, "HostReady timeout").await;
+                pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::ConnectionFailed {
+                    reason: "handshake_timeout".to_owned(),
+                });
                 return Err(anyhow::anyhow!(
                     "timed out waiting for HostReady from host after handshake"
                 ));

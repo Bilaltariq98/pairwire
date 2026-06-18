@@ -4612,6 +4612,7 @@ dependencies = [
  "pairwire-core",
  "pairwire-input",
  "pairwire-protocol",
+ "pairwire-telemetry",
  "pairwire-terminal",
  "pairwire-transport",
  "rand 0.9.4",

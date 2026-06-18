@@ -29,6 +29,16 @@ fn main() -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "pairwire starting");
 
+    // Initialise telemetry. `_sentry_guard` must be kept alive for the process
+    // lifetime — it flushes Sentry events on drop.
+    let (_telemetry_cfg, _sentry_guard) = pairwire_telemetry::init();
+
+    // Fire AppLaunched immediately — gated by consent; no-op if not consented.
+    pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::AppLaunched {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        os_family: std::env::consts::OS.to_owned(),
+    });
+
     let cmd = cli::parse_args()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
