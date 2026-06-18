@@ -64,6 +64,11 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSColor",
     "NSScreen",
     "NSResponder",
+    # Required for the native launch chooser (P4.5.4): NSAlert + NSTextField
+    "NSAlert",
+    "NSButton",
+    "NSControl",
+    "NSTextField",
 ] }
 # raw-window-handle is a transitive dep of winit/eframe; pull it in directly so
 # we can extract the NSView* from eframe::Frame in host_overlay_transparent.rs.

@@ -9,6 +9,10 @@ mod control_state;
 mod guest_ctrl;
 mod host_ctrl;
 mod host_overlay_transparent;
+// launcher is only used when the gui feature is compiled in (the non-gui
+// run_launcher stub in main.rs does not need the module at all).
+#[cfg(feature = "gui")]
+mod launcher;
 mod reconnect;
 mod session;
 mod tray;
@@ -58,15 +62,35 @@ fn main() -> Result<()> {
         }
         // Version and Help are handled above before the runtime is built.
         cli::Command::Version | cli::Command::Help => {}
-        // Launcher dispatch is wired in Task 3 (P4.5.4); placeholder until then.
-        cli::Command::Launcher => {
-            anyhow::bail!(
-                "launch chooser not yet wired — run `pairwire host` or `pairwire join <invite>`"
-            );
-        }
+        cli::Command::Launcher => run_launcher(&rt)?,
     }
 
     Ok(())
+}
+
+/// Show the native Host/Join chooser and dispatch to the appropriate handler.
+///
+/// When the `gui` feature is enabled the chooser uses a native `NSAlert` so it
+/// does not consume winit's `EventLoop`; the host overlay / viewer `eframe` loop
+/// starts cleanly after the choice is made.
+#[cfg(feature = "gui")]
+fn run_launcher(rt: &tokio::runtime::Runtime) -> Result<()> {
+    match launcher::show_launcher()? {
+        Some(launcher::LaunchChoice::Host(args)) => run_host_command(args, rt),
+        Some(launcher::LaunchChoice::Join(args)) => run_join_command(args, rt),
+        None => {
+            info!("launcher: cancelled");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "gui"))]
+fn run_launcher(_rt: &tokio::runtime::Runtime) -> Result<()> {
+    anyhow::bail!(
+        "no subcommand given — rebuild with --features gui for the launch chooser, \
+         or run `pairwire host` / `pairwire join <invite>`"
+    )
 }
 
 fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
