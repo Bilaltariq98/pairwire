@@ -100,36 +100,6 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable iroh-relay.service
   - systemctl start iroh-relay.service
-  # Install Grafana Alloy (metrics push agent)
-  - |
-    curl -fsSL https://packages.grafana.com/gpg.key \
-      | gpg --dearmor > /usr/share/keyrings/grafana.gpg
-  - |
-    echo "deb [signed-by=/usr/share/keyrings/grafana.gpg] \
-      https://packages.grafana.com/alloy/deb stable main" \
-      > /etc/apt/sources.list.d/grafana-alloy.list
-  - apt-get update && apt-get install -y alloy
-  - mkdir -p /etc/alloy
-  - |
-    cat > /etc/alloy/config.alloy <<'ALLOY'
-    prometheus.scrape "iroh_relay" {
-      targets = [{"__address__" = "localhost:9090"}]
-      forward_to = [prometheus.remote_write.grafana_cloud.receiver]
-      scrape_interval = "30s"
-      job_name = "iroh-relay"
-    }
-
-    prometheus.remote_write "grafana_cloud" {
-      endpoint {
-        url = "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom/push"
-        basic_auth {
-          username = env("GRAFANA_METRICS_USER_ID")
-          password = env("GRAFANA_METRICS_API_KEY")
-        }
-      }
-    }
-    ALLOY
-  - systemctl enable alloy && systemctl start alloy
 
 # Ensure the relay service starts even after reboot
 bootcmd: []
