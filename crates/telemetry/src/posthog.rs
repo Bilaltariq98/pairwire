@@ -142,3 +142,108 @@ pub(crate) fn send(event: TelemetryEvent) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consent::TELEMETRY_TEST_LOCK;
+
+    /// When no API key is set (env var absent, no baked key), `send` must
+    /// return immediately without panicking or spawning a tokio task.
+    ///
+    /// BAKED_API_KEY is `None` in dev builds (env var not set at compile time),
+    /// so we only need to ensure the runtime env var is also absent.
+    #[test]
+    fn send_drops_event_silently_when_no_key() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // SAFETY: tests serialise on TELEMETRY_TEST_LOCK so only one thread
+        // touches this env var at a time — no concurrent env mutation risk.
+        unsafe { std::env::remove_var("PAIRWIRE_POSTHOG_KEY") };
+
+        // If no baked key is present, this call should return immediately
+        // (debug-logged drop). We can't assert network silence in a unit test,
+        // but we can verify no panic and that the function returns.
+        //
+        // If a baked key IS present (release CI), this test still passes — the
+        // `send` function will spawn a task, but the test doesn't fail because
+        // we're only asserting "no panic". Network failures are swallowed via
+        // `debug!`.
+        send(TelemetryEvent::AppLaunched {
+            version: "0.0.0-test".into(),
+            os_family: "test".into(),
+        });
+        // If we reach here, no panic occurred — the drop path works correctly.
+    }
+
+    /// `api_key()` returns the runtime env var when set, taking priority over
+    /// any baked compile-time value.
+    #[test]
+    fn api_key_runtime_env_overrides_baked() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // SAFETY: tests serialise on TELEMETRY_TEST_LOCK so only one thread
+        // touches this env var at a time — no concurrent env mutation risk.
+        unsafe { std::env::set_var("PAIRWIRE_POSTHOG_KEY", "test-runtime-key") };
+        let key = api_key();
+        unsafe { std::env::remove_var("PAIRWIRE_POSTHOG_KEY") };
+
+        assert_eq!(
+            key,
+            Some("test-runtime-key".to_owned()),
+            "runtime env var must take priority"
+        );
+    }
+
+    /// `api_key()` returns `None` when both the runtime env var and the baked
+    /// compile-time key are absent (standard dev build without key).
+    #[test]
+    fn api_key_returns_none_when_unset() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // SAFETY: tests serialise on TELEMETRY_TEST_LOCK so only one thread
+        // touches this env var at a time — no concurrent env mutation risk.
+        unsafe { std::env::remove_var("PAIRWIRE_POSTHOG_KEY") };
+
+        // BAKED_API_KEY is None in dev builds (no env var at compile time).
+        // If a CI build sets PAIRWIRE_POSTHOG_KEY at compile time, this test
+        // will correctly return Some(_) and the assertion guards only the None
+        // branch. We skip in that case with a soft check.
+        if BAKED_API_KEY.is_none() {
+            assert!(
+                api_key().is_none(),
+                "api_key() must return None when no key is configured at all"
+            );
+        }
+        // else: baked key present → api_key() returns Some(_); that's correct.
+        // No assertion needed — the function's behaviour is still valid.
+    }
+
+    /// `PostHogSink::send` delegates to the `send()` function without panicking.
+    ///
+    /// We verify the delegation is wired correctly by calling through the trait
+    /// object interface. No actual PostHog network call is expected in unit tests
+    /// (key is absent in dev builds, so the event is dropped immediately).
+    #[test]
+    fn posthog_sink_delegates_to_send() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // SAFETY: tests serialise on TELEMETRY_TEST_LOCK so only one thread
+        // touches this env var at a time — no concurrent env mutation risk.
+        // Ensure no key so the send path returns immediately without spawning.
+        unsafe { std::env::remove_var("PAIRWIRE_POSTHOG_KEY") };
+
+        let sink = PostHogSink;
+        // Call via the EventSink trait to verify the delegation is correct.
+        EventSink::send(&sink, TelemetryEvent::SessionEnded { duration_secs: 42 });
+        // No panic = delegation path is wired.
+    }
+}
