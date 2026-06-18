@@ -390,7 +390,12 @@ mod inner {
     }
 
     impl TransparentHostOverlayApp {
-        pub fn new(channels: HostOverlayChannels, capture_width: u32, capture_height: u32) -> Self {
+        pub fn new(
+            channels: HostOverlayChannels,
+            capture_width: u32,
+            capture_height: u32,
+            telemetry_cfg: TelemetryConfig,
+        ) -> Self {
             // The transparent overlay currently renders annotations/cursors only.
             // Consume the preview receiver so HostOverlayChannels doesn't carry a
             // dead field; keeping it in the channel bundle preserves the API for
@@ -422,7 +427,9 @@ mod inner {
                 } else {
                     ConsentDialogState::Pending
                 },
-                telemetry_cfg: pairwire_telemetry::config::load().unwrap_or_default(),
+                // Use the config loaded once by init() in main.rs — avoids a second
+                // Uuid::new_v4() that would produce a mismatched device ID on first run.
+                telemetry_cfg,
             }
         }
 
@@ -996,6 +1003,7 @@ mod inner {
         channels: HostOverlayChannels,
         capture_width: u32,
         capture_height: u32,
+        telemetry_cfg: TelemetryConfig,
     ) -> anyhow::Result<()> {
         info!(
             capture_width,
@@ -1015,6 +1023,7 @@ mod inner {
                     channels,
                     capture_width,
                     capture_height,
+                    telemetry_cfg,
                 )))
             }),
         )
@@ -1035,6 +1044,7 @@ mod inner {
         capture_width: u32,
         capture_height: u32,
         tray_cfg: TrayConfig,
+        telemetry_cfg: TelemetryConfig,
     ) -> anyhow::Result<()> {
         info!(
             capture_width,
@@ -1046,8 +1056,12 @@ mod inner {
             "pairwire — Transparent Overlay",
             overlay_native_options(),
             Box::new(move |_cc| {
-                let mut app =
-                    TransparentHostOverlayApp::new(channels, capture_width, capture_height);
+                let mut app = TransparentHostOverlayApp::new(
+                    channels,
+                    capture_width,
+                    capture_height,
+                    telemetry_cfg,
+                );
                 // Build the tray now: we are on the main thread and NSApp is live.
                 match TrayHandle::new(tray_cfg.invite_url.clone()) {
                     Ok(handle) => {

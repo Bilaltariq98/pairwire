@@ -29,25 +29,31 @@ fn main() -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "pairwire starting");
 
-    // Initialise telemetry. `_sentry_guard` must be kept alive for the process
-    // lifetime — it flushes Sentry events on drop.
-    let (_telemetry_cfg, _sentry_guard) = pairwire_telemetry::init();
-
-    // Fire AppLaunched immediately — gated by consent; no-op if not consented.
-    pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::AppLaunched {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-        os_family: std::env::consts::OS.to_owned(),
-    });
-
-    let cmd = cli::parse_args()?;
-
+    // Build the tokio runtime first so that `record()` can spawn tasks when
+    // consent has already been given (e.g. on all launches after first-run).
+    // AppLaunched is fired below, inside the runtime's context.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
+    // Initialise telemetry. `_sentry_guard` must be kept alive for the process
+    // lifetime — it flushes Sentry events on drop.
+    let (telemetry_cfg, _sentry_guard) = pairwire_telemetry::init();
+
+    // Fire AppLaunched inside the runtime so any tokio::spawn inside record()
+    // has a live runtime to schedule onto.
+    let _guard = rt.enter();
+    pairwire_telemetry::record(pairwire_telemetry::TelemetryEvent::AppLaunched {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        os_family: std::env::consts::OS.to_owned(),
+    });
+    drop(_guard);
+
+    let cmd = cli::parse_args()?;
+
     match cmd {
         cli::Command::Host(args) => {
-            run_host_command(args, &rt)?;
+            run_host_command(args, &rt, telemetry_cfg)?;
         }
         cli::Command::Join(args) => {
             run_join_command(args, &rt)?;
@@ -57,7 +63,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+fn run_host_command(
+    args: cli::HostArgs,
+    rt: &tokio::runtime::Runtime,
+    telemetry_cfg: pairwire_telemetry::TelemetryConfig,
+) -> Result<()> {
     // Three valid configurations:
     //   1. gui (overlay on main thread, tray ignored if compiled in)
     //   2. tray only — no gui (tray on main thread)
@@ -75,22 +85,24 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
         } else {
             #[cfg(feature = "tray")]
             {
-                run_host_with_overlay_and_tray(args, rt)
+                run_host_with_overlay_and_tray(args, rt, telemetry_cfg)
             }
             #[cfg(not(feature = "tray"))]
             {
-                run_host_with_overlay(args, rt)
+                run_host_with_overlay(args, rt, telemetry_cfg)
             }
         }
     }
 
     #[cfg(all(feature = "tray", not(feature = "gui")))]
     {
+        let _ = telemetry_cfg; // no overlay in tray-only builds
         run_host_with_tray(args, rt)
     }
 
     #[cfg(not(any(feature = "gui", feature = "tray")))]
     {
+        let _ = telemetry_cfg; // no overlay in headless builds
         run_host_no_overlay(args, rt)
     }
 }
@@ -101,7 +113,11 @@ fn run_host_no_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Res
 }
 
 #[cfg(all(feature = "gui", not(feature = "tray")))]
-fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+fn run_host_with_overlay(
+    args: cli::HostArgs,
+    rt: &tokio::runtime::Runtime,
+    telemetry_cfg: pairwire_telemetry::TelemetryConfig,
+) -> Result<()> {
     // Spawn the session on the runtime; block on the main thread waiting for
     // the overlay channels, then launch the transparent overlay (which owns
     // the main thread for the rest of the session).
@@ -119,8 +135,12 @@ fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> R
         Ok(channels) => {
             let cw = channels.capture_width;
             let ch = channels.capture_height;
-            if let Err(e) = host_overlay_transparent::run_transparent_host_overlay(channels, cw, ch)
-            {
+            if let Err(e) = host_overlay_transparent::run_transparent_host_overlay(
+                channels,
+                cw,
+                ch,
+                telemetry_cfg,
+            ) {
                 tracing::warn!(error = %e, "transparent overlay exited with error");
             }
         }
@@ -147,7 +167,11 @@ fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> R
 /// the accept loop, so both the overlay and the tray appear the moment hosting
 /// starts — the invite link is copyable before any guest connects.
 #[cfg(all(feature = "gui", feature = "tray"))]
-fn run_host_with_overlay_and_tray(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+fn run_host_with_overlay_and_tray(
+    args: cli::HostArgs,
+    rt: &tokio::runtime::Runtime,
+    telemetry_cfg: pairwire_telemetry::TelemetryConfig,
+) -> Result<()> {
     let (overlay_tx, overlay_rx) = tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
     let (invite_tx, invite_rx) = tokio::sync::oneshot::channel::<String>();
     let (host_shutdown_tx, host_shutdown_rx) = tokio::sync::watch::channel(false);
@@ -186,9 +210,13 @@ fn run_host_with_overlay_and_tray(args: cli::HostArgs, rt: &tokio::runtime::Runt
         shutdown_tx: host_shutdown_tx.clone(),
     };
 
-    if let Err(e) =
-        host_overlay_transparent::run_transparent_host_overlay_with_tray(channels, cw, ch, tray_cfg)
-    {
+    if let Err(e) = host_overlay_transparent::run_transparent_host_overlay_with_tray(
+        channels,
+        cw,
+        ch,
+        tray_cfg,
+        telemetry_cfg,
+    ) {
         tracing::warn!(error = %e, "transparent overlay (with tray) exited with error");
     }
 
