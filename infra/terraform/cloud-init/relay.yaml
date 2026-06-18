@@ -1,0 +1,135 @@
+#cloud-config
+# cloud-init for pairwire relay server (Hetzner CX22, Debian 12)
+# Installs iroh-relay 0.97.0 and starts it as a systemd service with
+# ACME TLS for relay.pairwire.dev.
+#
+# First boot takes ~5-8 minutes (Rust toolchain + cargo install).
+# Subsequent reboots are fast (binary is cached at /usr/local/bin/iroh-relay).
+
+packages:
+  - curl
+  - ca-certificates
+  - build-essential
+  - pkg-config
+  - libssl-dev
+  - git
+
+runcmd:
+  # Install Rust via rustup (non-interactive, stable toolchain)
+  - |
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable --profile minimal
+  - . /root/.cargo/env
+  # Install iroh-relay with the server feature enabled.
+  # Pinned to 0.97.0 to match workspace Cargo.lock. Bump deliberately.
+  # --locked is safe: cargo install synthesises a lock from the registry index
+  # without requiring a Cargo.lock file on disk.
+  - /root/.cargo/bin/cargo install iroh-relay --version 0.97.0 --locked --features server
+  - cp /root/.cargo/bin/iroh-relay /usr/local/bin/iroh-relay
+  # Write the relay configuration
+  - mkdir -p /etc/iroh-relay /var/lib/iroh-relay/acme-cache
+  - |
+    cat > /etc/iroh-relay/iroh-relay.toml <<'TOML'
+    # iroh-relay 0.97.0 configuration
+    # Reference: iroh-relay-0.97.0/src/main.rs Config struct
+
+    # Enable the relay proxy (required for connectivity fallback)
+    enable_relay = true
+
+    # HTTP redirect / captive-portal on port 80.
+    # Cloud-init does not open port 80 — rely on Hetzner firewall for 443.
+    http_bind_addr = "[::]:80"
+
+    # Enable Prometheus-compatible metrics endpoint on :9090
+    enable_metrics = true
+    metrics_bind_addr = "[::]:9090"
+
+    # Enable QAD (QUIC Address Discovery) — recommended, port 7842 UDP
+    enable_quic_addr_discovery = true
+
+    [tls]
+    # HTTPS/WSS relay on port 443
+    https_bind_addr = "[::]:443"
+    # QAD QUIC on port 7842
+    quic_bind_addr = "[::]:7842"
+    # TLS via Let's Encrypt ACME.
+    # IMPORTANT: CertMode serde representation is the Rust variant name as-is
+    # (no rename_all). The correct value is "LetsEncrypt" (capital L, capital E),
+    # NOT "letsencrypt". Using the wrong casing causes config parse failure + exit.
+    cert_mode = "LetsEncrypt"
+    hostname = "relay.pairwire.dev"
+    cert_dir = "/var/lib/iroh-relay/acme-cache"
+    prod_tls = true
+    # IMPORTANT: set this to a real email so LE can contact you for expiry notices.
+    contact = "ops@pairwire.dev"
+
+    # Access control: open relay (anyone can use it).
+    # Cost-cap: Hetzner firewall + egress alert at 15 TB/mo.
+    # iroh-relay has no per-node rate limiting (issue #2967).
+    #
+    # IMPORTANT: `access` is a direct root-level field (type AccessConfig enum),
+    # NOT a sub-table. Do NOT use [access] section syntax — that would deserialize
+    # as a struct and crash config parsing. Correct form is a bare key at root level:
+    access = "everyone"
+    TOML
+  # Write systemd unit
+  - |
+    cat > /etc/systemd/system/iroh-relay.service <<'UNIT'
+    [Unit]
+    Description=iroh relay server for pairwire
+    Documentation=https://iroh.computer/docs
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    User=root
+    ExecStart=/usr/local/bin/iroh-relay --config-path /etc/iroh-relay/iroh-relay.toml
+    Restart=always
+    RestartSec=5
+    # Allow binding to port 443 as root (CX22 runs as root)
+    AmbientCapabilities=CAP_NET_BIND_SERVICE
+    # Log to journald
+    StandardOutput=journal
+    StandardError=journal
+    SyslogIdentifier=iroh-relay
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+  - systemctl daemon-reload
+  - systemctl enable iroh-relay.service
+  - systemctl start iroh-relay.service
+  # Install Grafana Alloy (metrics push agent)
+  - |
+    curl -fsSL https://packages.grafana.com/gpg.key \
+      | gpg --dearmor > /usr/share/keyrings/grafana.gpg
+  - |
+    echo "deb [signed-by=/usr/share/keyrings/grafana.gpg] \
+      https://packages.grafana.com/alloy/deb stable main" \
+      > /etc/apt/sources.list.d/grafana-alloy.list
+  - apt-get update && apt-get install -y alloy
+  - mkdir -p /etc/alloy
+  - |
+    cat > /etc/alloy/config.alloy <<'ALLOY'
+    prometheus.scrape "iroh_relay" {
+      targets = [{"__address__" = "localhost:9090"}]
+      forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+      scrape_interval = "30s"
+      job_name = "iroh-relay"
+    }
+
+    prometheus.remote_write "grafana_cloud" {
+      endpoint {
+        url = "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom/push"
+        basic_auth {
+          username = env("GRAFANA_METRICS_USER_ID")
+          password = env("GRAFANA_METRICS_API_KEY")
+        }
+      }
+    }
+    ALLOY
+  - systemctl enable alloy && systemctl start alloy
+
+# Ensure the relay service starts even after reboot
+bootcmd: []
