@@ -140,7 +140,6 @@ fn run_host_command(
         }
     }
 
-
     // Three valid configurations:
     //   1. gui (overlay on main thread, tray ignored if compiled in)
     //   2. tray only — no gui (tray on main thread)
