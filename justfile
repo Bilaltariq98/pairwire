@@ -136,11 +136,12 @@ package:
         --release \
         -p pairwire \
         --features encode,capture,audio,gui,tray
-    # Step 2: Bundle the pre-built binary into .app and .dmg.
+    # Step 2: Bundle the pre-built binary into the .app skeleton only.
+    # DMG is deliberately deferred to Step 4 so dylibs are included in the archive.
     CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}" \
     cargo packager \
         --release \
-        --formats app,dmg \
+        --formats app \
         -p pairwire
     # Step 3: Bundle FFmpeg dylibs into Contents/libs and rewrite load commands.
     # cargo-packager produces the .app skeleton but does not copy the FFmpeg dylibs,
@@ -150,6 +151,13 @@ package:
     # @rpath load commands to @executable_path/../libs/ via install_name_tool,
     # ad-hoc codesigns each dylib, then re-codesigns the binary and the .app.
     just bundle-dylibs
+    # Step 4: Create the DMG from the now-complete .app (dylibs already bundled).
+    # This must run AFTER bundle-dylibs so the DMG archive captures the full bundle.
+    CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}" \
+    cargo packager \
+        --release \
+        --formats dmg \
+        -p pairwire
     echo "=== Bundle output ==="
     ls -lh target/release/bundle/macos/
 
