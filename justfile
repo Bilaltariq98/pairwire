@@ -292,3 +292,20 @@ ffmpeg-spike:
     echo "=== Spike build complete. Check /tmp/ffmpeg-spike.log for errors. ==="
     echo "=== otool -L output follows — check for Homebrew paths: ==="
     otool -L target/release/pairwire | grep -E "libav|libsw|libpostproc|homebrew" || true
+
+# ── Relay infrastructure (Terraform) ──────────────────────────────────────────
+# Requires: TF_VAR_hcloud_token, TF_VAR_cloudflare_token, TF_VAR_cloudflare_zone_id,
+#           TF_VAR_admin_ip, TF_VAR_ssh_public_key to be set in the environment.
+# State backend credentials must also be configured (see infra/terraform/backend.tf).
+
+# Show what Terraform would change (safe, no mutations)
+relay-plan:
+    cd infra/terraform && terraform init && terraform plan
+
+# Apply the Terraform plan (provisions/updates the relay server) [human approval required]
+relay-apply:
+    cd infra/terraform && terraform init && terraform apply
+
+# Destroy all relay infrastructure [destructive — human approval required]
+relay-destroy:
+    cd infra/terraform && terraform init && terraform destroy
