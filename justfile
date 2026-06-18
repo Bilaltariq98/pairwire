@@ -51,7 +51,7 @@ check-crate crate:
 bundle-dylibs:
     #!/usr/bin/env bash
     set -euo pipefail
-    APP="${APP:-target/release/pairwire.app}"
+    APP="${APP:-target/release/bundle/macos/pairwire.app}"
     BIN="$APP/Contents/MacOS/pairwire"
     LIBS_DIR="$APP/Contents/libs"
     IDENTITY="${CODESIGN_IDENTITY:--}"
@@ -118,8 +118,8 @@ bundle-dylibs:
 # Requires: assets/pairwire.icns (run `just icns` first; needs real icon asset)
 # Requires: packaging/dmg-background.png (solid-colour placeholder committed in Task 6)
 # Requires: FFMPEG_DIR / BINDGEN_EXTRA_CLANG_ARGS set (or CARGO_FEATURE_STATIC=1)
-# Output: target/release/pairwire.app
-#         target/release/pairwire_*.dmg
+# Output: target/release/bundle/macos/pairwire.app
+#         target/release/bundle/macos/pairwire_*.dmg
 package:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -151,8 +151,7 @@ package:
     # ad-hoc codesigns each dylib, then re-codesigns the binary and the .app.
     just bundle-dylibs
     echo "=== Bundle output ==="
-    ls -lh target/release/pairwire.app target/release/pairwire_*.dmg 2>/dev/null || \
-        ls -lh target/release/pairwire.app target/release/pairwire_*.dmg
+    ls -lh target/release/bundle/macos/
 
 # Alias — same as `package` (kept for semantic clarity in docs).
 dmg: package
@@ -239,7 +238,7 @@ tray-placeholder:
 verify-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
-    APP="target/release/pairwire.app"
+    APP="target/release/bundle/macos/pairwire.app"
     if [ ! -d "$APP" ]; then
         echo "ERROR: $APP not found — run 'just package' first"
         exit 1
