@@ -9,11 +9,12 @@
 /* ── Design Tokens ──────────────────────────────────────────
    Derived from logo.png: deep navy-black canvas, periwinkle wire.
    All text on --bg at specified L values passes contrast checks.
-   --ink on --bg:       ~14:1 ✓
-   --muted on --bg:     ~4.6:1 ✓  (body-safe)
-   --faint:             ~3.1:1 — labels/meta ONLY, never body
-   --accent on --bg:    ~4.5:1 ✓  (verified for link text)
-   --accent-ink on --accent button: ~7:1 ✓ (dark text on periwinkle)
+   Ratios computed via OKLCH→OKLab→Linear sRGB→WCAG formula.
+   --ink on --bg:       17.54:1 ✓  (WCAG AAA)
+   --muted on --bg:      8.57:1 ✓  (WCAG AAA)
+   --faint on --bg:      5.33:1 ✓  (WCAG AA — labels/meta only)
+   --accent on --bg:     7.50:1 ✓  (WCAG AAA — verified for link text)
+   --accent-ink on --accent button: 7.40:1 ✓ (WCAG AAA — dark text on periwinkle)
    ─────────────────────────────────────────────────────────── */
 :root {
   /* surfaces */

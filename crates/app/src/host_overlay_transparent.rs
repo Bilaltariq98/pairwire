@@ -95,6 +95,21 @@ mod inner {
     #[cfg(feature = "tray")]
     use crate::tray::{TrayAction, TrayHandle};
 
+    use pairwire_telemetry::TelemetryConfig;
+
+    // ── First-run consent dialog ──────────────────────────────────────────────────
+
+    /// State of the first-run telemetry consent dialog.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ConsentDialogState {
+        /// Not yet shown (waiting for session channels to be live).
+        Pending,
+        /// Currently displayed to the user.
+        Visible,
+        /// User has responded; do not show again.
+        Done,
+    }
+
     // ── Tray bridge (gui + tray builds) ─────────────────────────────────────────
 
     /// Control + lifecycle plumbing the overlay needs to drive the menu-bar tray.
@@ -427,10 +442,19 @@ mod inner {
         /// main thread. Polled each `update()`.
         #[cfg(feature = "tray")]
         tray: Option<TrayState>,
+        /// Tracks the first-run consent dialog lifecycle.
+        consent_dialog_state: ConsentDialogState,
+        /// Loaded telemetry config — needed to persist the user's choice.
+        telemetry_cfg: TelemetryConfig,
     }
 
     impl TransparentHostOverlayApp {
-        pub fn new(channels: HostOverlayChannels, capture_width: u32, capture_height: u32) -> Self {
+        pub fn new(
+            channels: HostOverlayChannels,
+            capture_width: u32,
+            capture_height: u32,
+            telemetry_cfg: TelemetryConfig,
+        ) -> Self {
             // The transparent overlay currently renders annotations/cursors only.
             // Consume the preview receiver so HostOverlayChannels doesn't carry a
             // dead field; keeping it in the channel bundle preserves the API for
@@ -457,6 +481,15 @@ mod inner {
                 local_strokes: Vec::new(),
                 #[cfg(feature = "tray")]
                 tray: None,
+                consent_dialog_state: if pairwire_telemetry::consent_was_set() {
+                    // User decided on a previous run — skip the dialog.
+                    ConsentDialogState::Done
+                } else {
+                    ConsentDialogState::Pending
+                },
+                // Use the config loaded once by init() in main.rs — avoids a second
+                // Uuid::new_v4() that would produce a mismatched device ID on first run.
+                telemetry_cfg,
             }
         }
 
@@ -927,6 +960,75 @@ mod inner {
         }
     }
 
+    impl TransparentHostOverlayApp {
+        /// Render the first-run telemetry consent dialog.
+        ///
+        /// The dialog is anchored bottom-right to avoid obscuring the annotation
+        /// canvas. Clicking "Yes" or "No thanks" calls `apply_consent` which
+        /// updates the process-global gate, persists the choice to disk, and
+        /// re-enables click-through on the overlay window.
+        fn render_consent_dialog(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+            let screen_rect = ctx.screen_rect();
+            let dialog_size = egui::vec2(360.0, 160.0);
+            let dialog_pos = egui::pos2(
+                screen_rect.max.x - dialog_size.x - 16.0,
+                screen_rect.max.y - dialog_size.y - 16.0,
+            );
+
+            // egui 0.31 does not have `Frame::window()`. Use `Frame::NONE.fill()`
+            // with the panel fill colour from the current style — matches the
+            // pattern used elsewhere in this codebase.
+            let panel_fill = ctx.style().visuals.panel_fill;
+            egui::Window::new("##telemetry_consent")
+                .fixed_pos(dialog_pos)
+                .fixed_size(dialog_size)
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .frame(egui::Frame::NONE.fill(panel_fill))
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.heading("Help improve Pairwire?");
+                        ui.add_space(6.0);
+                        ui.label(
+                            "Send anonymous usage stats and crash reports to the Pairwire team.\n\
+                             No screen content, audio, keystrokes, or invite links are ever sent.\n\
+                             You can change this in settings at any time.",
+                        );
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Yes, send anonymous data").clicked() {
+                                self.apply_consent(true, frame);
+                            }
+                            if ui.button("No thanks").clicked() {
+                                self.apply_consent(false, frame);
+                            }
+                        });
+                    });
+                });
+        }
+
+        /// Apply the user's consent choice: update the gate, persist to disk,
+        /// transition the dialog to `Done`, and restore click-through on the
+        /// overlay window so the host's desktop is usable again.
+        fn apply_consent(&mut self, consented: bool, frame: &mut eframe::Frame) {
+            pairwire_telemetry::set_consent(consented);
+            self.telemetry_cfg.consent = Some(consented);
+            if let Err(e) = pairwire_telemetry::config::save(&self.telemetry_cfg) {
+                warn!(error = %e, "failed to persist telemetry consent");
+            }
+            self.consent_dialog_state = ConsentDialogState::Done;
+            // Re-enable click-through now that the dialog is dismissed. The
+            // overlay was put into interactive mode (ignoresMouseEvents = NO)
+            // when the dialog became Visible; restore it to click-through so the
+            // host can use the desktop normally (drawing mode toggled separately
+            // via Cmd+Shift+D).
+            set_window_ignores_mouse_events(frame, true);
+            info!(consented, "telemetry consent dialog completed");
+            debug!("transparent overlay: click-through restored after consent");
+        }
+    }
+
     impl eframe::App for TransparentHostOverlayApp {
         /// Clear the wgpu surface with a fully-transparent color every frame.
         ///
@@ -968,6 +1070,21 @@ mod inner {
                 return;
             }
 
+            // Transition consent dialog from Pending → Visible once the session
+            // channels are live (endpoint is online). The overlay only receives
+            // `HostOverlayChannels` after the endpoint is ready, so by the time
+            // `update()` is first called the endpoint is already listening.
+            //
+            // Disable click-through when making the dialog visible so that the
+            // buttons are actually clickable. Without this, NSWindow.ignoresMouseEvents
+            // remains YES and all pointer events pass through the window — the
+            // user can see the dialog but can never interact with it.
+            if self.consent_dialog_state == ConsentDialogState::Pending {
+                set_window_ignores_mouse_events(frame, false);
+                self.consent_dialog_state = ConsentDialogState::Visible;
+                debug!("transparent overlay: click-through disabled for consent dialog");
+            }
+
             let canvas = ctx.screen_rect();
 
             egui::CentralPanel::default()
@@ -977,6 +1094,11 @@ mod inner {
                     self.render_session_banner(ui, canvas);
                     self.render_hud(ui, canvas);
                 });
+
+            // Render the first-run consent dialog on top of the canvas when needed.
+            if self.consent_dialog_state == ConsentDialogState::Visible {
+                self.render_consent_dialog(ctx, frame);
+            }
 
             self.capture_input_events(ctx, canvas, frame);
         }
@@ -1013,6 +1135,7 @@ mod inner {
         channels: HostOverlayChannels,
         capture_width: u32,
         capture_height: u32,
+        telemetry_cfg: TelemetryConfig,
     ) -> anyhow::Result<()> {
         info!(
             capture_width,
@@ -1032,6 +1155,7 @@ mod inner {
                     channels,
                     capture_width,
                     capture_height,
+                    telemetry_cfg,
                 )))
             }),
         )
@@ -1052,6 +1176,7 @@ mod inner {
         capture_width: u32,
         capture_height: u32,
         tray_cfg: TrayConfig,
+        telemetry_cfg: TelemetryConfig,
     ) -> anyhow::Result<()> {
         info!(
             capture_width,
@@ -1063,8 +1188,12 @@ mod inner {
             "pairwire — Transparent Overlay",
             overlay_native_options(),
             Box::new(move |_cc| {
-                let mut app =
-                    TransparentHostOverlayApp::new(channels, capture_width, capture_height);
+                let mut app = TransparentHostOverlayApp::new(
+                    channels,
+                    capture_width,
+                    capture_height,
+                    telemetry_cfg,
+                );
                 // Build the tray now: we are on the main thread and NSApp is live.
                 match TrayHandle::new(tray_cfg.invite_url.clone()) {
                     Ok(handle) => {

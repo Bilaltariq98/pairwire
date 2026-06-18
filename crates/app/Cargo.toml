@@ -16,6 +16,7 @@ pairwire-capture.workspace = true
 pairwire-audio.workspace = true
 pairwire-input.workspace = true
 pairwire-terminal.workspace = true
+pairwire-telemetry.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

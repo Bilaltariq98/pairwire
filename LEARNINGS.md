@@ -416,3 +416,29 @@ Each entry should include:
   build; verify with `RUST_LOG=pairwire_transport=debug` — log line will say
   `relay_mode=Default (debug build, no env override)`. For release, verify with
   `total_relays=1` in the log — confirms no n0 relay leaked into the map.
+
+### 2026-06-18 — Telemetry consent gate must use --test-threads=1
+- **Area**: telemetry, testing
+- **What**: `consent::reset_for_test()` mutates process-global `AtomicBool` statics (`CONSENT`, `CONSENT_SET`). When `cargo test` runs multiple consent tests in parallel, a `reset_for_test()` in one test can race with an `is_consented()` check in another, causing intermittent failures.
+- **Resolution**: Run `pairwire-telemetry` tests with `--test-threads=1`. In CI, add `RUST_TEST_THREADS=1` for this crate only or use `cargo test -p pairwire-telemetry -- --test-threads=1`.
+- **Note**: The production code uses `Ordering::Relaxed` intentionally — a transient wrong consent read costs at most one extra/missed telemetry event, which is acceptable. The test isolation problem is a testing concern, not a production concern.
+
+### 2026-06-18 — sentry crate: pin to exact version, use before_send for consent
+- **Area**: telemetry, sentry
+- **What**: `sentry` is pre-1.0 and breaks on minor bumps. Also, setting `enabled: false` at init time prevents re-enabling at runtime — the correct GDPR pattern is to leave Sentry enabled but gate events via `before_send` so consent can be toggled mid-session. The panic hook is auto-registered by the `panic` feature flag — no explicit `register_panic_handler()` call is needed.
+- **Resolution**: Pin to exact version (verified: `=0.48.2` at 2026-06-18). Use `before_send` callback that calls `pairwire_telemetry::consent::is_consented()` and returns `None` (drop) when not consented. Never use `ClientOptions { enabled: false }` for the consent gate.
+
+### 2026-06-18 — posthog-rs version: 0.4 is not published; use 0.13.x tuple shorthand
+- **Area**: telemetry, posthog
+- **What**: `posthog-rs = "0.4"` is not published on crates.io. The latest stable version at 2026-06-18 is `0.13.1`. `(&str, &str)` implements `From<(&str, &str)> for ClientOptions` — the idiomatic pattern is `posthog_rs::client((api_key, host_url))` with the tuple shorthand; no `ClientOptions::new()` call needed. See `crates/telemetry/src/posthog.rs:84`.
+- **Resolution**: Pin to `"0.13.1"`. Always verify with `cargo search posthog-rs` before adding to `Cargo.toml`. Verify method signatures at implementation time with `cargo doc -p posthog-rs --open`.
+
+### 2026-06-18 — ConnectionEstablished telemetry reports relayed=false unconditionally (known gap)
+- **Area**: telemetry, session
+- **What**: `relayed: false` is hardcoded in both the host and guest `ConnectionEstablished` event paths (`crates/app/src/session.rs:329` and `:1156`). iroh does expose path information via `conn.remote_info()` / `DirectAddrInfo`, but extracting relay vs. direct status requires querying the connection after the handshake and is not yet wired. Until the TODO is resolved, PostHog will report 0% relay connections even when relay is actually used — the data is factually incorrect for relayed sessions.
+- **Resolution**: When implementing relay detection, use `iroh::endpoint::Connection::remote_info()` to inspect the path; if `remote_info.relay_url` is `Some` and no direct addresses are reachable, `relayed = true`. Update both call sites and the `TelemetryEvent::ConnectionEstablished` shape if a `relay_url` field is also wanted.
+
+### 2026-06-18 — egui 0.31: no Frame::window() — use Frame::NONE.fill()
+- **Area**: UI, egui
+- **What**: `egui::Frame::window(&ctx.style())` does not exist in egui 0.31. The workspace uses egui 0.31 (`Cargo.toml:48`). The correct pattern for a styled frame in egui 0.31 is `egui::Frame::NONE.fill(ctx.style().visuals.panel_fill)`. This is used at `host_overlay_transparent.rs:858` and `viewer.rs:749`.
+- **Resolution**: Always check existing files for egui API usage before writing new egui widget code. Do not reference egui docs for versions other than 0.31.

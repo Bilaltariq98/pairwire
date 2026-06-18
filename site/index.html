@@ -95,8 +95,6 @@
           <svg
             viewBox="0 0 360 160"
             xmlns="http://www.w3.org/2000/svg"
-            role="img"
-            aria-label="Two screens connected by a wire — the Pairwire motif"
           >
             <defs>
               <filter id="wire-glow-filter" x="-20%" y="-20%" width="140%" height="140%">
@@ -243,7 +241,7 @@
 
         <ol class="steps-wire" role="list">
 
-          <li class="step-item will-animate">
+          <li class="step-item">
             <div class="step-node" aria-hidden="true">
               <span class="step-node-dot"></span>
             </div>
@@ -256,7 +254,7 @@
             </div>
           </li>
 
-          <li class="step-item will-animate">
+          <li class="step-item">
             <div class="step-node" aria-hidden="true">
               <span class="step-node-dot"></span>
             </div>
@@ -270,7 +268,7 @@
             </div>
           </li>
 
-          <li class="step-item will-animate">
+          <li class="step-item">
             <div class="step-node" aria-hidden="true">
               <span class="step-node-dot"></span>
             </div>
@@ -486,23 +484,25 @@
       observer.observe(sentinel);
     }());
 
-    /* Step reveal: staggered fade+rise on scroll */
+    /* Step reveal: staggered fade+rise on scroll.
+       will-animate is added here (not in HTML source) so content
+       is visible by default when JS is absent or fails to load. */
     (function () {
-      var steps = document.querySelectorAll('.step-item.will-animate');
+      var steps = document.querySelectorAll('.step-item');
       if (!steps.length) return;
 
-      /* Respect reduced-motion — don't animate if user prefers */
+      /* Respect reduced-motion — skip animation entirely */
       var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      if (reduceMotion) {
-        steps.forEach(function (el) {
-          el.classList.remove('will-animate');
-        });
-        return;
-      }
+      if (reduceMotion) return;
+
+      /* Opt steps into the hidden+animated state now that JS is running */
+      steps.forEach(function (el) {
+        el.classList.add('will-animate');
+      });
 
       var observer = new IntersectionObserver(
         function (entries) {
-          entries.forEach(function (entry, i) {
+          entries.forEach(function (entry) {
             if (entry.isIntersecting) {
               /* stagger by index within the NodeList */
               var delay = Array.from(steps).indexOf(entry.target) * 80;

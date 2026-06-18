@@ -9,6 +9,7 @@ members = [
     "crates/input",
     "crates/terminal",
     "crates/app",
+    "crates/telemetry",
 ]
 
 [workspace.package]
@@ -65,6 +66,7 @@ pairwire-capture = { path = "crates/capture" }
 pairwire-audio = { path = "crates/audio" }
 pairwire-input = { path = "crates/input" }
 pairwire-terminal = { path = "crates/terminal" }
+pairwire-telemetry = { path = "crates/telemetry" }
 
 [profile.release]
 opt-level = 3
