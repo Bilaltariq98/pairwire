@@ -5048,7 +5048,6 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6289682e81f10dfdcb4863c240ef313a28793258828d3b7f71b0cc51dc6f3e9a"
 dependencies = [
- "backtrace",
  "chrono",
  "derive_builder",
  "flate2",
@@ -5059,7 +5058,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
- "tokio",
  "tracing",
  "uuid",
 ]

@@ -849,8 +849,9 @@ mod inner {
         ///
         /// The dialog is anchored bottom-right to avoid obscuring the annotation
         /// canvas. Clicking "Yes" or "No thanks" calls `apply_consent` which
-        /// updates the process-global gate and persists the choice to disk.
-        fn render_consent_dialog(&mut self, ctx: &Context) {
+        /// updates the process-global gate, persists the choice to disk, and
+        /// re-enables click-through on the overlay window.
+        fn render_consent_dialog(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
             let screen_rect = ctx.screen_rect();
             let dialog_size = egui::vec2(360.0, 160.0);
             let dialog_pos = egui::pos2(
@@ -881,10 +882,10 @@ mod inner {
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             if ui.button("Yes, send anonymous data").clicked() {
-                                self.apply_consent(true);
+                                self.apply_consent(true, frame);
                             }
                             if ui.button("No thanks").clicked() {
-                                self.apply_consent(false);
+                                self.apply_consent(false, frame);
                             }
                         });
                     });
@@ -892,15 +893,23 @@ mod inner {
         }
 
         /// Apply the user's consent choice: update the gate, persist to disk,
-        /// and transition the dialog to `Done`.
-        fn apply_consent(&mut self, consented: bool) {
+        /// transition the dialog to `Done`, and restore click-through on the
+        /// overlay window so the host's desktop is usable again.
+        fn apply_consent(&mut self, consented: bool, frame: &mut eframe::Frame) {
             pairwire_telemetry::set_consent(consented);
             self.telemetry_cfg.consent = Some(consented);
             if let Err(e) = pairwire_telemetry::config::save(&self.telemetry_cfg) {
                 warn!(error = %e, "failed to persist telemetry consent");
             }
             self.consent_dialog_state = ConsentDialogState::Done;
+            // Re-enable click-through now that the dialog is dismissed. The
+            // overlay was put into interactive mode (ignoresMouseEvents = NO)
+            // when the dialog became Visible; restore it to click-through so the
+            // host can use the desktop normally (drawing mode toggled separately
+            // via Cmd+Shift+D).
+            set_window_ignores_mouse_events(frame, true);
             info!(consented, "telemetry consent dialog completed");
+            debug!("transparent overlay: click-through restored after consent");
         }
     }
 
@@ -949,8 +958,15 @@ mod inner {
             // channels are live (endpoint is online). The overlay only receives
             // `HostOverlayChannels` after the endpoint is ready, so by the time
             // `update()` is first called the endpoint is already listening.
+            //
+            // Disable click-through when making the dialog visible so that the
+            // buttons are actually clickable. Without this, NSWindow.ignoresMouseEvents
+            // remains YES and all pointer events pass through the window — the
+            // user can see the dialog but can never interact with it.
             if self.consent_dialog_state == ConsentDialogState::Pending {
+                set_window_ignores_mouse_events(frame, false);
                 self.consent_dialog_state = ConsentDialogState::Visible;
+                debug!("transparent overlay: click-through disabled for consent dialog");
             }
 
             let canvas = ctx.screen_rect();
@@ -965,7 +981,7 @@ mod inner {
 
             // Render the first-run consent dialog on top of the canvas when needed.
             if self.consent_dialog_state == ConsentDialogState::Visible {
-                self.render_consent_dialog(ctx);
+                self.render_consent_dialog(ctx, frame);
             }
 
             self.capture_input_events(ctx, canvas, frame);
