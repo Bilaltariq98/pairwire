@@ -64,7 +64,10 @@ mod tests {
     #[test]
     fn default_is_not_consented() {
         with_reset(|| {
-            assert!(!is_consented(), "must default to false — no PII before opt-in");
+            assert!(
+                !is_consented(),
+                "must default to false — no PII before opt-in"
+            );
         });
     }
 
@@ -82,7 +85,10 @@ mod tests {
         with_reset(|| {
             set_consent(false);
             assert!(!is_consented());
-            assert!(consent_was_set(), "consent_was_set must be true even for opt-out");
+            assert!(
+                consent_was_set(),
+                "consent_was_set must be true even for opt-out"
+            );
         });
     }
 

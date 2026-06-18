@@ -114,8 +114,10 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         let loaded: TelemetryConfig = toml::from_str(&raw).unwrap();
 
-        assert_eq!(loaded.device_id, original.device_id,
-            "device_id must survive a save/load round-trip");
+        assert_eq!(
+            loaded.device_id, original.device_id,
+            "device_id must survive a save/load round-trip"
+        );
         assert_eq!(loaded.consent, original.consent);
     }
 

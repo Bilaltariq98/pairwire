@@ -88,7 +88,11 @@ pub mod fake {
 
         /// Drain all captured events and return them.
         pub fn drain(&self) -> Vec<TelemetryEvent> {
-            self.events.lock().expect("FakeSink mutex poisoned").drain(..).collect()
+            self.events
+                .lock()
+                .expect("FakeSink mutex poisoned")
+                .drain(..)
+                .collect()
         }
 
         /// Number of captured events.
@@ -103,15 +107,18 @@ pub mod fake {
 
     impl EventSink for FakeSink {
         fn send(&self, event: TelemetryEvent) {
-            self.events.lock().expect("FakeSink mutex poisoned").push(event);
+            self.events
+                .lock()
+                .expect("FakeSink mutex poisoned")
+                .push(event);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::fake::FakeSink;
+    use super::*;
     use crate::consent;
 
     /// Consent gate suppresses all events when consent is None/false.
@@ -172,7 +179,11 @@ mod tests {
         });
         check_and_send(TelemetryEvent::ConnectionEstablished { relayed: true });
 
-        assert_eq!(sink.len(), 2, "both events must reach the sink when consented");
+        assert_eq!(
+            sink.len(),
+            2,
+            "both events must reach the sink when consented"
+        );
 
         consent::reset_for_test();
     }
@@ -196,13 +207,20 @@ mod tests {
         ];
 
         let denylisted_keys = [
-            "node_id", "nodeid", "invite", "token", "ip_address",
-            "endpoint_id", "public_key", "screen", "audio", "keystroke",
+            "node_id",
+            "nodeid",
+            "invite",
+            "token",
+            "ip_address",
+            "endpoint_id",
+            "public_key",
+            "screen",
+            "audio",
+            "keystroke",
         ];
 
         for event in &events {
-            let json = serde_json::to_string(event)
-                .unwrap_or_else(|_| format!("{:?}", event));
+            let json = serde_json::to_string(event).unwrap_or_else(|_| format!("{:?}", event));
             let json_lower = json.to_lowercase();
             for key in &denylisted_keys {
                 assert!(

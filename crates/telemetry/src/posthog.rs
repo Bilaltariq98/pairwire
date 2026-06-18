@@ -23,11 +23,28 @@
 //! counting is needed in a later version, pass `device_id` as `distinct_id` and
 //! update the privacy notice accordingly.
 //!
-//! # Async client
+//! # posthog-rs 0.13.x API notes (verified 2026-06-18)
 //!
-//! `posthog-rs 0.13.x` enables the `async-client` feature by default, which
-//! provides an async `client()` function and `Client::capture()`. We use
-//! `tokio::spawn` for fire-and-forget dispatch.
+//! The plan spec described a builder-style `ClientOptions::new(key).endpoint(EU_ENDPOINT)`
+//! API returning `Result<Client, _>`. This does NOT match the actual 0.13.x API:
+//!
+//! ```text
+//! pub async fn client<C: Into<ClientOptions>>(options: C) -> Client
+//! ```
+//!
+//! Key differences from the spec template:
+//! - `client()` is infallible — it returns `Client` directly, not `Result<Client, _>`.
+//!   The `Err` branch from the spec (`warn!("failed to build PostHog client")`) is
+//!   therefore not applicable and has been intentionally omitted (there is no error to
+//!   handle at client construction time).
+//! - `(&str, &str)` implements `From<(&str, &str)> for ClientOptions`, so the tuple
+//!   `(api_key, host)` is the idiomatic way to pass a custom EU endpoint. No separate
+//!   `ClientOptions::new().endpoint()` builder chain exists in this version.
+//! - `Client::capture()` returns `Result<(), Error>`, so error handling at the capture
+//!   step is preserved (see the `if let Err(e)` branch below).
+//!
+//! Source: `posthog-rs-0.13.1/src/client/async_client.rs` and `mod.rs`.
+//! Re-verify with `cargo doc -p posthog-rs --open` if upgrading beyond 0.13.x.
 
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -55,7 +72,10 @@ fn api_key() -> Option<String> {
 /// before calling this function. `send` does NOT re-check consent.
 pub fn send(event: TelemetryEvent) {
     let Some(key) = api_key() else {
-        debug!("PostHog key not set — event dropped: {}", event.event_name());
+        debug!(
+            "PostHog key not set — event dropped: {}",
+            event.event_name()
+        );
         return;
     };
 
@@ -79,12 +99,14 @@ pub fn send(event: TelemetryEvent) {
         }
     }
 
-    // posthog-rs 0.13.x with default `async-client` feature:
-    // `posthog_rs::client()` is async and returns a Client.
-    // Use tokio::spawn for fire-and-forget dispatch.
+    // tokio::spawn for fire-and-forget dispatch. The task is detached; any
+    // failures are logged at debug/warn level and do not propagate to the caller.
     tokio::spawn(async move {
-        // posthog_rs::client((&str, &str)) → Client (async, no Result wrapping).
-        // The tuple From impl: (api_key, host) → ClientOptions.
+        // API note: posthog_rs::client<C: Into<ClientOptions>>(options: C) -> Client
+        // This function is INFALLIBLE — it returns Client directly, not Result<Client, _>.
+        // (&str, &str) implements Into<ClientOptions> via From<(&str, &str)>,
+        // setting api_key and host respectively. No error handling at construction.
+        // See module-level doc for full API verification notes.
         let client = posthog_rs::client((key.as_str(), EU_ENDPOINT)).await;
 
         // Fresh UUID per event — see module doc on distinct_id strategy.

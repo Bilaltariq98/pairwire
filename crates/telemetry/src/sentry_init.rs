@@ -121,7 +121,11 @@ mod tests {
 
         // The before_send closure is: if is_consented() { Some(event) } else { None }
         // Simulate it here with a dummy check:
-        let gate_result: Option<()> = if consent::is_consented() { Some(()) } else { None };
+        let gate_result: Option<()> = if consent::is_consented() {
+            Some(())
+        } else {
+            None
+        };
         assert!(
             gate_result.is_none(),
             "before_send must return None (drop event) when consent is not granted"
@@ -134,7 +138,11 @@ mod tests {
         consent::reset_for_test();
         consent::set_consent(true);
 
-        let gate_result: Option<()> = if consent::is_consented() { Some(()) } else { None };
+        let gate_result: Option<()> = if consent::is_consented() {
+            Some(())
+        } else {
+            None
+        };
         assert!(
             gate_result.is_some(),
             "before_send must return Some(event) (forward event) when consent is granted"
