@@ -51,7 +51,7 @@ check-crate crate:
 bundle-dylibs:
     #!/usr/bin/env bash
     set -euo pipefail
-    APP="${APP:-target/release/bundle/macos/pairwire.app}"
+    APP="${APP:-target/release/pairwire.app}"
     BIN="$APP/Contents/MacOS/pairwire"
     LIBS_DIR="$APP/Contents/libs"
     IDENTITY="${CODESIGN_IDENTITY:--}"
@@ -118,8 +118,8 @@ bundle-dylibs:
 # Requires: assets/pairwire.icns (run `just icns` first; needs real icon asset)
 # Requires: packaging/dmg-background.png (solid-colour placeholder committed in Task 6)
 # Requires: FFMPEG_DIR / BINDGEN_EXTRA_CLANG_ARGS set (or CARGO_FEATURE_STATIC=1)
-# Output: target/release/bundle/macos/pairwire.app
-#         target/release/bundle/macos/pairwire_*.dmg
+# Output: target/release/pairwire.app
+#         target/release/pairwire_*.dmg
 package:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -159,7 +159,7 @@ package:
         --formats dmg \
         -p pairwire
     echo "=== Bundle output ==="
-    ls -lh target/release/bundle/macos/
+    ls -lh target/release/ | grep -E "pairwire"
 
 # Alias — same as `package` (kept for semantic clarity in docs).
 dmg: package
@@ -175,9 +175,9 @@ sign:
 # Uncomment and fill in when Apple enrollment is complete.
 notarize:
     @echo "notarize: Stub. Requires Apple Developer ID enrollment (deferred for v1)."
-    @echo "notarize: When ready: xcrun notarytool submit target/release/bundle/macos/*.dmg"
+    @echo "notarize: When ready: xcrun notarytool submit target/release/*.dmg"
     @echo "notarize:             --apple-id <email> --team-id <team> --password <app-specific>"
-    @echo "notarize:             xcrun stapler staple target/release/bundle/macos/pairwire.app"
+    @echo "notarize:             xcrun stapler staple target/release/pairwire.app"
 
 # Generate pairwire.icns from assets/icon.iconset/icon_1024x1024.png.
 # Requires: Xcode CLI tools (sips, iconutil).
@@ -246,7 +246,7 @@ tray-placeholder:
 verify-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
-    APP="target/release/bundle/macos/pairwire.app"
+    APP="target/release/pairwire.app"
     if [ ! -d "$APP" ]; then
         echo "ERROR: $APP not found — run 'just package' first"
         exit 1
