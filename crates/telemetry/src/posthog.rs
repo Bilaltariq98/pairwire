@@ -49,7 +49,7 @@
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::events::{EventSink, TelemetryEvent};
+use crate::events::TelemetryEvent;
 
 /// PostHog EU REST endpoint. Immutable — EU region only.
 const EU_ENDPOINT: &str = "https://eu.i.posthog.com";
@@ -64,31 +64,19 @@ fn api_key() -> Option<String> {
         .or_else(|| BAKED_API_KEY.map(str::to_owned))
 }
 
-/// The production [`EventSink`] — dispatches events to PostHog EU.
+/// Fire a telemetry event to PostHog EU.
 ///
 /// Non-blocking: spawns a `tokio::spawn` task for fire-and-forget dispatch.
 ///
 /// **Pre-condition**: caller must check [`crate::consent::is_consented()`]
-/// before calling `send`. `PostHogSink::send` does NOT re-check consent.
+/// before calling `send`. This function does NOT re-check consent.
 ///
 /// # Panics
 ///
 /// Panics if called outside a tokio async runtime context. This function
 /// internally calls [`tokio::spawn`], which requires an active tokio runtime.
 /// Ensure a runtime (e.g. `#[tokio::main]`) is active before calling `send`.
-pub struct PostHogSink;
-
-impl EventSink for PostHogSink {
-    fn send(&self, event: TelemetryEvent) {
-        send(event);
-    }
-}
-
-/// Fire a telemetry event to PostHog EU (internal helper used by [`PostHogSink`]).
-///
-/// **Pre-condition**: caller must check [`crate::consent::is_consented()`]
-/// before calling this function. `send` does NOT re-check consent.
-pub(crate) fn send(event: TelemetryEvent) {
+pub fn send(event: TelemetryEvent) {
     let Some(key) = api_key() else {
         debug!(
             "PostHog key not set — event dropped: {}",
@@ -223,27 +211,5 @@ mod tests {
         }
         // else: baked key present → api_key() returns Some(_); that's correct.
         // No assertion needed — the function's behaviour is still valid.
-    }
-
-    /// `PostHogSink::send` delegates to the `send()` function without panicking.
-    ///
-    /// We verify the delegation is wired correctly by calling through the trait
-    /// object interface. No actual PostHog network call is expected in unit tests
-    /// (key is absent in dev builds, so the event is dropped immediately).
-    #[test]
-    fn posthog_sink_delegates_to_send() {
-        let _guard = TELEMETRY_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        // SAFETY: tests serialise on TELEMETRY_TEST_LOCK so only one thread
-        // touches this env var at a time — no concurrent env mutation risk.
-        // Ensure no key so the send path returns immediately without spawning.
-        unsafe { std::env::remove_var("PAIRWIRE_POSTHOG_KEY") };
-
-        let sink = PostHogSink;
-        // Call via the EventSink trait to verify the delegation is correct.
-        EventSink::send(&sink, TelemetryEvent::SessionEnded { duration_secs: 42 });
-        // No panic = delegation path is wired.
     }
 }

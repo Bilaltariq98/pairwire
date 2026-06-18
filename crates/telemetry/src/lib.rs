@@ -69,8 +69,11 @@ pub fn record_with_sink(event: TelemetryEvent, sink: &impl EventSink) {
 
 /// Fire a telemetry event if consent is granted.
 ///
-/// Dispatches to the production PostHog EU sink. The check is a single atomic
+/// Dispatches directly to the PostHog EU sender. The check is a single atomic
 /// load — effectively free on the hot path when consent is not granted.
 pub fn record(event: TelemetryEvent) {
-    record_with_sink(event, &posthog::PostHogSink);
+    if !is_consented() {
+        return;
+    }
+    posthog::send(event);
 }
