@@ -90,6 +90,38 @@ mod inner {
 
     use crate::session::{HostOverlayChannels, HostSessionState};
 
+    #[cfg(feature = "tray")]
+    use crate::control_state::ControlAction;
+    #[cfg(feature = "tray")]
+    use crate::tray::{TrayAction, TrayHandle};
+
+    // ── Tray bridge (gui + tray builds) ─────────────────────────────────────────
+
+    /// Control + lifecycle plumbing the overlay needs to drive the menu-bar tray.
+    ///
+    /// In a `gui + tray` build the overlay owns the macOS main thread (winit event
+    /// loop), so the tray icon must live inside the overlay process and be polled
+    /// from `update()`. This carries everything the tray handlers need to talk back
+    /// to the session.
+    #[cfg(feature = "tray")]
+    pub struct TrayConfig {
+        /// Invite URL for the "Copy Invite Link" item (None until hosting starts).
+        pub invite_url: Option<String>,
+        /// Overlay → session control actions (Grant / Revoke).
+        pub control_tx: tokio::sync::mpsc::Sender<ControlAction>,
+        /// Set `true` to ask `run_host` to shut down gracefully (Disconnect / Quit).
+        pub shutdown_tx: watch::Sender<bool>,
+    }
+
+    /// Live tray state held by the overlay app once the icon is created on the
+    /// main thread inside the eframe creation closure.
+    #[cfg(feature = "tray")]
+    struct TrayState {
+        handle: TrayHandle,
+        control_tx: tokio::sync::mpsc::Sender<ControlAction>,
+        shutdown_tx: watch::Sender<bool>,
+    }
+
     // ── Color helpers (shared with host_overlay.rs) ────────────────────────────
 
     fn host_color() -> Color32 {
@@ -332,6 +364,10 @@ mod inner {
         click_through_init: bool,
         /// Tracks whether NSWindow level / collection behavior were applied.
         chrome_init: bool,
+        /// Menu-bar tray, present only in `gui + tray` builds once created on the
+        /// main thread. Polled each `update()`.
+        #[cfg(feature = "tray")]
+        tray: Option<TrayState>,
     }
 
     impl TransparentHostOverlayApp {
@@ -359,6 +395,46 @@ mod inner {
                 capture_size: (capture_width as f32, capture_height as f32),
                 click_through_init: false,
                 chrome_init: false,
+                #[cfg(feature = "tray")]
+                tray: None,
+            }
+        }
+
+        /// Poll the menu-bar tray (if present) and dispatch its actions.
+        ///
+        /// Runs each frame on the main thread. `tray_icon`'s `MenuEvent` queue is a
+        /// global channel, so polling here inside the eframe loop is exactly how the
+        /// tray is meant to be driven when winit owns the run loop.
+        #[cfg(feature = "tray")]
+        fn poll_tray(&mut self, ctx: &Context) {
+            let Some(tray) = self.tray.as_mut() else {
+                return;
+            };
+            while let Some(action) = tray.handle.poll() {
+                match action {
+                    TrayAction::CopyInvite(url) => {
+                        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone()))
+                        {
+                            Ok(()) => info!(url, "tray: invite link copied to clipboard"),
+                            Err(e) => warn!(error = %e, "tray: clipboard write failed"),
+                        }
+                    }
+                    TrayAction::Disconnect | TrayAction::Quit => {
+                        info!("tray: shutdown requested — closing overlay");
+                        let _ = tray.shutdown_tx.send(true);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    TrayAction::GrantControl => {
+                        let _ = tray.control_tx.try_send(ControlAction::Grant);
+                        tray.handle.set_control_granted(true);
+                        info!("tray: grant control forwarded to session");
+                    }
+                    TrayAction::RevokeControl => {
+                        let _ = tray.control_tx.try_send(ControlAction::Revoke);
+                        tray.handle.set_control_granted(false);
+                        info!("tray: revoke control forwarded to session");
+                    }
+                }
             }
         }
 
@@ -751,6 +827,9 @@ mod inner {
             ctx.request_repaint();
             self.pump_live_points();
 
+            #[cfg(feature = "tray")]
+            self.poll_tray(ctx);
+
             // On the first frame, ensure the overlay starts in click-through mode.
             // We do this here rather than at construction because the NSWindow
             // pointer is not valid until the first update() call.
@@ -813,6 +892,7 @@ mod inner {
     /// which disables click-through so pointer events reach the overlay and build
     /// strokes. Press Cmd+Shift+D again (or Escape) to exit drawing mode and
     /// restore click-through.
+    #[cfg(not(feature = "tray"))]
     pub fn run_transparent_host_overlay(
         channels: HostOverlayChannels,
         capture_width: u32,
@@ -828,13 +908,76 @@ mod inner {
         // icon, breaking the "feels like part of the OS" illusion.
         set_accessory_activation_policy();
 
+        eframe::run_native(
+            "pairwire — Transparent Overlay",
+            overlay_native_options(),
+            Box::new(move |_cc| {
+                Ok(Box::new(TransparentHostOverlayApp::new(
+                    channels,
+                    capture_width,
+                    capture_height,
+                )))
+            }),
+        )
+        .map_err(|e| anyhow::anyhow!("transparent host overlay error: {e}"))
+    }
+
+    /// Launch the overlay with an attached menu-bar tray (`gui + tray` builds).
+    ///
+    /// Identical to [`run_transparent_host_overlay`] except the eframe creation
+    /// closure also builds the `TrayHandle` on the main thread (where `NSApp`
+    /// already exists) and hands it to the app so tray events are polled inside
+    /// the winit run loop. This is what lets the host show the drawing overlay
+    /// **and** a menu-bar control icon at the same time — the two no longer have
+    /// to fight over the macOS main thread.
+    #[cfg(feature = "tray")]
+    pub fn run_transparent_host_overlay_with_tray(
+        channels: HostOverlayChannels,
+        capture_width: u32,
+        capture_height: u32,
+        tray_cfg: TrayConfig,
+    ) -> anyhow::Result<()> {
+        info!(
+            capture_width,
+            capture_height, "transparent host overlay (with tray) starting"
+        );
+        set_accessory_activation_policy();
+
+        eframe::run_native(
+            "pairwire — Transparent Overlay",
+            overlay_native_options(),
+            Box::new(move |_cc| {
+                let mut app =
+                    TransparentHostOverlayApp::new(channels, capture_width, capture_height);
+                // Build the tray now: we are on the main thread and NSApp is live.
+                match TrayHandle::new(tray_cfg.invite_url.clone()) {
+                    Ok(handle) => {
+                        app.tray = Some(TrayState {
+                            handle,
+                            control_tx: tray_cfg.control_tx,
+                            shutdown_tx: tray_cfg.shutdown_tx,
+                        });
+                        info!("menu-bar tray created inside overlay process");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to create tray icon — continuing without tray");
+                    }
+                }
+                Ok(Box::new(app))
+            }),
+        )
+        .map_err(|e| anyhow::anyhow!("transparent host overlay error: {e}"))
+    }
+
+    /// Shared `NativeOptions` for the transparent overlay window.
+    fn overlay_native_options() -> eframe::NativeOptions {
         // Size the window to the primary display in logical points. We avoid
         // `with_fullscreen(true)` because that puts the overlay into macOS true
         // fullscreen mode (own Space, dock auto-hide, app-name menu bar) — which
         // is exactly the "feels like an app" experience we want to avoid.
         let (w, h) = primary_screen_size().unwrap_or((1440.0, 900.0));
 
-        let options = eframe::NativeOptions {
+        eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("pairwire-overlay")
                 // Transparent: winit calls NSWindow.setOpaque(NO) + setBackgroundColor(clear).
@@ -854,22 +997,12 @@ mod inner {
             // The wgpu renderer must also be set up for transparency.
             // This passes `transparent = true` to `Painter::new`.
             ..Default::default()
-        };
-
-        eframe::run_native(
-            "pairwire — Transparent Overlay",
-            options,
-            Box::new(move |_cc| {
-                Ok(Box::new(TransparentHostOverlayApp::new(
-                    channels,
-                    capture_width,
-                    capture_height,
-                )))
-            }),
-        )
-        .map_err(|e| anyhow::anyhow!("transparent host overlay error: {e}"))
+        }
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "tray")))]
 pub use inner::run_transparent_host_overlay;
+
+#[cfg(all(feature = "gui", feature = "tray"))]
+pub use inner::{TrayConfig, run_transparent_host_overlay_with_tray};

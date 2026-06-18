@@ -241,6 +241,31 @@ pub async fn run_host(
         });
     }
 
+    // Send the overlay channels up front — before the accept loop — so the host
+    // overlay (and, in gui+tray builds, the menu-bar tray it carries) appears the
+    // moment hosting starts, not only after the first guest connects. The overlay
+    // does not render the self-preview, so the late `frame_rx` it used to wait for
+    // is unnecessary; we hand it an empty preview watch.
+    #[cfg(feature = "gui")]
+    if let Some(tx) = overlay_tx.take() {
+        let (_overlay_preview_tx, overlay_preview_rx) =
+            watch::channel::<Option<DecodedFrame>>(None);
+        let channels = HostOverlayChannels {
+            frame_rx: overlay_preview_rx,
+            strokes_rx: host_strokes_watch_rx.clone(),
+            live_point_rx: host_live_pt_watch_rx.clone(),
+            drawing_event_tx: overlay_drawing_bcast_tx.clone(),
+            capture_width: capture_config.width,
+            capture_height: capture_config.height,
+            state_rx: session_state_rx.clone(),
+        };
+        if tx.send(channels).is_err() {
+            warn!("host overlay receiver dropped before channels were sent");
+        } else {
+            info!("host overlay channels sent to main thread (pre-accept)");
+        }
+    }
+
     // ── Accept loop ────────────────────────────────────────────────────────────
 
     loop {
@@ -667,31 +692,13 @@ pub async fn run_host(
                         start_capture(capture_config.clone(), capture_show_cursor.clone())?;
                     _capture_thread_holder = Some(capture_thread);
 
-                    // Preview watch for the overlay.
+                    // Preview watch retained for the capture tee. The transparent
+                    // overlay does not render the self-preview and now receives its
+                    // channels before the accept loop, so this watch has no overlay
+                    // receiver — the tee writes into it harmlessly.
                     #[cfg(feature = "gui")]
-                    let (preview_frame_tx, preview_frame_rx) =
+                    let (preview_frame_tx, _preview_frame_rx) =
                         watch::channel::<Option<DecodedFrame>>(None);
-
-                    // Send overlay channels now that capture is up (first iteration only).
-                    #[cfg(feature = "gui")]
-                    {
-                        if let Some(tx) = overlay_tx.take() {
-                            let channels = HostOverlayChannels {
-                                frame_rx: preview_frame_rx,
-                                strokes_rx: host_strokes_watch_rx.clone(),
-                                live_point_rx: host_live_pt_watch_rx.clone(),
-                                drawing_event_tx: overlay_drawing_bcast_tx.clone(),
-                                capture_width: capture_config.width,
-                                capture_height: capture_config.height,
-                                state_rx: session_state_rx.clone(),
-                            };
-                            if tx.send(channels).is_err() {
-                                warn!("host overlay receiver dropped before channels were sent");
-                            } else {
-                                info!("host overlay channels sent to main thread");
-                            }
-                        }
-                    }
 
                     let encode_tx_slot_tee = Arc::clone(&encode_tx_slot);
                     let tee_thread = {
@@ -852,21 +859,7 @@ pub async fn run_host(
         #[cfg(not(feature = "encode"))]
         {
             warn!("encode feature not enabled -- handshake done but not sending frames");
-            // Send overlay channels with an empty frame watch when not encoding.
-            #[cfg(feature = "gui")]
-            if let Some(tx) = overlay_tx.take() {
-                let (_preview_tx, preview_rx) = watch::channel::<Option<DecodedFrame>>(None);
-                let channels = HostOverlayChannels {
-                    frame_rx: preview_rx,
-                    strokes_rx: host_strokes_watch_rx.clone(),
-                    live_point_rx: host_live_pt_watch_rx.clone(),
-                    drawing_event_tx: overlay_drawing_bcast_tx.clone(),
-                    capture_width: capture_config.width,
-                    capture_height: capture_config.height,
-                    state_rx: session_state_rx.clone(),
-                };
-                let _ = tx.send(channels);
-            }
+            // Overlay channels were already sent before the accept loop.
 
             // Wait for disconnect or second-guest rejection (same as encode path).
             loop {

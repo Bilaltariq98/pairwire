@@ -1080,17 +1080,17 @@ mod inner {
                         if self.drawing_mode {
                             continue;
                         }
-                        if let Some(pos) = latest_pos {
-                            if let Some((hx, hy)) = self.map_pointer_to_host(pos) {
-                                #[allow(clippy::cast_possible_truncation)]
-                                self.send_input(InputMessage::Scroll(MouseScroll {
-                                    x: hx,
-                                    y: hy,
-                                    delta_x: (delta.x * 100.0) as i16,
-                                    delta_y: (delta.y * 100.0) as i16,
-                                    timestamp_ms: now_ms,
-                                }));
-                            }
+                        if let Some(pos) = latest_pos
+                            && let Some((hx, hy)) = self.map_pointer_to_host(pos)
+                        {
+                            #[allow(clippy::cast_possible_truncation)]
+                            self.send_input(InputMessage::Scroll(MouseScroll {
+                                x: hx,
+                                y: hy,
+                                delta_x: (delta.x * 100.0) as i16,
+                                delta_y: (delta.y * 100.0) as i16,
+                                timestamp_ms: now_ms,
+                            }));
                         }
                     }
 
@@ -1104,29 +1104,28 @@ mod inner {
             // pointer moves >=2 host pixels (so the saved stroke stays smooth) but
             // only emit a datagram every ~16 ms so we don't flood the wire.
             const LIVE_POINT_MIN_GAP_MS: u64 = 16;
-            if self.drawing_mode && self.drawing_active && pointer_down {
-                if let Some(pos) = latest_pos {
-                    if let Some((hx, hy)) = self.map_pointer_to_host(pos) {
-                        let last = self.current_stroke.last().copied();
-                        // Only append if the pointer moved at least 2 host pixels.
-                        let moved = last.map_or(true, |(lx, ly)| {
-                            let dx = (hx as i32 - lx as i32).abs();
-                            let dy = (hy as i32 - ly as i32).abs();
-                            dx >= 2 || dy >= 2
-                        });
-                        if moved {
-                            self.current_stroke.push((hx, hy));
-                            if now_ms.saturating_sub(self.last_live_send_ms)
-                                >= LIVE_POINT_MIN_GAP_MS
-                            {
-                                self.last_live_send_ms = now_ms;
-                                self.send_drawing(DrawingEvent::Point(DrawPoint {
-                                    peer_id: self.peer_id,
-                                    x: hx,
-                                    y: hy,
-                                }));
-                            }
-                        }
+            if self.drawing_mode
+                && self.drawing_active
+                && pointer_down
+                && let Some(pos) = latest_pos
+                && let Some((hx, hy)) = self.map_pointer_to_host(pos)
+            {
+                let last = self.current_stroke.last().copied();
+                // Only append if the pointer moved at least 2 host pixels.
+                let moved = last.is_none_or(|(lx, ly)| {
+                    let dx = (hx as i32 - lx as i32).abs();
+                    let dy = (hy as i32 - ly as i32).abs();
+                    dx >= 2 || dy >= 2
+                });
+                if moved {
+                    self.current_stroke.push((hx, hy));
+                    if now_ms.saturating_sub(self.last_live_send_ms) >= LIVE_POINT_MIN_GAP_MS {
+                        self.last_live_send_ms = now_ms;
+                        self.send_drawing(DrawingEvent::Point(DrawPoint {
+                            peer_id: self.peer_id,
+                            x: hx,
+                            y: hy,
+                        }));
                     }
                 }
             }
@@ -1165,6 +1164,7 @@ mod inner {
 
     /// Launch the viewer window. Blocks until the window is closed.
     /// Must be called from the main thread.
+    #[allow(clippy::too_many_arguments)]
     pub fn run_viewer(
         frame_rx: watch::Receiver<Option<DecodedFrame>>,
         cursor_rx: watch::Receiver<Option<CursorUpdate>>,

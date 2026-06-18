@@ -30,7 +30,7 @@
 //! # }
 //! ```
 
-#[cfg(all(feature = "tray", not(feature = "gui")))]
+#[cfg(feature = "tray")]
 mod inner {
     use tracing::{debug, warn};
     use tray_icon::{
@@ -57,6 +57,9 @@ mod inner {
     pub struct TrayHandle {
         // Keep the TrayIcon alive — dropping it removes the icon.
         _icon: tray_icon::TrayIcon,
+        // Used by `set_invite_url` in the tray-only host loop; in gui+tray the
+        // invite URL is known at construction so the setter is never called.
+        #[allow(dead_code)]
         copy_item: MenuItem,
         copy_id: tray_icon::menu::MenuId,
         disconnect_id: tray_icon::menu::MenuId,
@@ -139,6 +142,11 @@ mod inner {
         }
 
         /// Update the invite URL and re-enable the "Copy Invite Link" item.
+        ///
+        /// Only the tray-only host loop calls this (it learns the URL after the
+        /// tray is built); the gui+tray overlay constructs the tray with the URL
+        /// already known.
+        #[allow(dead_code)]
         pub fn set_invite_url(&mut self, url: String) {
             self.invite_url = Some(url);
             self.copy_item.set_enabled(true);
@@ -236,5 +244,5 @@ mod inner {
     }
 }
 
-#[cfg(all(feature = "tray", not(feature = "gui")))]
+#[cfg(feature = "tray")]
 pub use inner::{TrayAction, TrayHandle};

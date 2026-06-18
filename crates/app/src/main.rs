@@ -53,16 +53,24 @@ fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result
     //   2. tray only — no gui (tray on main thread)
     //   3. no overlay, no tray (headless: just run the session)
     //
-    // On macOS both the tray (NSStatusBar) and winit's `EventLoop` insist on
-    // being created on the main thread. They cannot share it. When `gui` is
-    // compiled in we always give the overlay main-thread ownership; the tray
-    // is silently ignored. To run with tray+menubar control, build without `gui`.
+    // On macOS both the tray (NSStatusBar) and winit's `EventLoop` insist on the
+    // main thread. `eframe::run_native` seizes it permanently, so they cannot run
+    // as two separate loops. In a `gui + tray` build we therefore create the tray
+    // *inside* the overlay process and poll it from the eframe loop, so the host
+    // gets the drawing overlay AND a menu-bar control icon at once.
     #[cfg(feature = "gui")]
     {
         if args.no_overlay {
             run_host_no_overlay(args, rt)
         } else {
-            run_host_with_overlay(args, rt)
+            #[cfg(feature = "tray")]
+            {
+                run_host_with_overlay_and_tray(args, rt)
+            }
+            #[cfg(not(feature = "tray"))]
+            {
+                run_host_with_overlay(args, rt)
+            }
         }
     }
 
@@ -82,7 +90,7 @@ fn run_host_no_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Res
     rt.block_on(session::run_host(args, None, None, None, None))
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "tray")))]
 fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Spawn the session on the runtime; block on the main thread waiting for
     // the overlay channels, then launch the transparent overlay (which owns
@@ -113,6 +121,67 @@ fn run_host_with_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> R
 
     // Signal `run_host` to shut down gracefully so it can call
     // `transport.close().await` before the tokio runtime is dropped.
+    let _ = host_shutdown_tx.send(true);
+    match rt.block_on(session_handle) {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(e)) => eprintln!("session error: {e}"),
+    }
+    Ok(())
+}
+
+/// Host with the transparent overlay AND a menu-bar tray in a single process.
+///
+/// The session is spawned with both the invite/control plumbing (for the tray)
+/// and the overlay channels. The overlay owns the main thread and carries the
+/// tray, polling it inside its eframe loop. Overlay channels are now sent before
+/// the accept loop, so both the overlay and the tray appear the moment hosting
+/// starts — the invite link is copyable before any guest connects.
+#[cfg(all(feature = "gui", feature = "tray"))]
+fn run_host_with_overlay_and_tray(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    let (overlay_tx, overlay_rx) = tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
+    let (invite_tx, invite_rx) = tokio::sync::oneshot::channel::<String>();
+    let (host_shutdown_tx, host_shutdown_rx) = tokio::sync::watch::channel(false);
+    // Overlay → session control actions (Grant / Revoke from the tray menu).
+    let (control_tx, control_rx) = tokio::sync::mpsc::channel::<control_state::ControlAction>(8);
+
+    let session_handle = rt.spawn(session::run_host(
+        args,
+        Some(invite_tx),
+        Some(control_rx),
+        Some(overlay_tx),
+        Some(host_shutdown_rx),
+    ));
+
+    let channels = match rt.block_on(overlay_rx) {
+        Ok(channels) => channels,
+        Err(_) => {
+            tracing::warn!("session ended before overlay channels were sent");
+            let _ = host_shutdown_tx.send(true);
+            match rt.block_on(session_handle) {
+                Ok(Ok(())) | Err(_) => {}
+                Ok(Err(e)) => eprintln!("session error: {e}"),
+            }
+            return Ok(());
+        }
+    };
+    // Both `invite_tx` and `overlay_tx` fire before the accept loop, so this is
+    // already buffered and resolves immediately.
+    let invite_url = rt.block_on(invite_rx).ok();
+    let cw = channels.capture_width;
+    let ch = channels.capture_height;
+
+    let tray_cfg = host_overlay_transparent::TrayConfig {
+        invite_url,
+        control_tx,
+        shutdown_tx: host_shutdown_tx.clone(),
+    };
+
+    if let Err(e) =
+        host_overlay_transparent::run_transparent_host_overlay_with_tray(channels, cw, ch, tray_cfg)
+    {
+        tracing::warn!(error = %e, "transparent overlay (with tray) exited with error");
+    }
+
     let _ = host_shutdown_tx.send(true);
     match rt.block_on(session_handle) {
         Ok(Ok(())) | Err(_) => {}
