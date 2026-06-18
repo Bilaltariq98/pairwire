@@ -1,0 +1,18 @@
+# Terraform state — never commit; state contains plaintext resource IDs and may contain secrets
+*.tfstate
+*.tfstate.backup
+.terraform.tfstate.lock.info
+
+# Terraform working directory (provider binaries, module cache)
+.terraform/
+
+# Variable overrides — may contain real secrets
+*.tfvars
+*.tfvars.json
+
+# Crash log (contains stack traces, never useful in git)
+crash.log
+crash.*.log
+
+# Generated plan output files
+*.tfplan
