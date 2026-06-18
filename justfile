@@ -151,15 +151,24 @@ package:
     # @rpath load commands to @executable_path/../libs/ via install_name_tool,
     # ad-hoc codesigns each dylib, then re-codesigns the binary and the .app.
     just bundle-dylibs
-    # Step 4: Create the DMG from the now-complete .app (dylibs already bundled).
-    # This must run AFTER bundle-dylibs so the DMG archive captures the full bundle.
-    CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}" \
-    cargo packager \
-        --release \
-        --formats dmg \
-        -p pairwire
+    # Step 4: Create the DMG from the now-complete .app via hdiutil.
+    # Do NOT use `cargo packager --formats dmg` here: cargo-packager regenerates
+    # the .app skeleton on every invocation, which clobbers the dylibs bundled in
+    # Step 3 and leaves no standalone .app. hdiutil archives the finished bundle
+    # verbatim. (See LEARNINGS 2026-06-18 — DMG step clobbered bundled dylibs.)
+    VERSION="$(cargo metadata --no-deps --format-version 1 \
+        | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next(p["version"] for p in d["packages"] if p["name"]=="pairwire"))' \
+        2>/dev/null || echo 0.1.0)"
+    DMG="target/release/pairwire_${VERSION}_aarch64.dmg"
+    STAGING="$(mktemp -d)"
+    cp -R target/release/pairwire.app "${STAGING}/pairwire.app"
+    ln -s /Applications "${STAGING}/Applications"
+    rm -f "$DMG"
+    hdiutil create -volname "Pairwire" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+    rm -rf "$STAGING"
+    codesign --sign "${CODESIGN_IDENTITY:--}" --force "$DMG" || true
     echo "=== Bundle output ==="
-    ls -lh target/release/ | grep -E "pairwire"
+    ls -lhd target/release/pairwire.app "$DMG" 2>/dev/null
 
 # Alias — same as `package` (kept for semantic clarity in docs).
 dmg: package
