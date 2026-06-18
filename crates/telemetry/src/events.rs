@@ -120,6 +120,7 @@ mod tests {
     use super::fake::FakeSink;
     use super::*;
     use crate::consent;
+    use crate::consent::TELEMETRY_TEST_LOCK;
 
     /// Consent gate suppresses all events when consent is None/false.
     ///
@@ -127,6 +128,7 @@ mod tests {
     /// the user opts in.
     #[test]
     fn consent_gate_suppresses_events_when_not_consented() {
+        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         consent::reset_for_test();
         // consent is NOT set → gate is shut
 
@@ -162,6 +164,7 @@ mod tests {
     /// Consent gate allows events when consented.
     #[test]
     fn consent_gate_allows_events_when_consented() {
+        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         consent::reset_for_test();
         consent::set_consent(true);
 

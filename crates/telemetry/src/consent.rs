@@ -51,11 +51,19 @@ pub fn reset_for_test() {
     CONSENT_SET.store(false, Ordering::Relaxed);
 }
 
+/// Crate-wide test mutex: every test that reads or writes the process-global
+/// consent state must hold this guard for the duration of the test so that
+/// cargo's parallel test runner cannot interleave consent mutations across
+/// tests in different modules.
+#[cfg(test)]
+pub(crate) static TELEMETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn with_reset<F: FnOnce()>(f: F) {
+        let _guard = TELEMETRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_test();
         f();
         reset_for_test();
