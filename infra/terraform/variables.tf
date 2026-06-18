@@ -23,15 +23,18 @@ variable "cloudflare_zone_id" {
 
 variable "admin_ip" {
   description = <<-EOT
-    Your current egress IPv4 address, in CIDR notation (e.g. 1.2.3.4/32).
+    Your current egress IP address, in CIDR notation.
+    IPv4 example: 1.2.3.4/32  (find with: curl -s https://checkip.amazonaws.com && echo /32)
+    IPv6 example: 2001:db8::1/128
     This is the only IP allowed to SSH into the relay server.
-    Find it with: curl -s https://checkip.amazonaws.com && echo /32
   EOT
   type        = string
 
   validation {
-    condition     = can(cidrnetmask(var.admin_ip))
-    error_message = "admin_ip must be a valid CIDR block (e.g. 1.2.3.4/32)."
+    # cidrnetmask() only accepts IPv4; cidrsubnet() accepts both IPv4 and IPv6.
+    # Using both ensures operators with IPv6-only egress can also apply firewall rules.
+    condition     = can(cidrnetmask(var.admin_ip)) || can(cidrsubnet(var.admin_ip, 0, 0))
+    error_message = "admin_ip must be a valid IPv4 or IPv6 CIDR block (e.g. 1.2.3.4/32 or 2001:db8::1/128)."
   }
 }
 

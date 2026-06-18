@@ -129,7 +129,25 @@ runcmd:
       }
     }
     ALLOY
-  - systemctl enable alloy && systemctl start alloy
+  # Add a systemd drop-in so that the alloy unit loads /etc/environment.
+  # The default alloy package unit does NOT include EnvironmentFile, which means
+  # env("GRAFANA_METRICS_USER_ID") / env("GRAFANA_METRICS_API_KEY") in config.alloy
+  # would resolve to empty strings at runtime, causing repeated 401 push failures.
+  # The operator must write GRAFANA_METRICS_USER_ID and GRAFANA_METRICS_API_KEY to
+  # /etc/environment BEFORE starting alloy:
+  #   echo 'GRAFANA_METRICS_USER_ID=<id>' >> /etc/environment
+  #   echo 'GRAFANA_METRICS_API_KEY=<key>' >> /etc/environment
+  #   systemctl start alloy
+  - mkdir -p /etc/systemd/system/alloy.service.d
+  - |
+    cat > /etc/systemd/system/alloy.service.d/environment.conf <<'DROPIN'
+    [Service]
+    EnvironmentFile=/etc/environment
+    DROPIN
+  - systemctl daemon-reload
+  # Enable alloy so it starts on reboot (after the operator has written credentials),
+  # but do NOT start it now — credentials are not yet present in /etc/environment.
+  - systemctl enable alloy
 
 # Ensure the relay service starts even after reboot
 bootcmd: []
