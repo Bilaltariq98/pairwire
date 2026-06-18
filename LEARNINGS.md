@@ -350,6 +350,16 @@ Each entry should include:
   `cargo packager` produces the `.app` skeleton and BEFORE the DMG is created, so the
   final DMG contains the fully patched and signed bundle.
 
+### 2026-06-18 — P4.5.1 spec deviations discovered during implementation (reviewer audit)
+- **Area**: packaging, task tracking, spec compliance
+- **What**: A spec-compliance review of commit 9d7f798 (P4.5.1.7) identified four categories of deviation from the implementation plan. All deviations were correct engineering decisions; the spec was the authoritative source that needed updating.
+- **Deviations and resolutions**:
+  1. **APP path**: The spec (Task 7, Task 4) used `target/release/bundle/macos/pairwire.app` throughout. cargo-packager 0.11 actually outputs to `target/release/pairwire.app`. The plan doc (`docs/superpowers/plans/2026-06-18-A-macos-dmg-packaging.md`) has been updated to use the correct path everywhere. The justfile was already correct from commit f646c88 onward.
+  2. **`com.apple.security.cs.disable-library-validation` entitlement**: Added to `packaging/pairwire.entitlements` during Task 4/7 fix work (required for macOS 15+ dylib loading with mismatched Team IDs). The spec's Task 5 entitlements template did not include this key. The plan doc Task 5 template has been updated to include it with rationale.
+  3. **bundle-dylibs scope boundary**: The dylibbundler flag changes (`-b`, `-x`, `-d`, `-p`, `-od` instead of long forms) and the re-signing steps for the binary and outer `.app` after dylibbundler were added in commit 9d7f798 (tagged P4.5.1.7) but belong to Task 4's scope. Content is correct; the commit conflated Task 4 and Task 7 changes. The plan doc Task 4 recipe has been updated to reflect the actual flags and re-signing steps.
+  4. **`LSMinimumSystemVersion` plist check**: The spec's prose verification steps (Task 7, step "Verify TCC usage strings") included this check, but the `verify-bundle` recipe template in the same task omitted it. The justfile and the plan doc recipe template have both been updated to include the `LSMinimumSystemVersion` PlistBuddy check.
+- **Commit message note**: The actual commit message for 9d7f798 was `feat(P4.5.1.7): verify-bundle recipe + ad-hoc codesign verification` instead of the spec-required `feat(P4.5.1.7): verify-bundle recipe + inner-binary codesign + spctl/plist verification steps`. A follow-up commit records the spec-compliance fixes. Future commits should use the exact message from the plan.
+
 ### 2026-06-18 — iroh-relay port matrix: TCP 443 WebSocket required, UDP optional, STUN dead
 - **Area**: iroh, relay, hosting, deployment
 - **What**: While scoping a self-hosted relay for ship, verified iroh-relay's actual network requirements (workspace pins `iroh` + `iroh-relay` at **0.97.0** per Cargo.lock; an earlier assumption that it "needs raw UDP STUN/QAD on 3478" was WRONG):

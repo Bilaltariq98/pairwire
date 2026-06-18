@@ -229,6 +229,7 @@ verify-bundle:
     echo "=== TCC usage strings ==="
     /usr/libexec/PlistBuddy -c "Print :NSScreenCaptureUsageDescription" "$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist"
     echo "=== Verify complete ==="
 
 # Test static FFmpeg linkage — decides P4.5.1 bundling strategy.

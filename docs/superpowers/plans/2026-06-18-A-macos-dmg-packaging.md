@@ -538,21 +538,26 @@ otool -L target/release/pairwire | grep -E "libav|libsw|libpostproc"
 # Bundle FFmpeg dylibs into the .app and rewrite rpaths.
 # Run AFTER cargo build --release and AFTER cargo-packager creates the .app skeleton.
 # Requires: brew install dylibbundler
-APP ?= target/release/bundle/macos/pairwire.app
+# APP variable can be overridden: APP=path/to/pairwire.app just bundle-dylibs
+# NOTE: cargo-packager 0.11 outputs to target/release/pairwire.app (not
+# target/release/bundle/macos/pairwire.app as originally specced). See
+# LEARNINGS.md "cargo-packager 0.11 does not accept --features".
 bundle-dylibs:
     #!/usr/bin/env bash
     set -euo pipefail
-    APP="${APP:-target/release/bundle/macos/pairwire.app}"
+    APP="${APP:-target/release/pairwire.app}"
     BIN="$APP/Contents/MacOS/pairwire"
     LIBS_DIR="$APP/Contents/libs"
     mkdir -p "$LIBS_DIR"
+    # dylibbundler 1.0.5 uses short flags: -b (--bundle-deps), -x (--fix-file),
+    # -d (--dest-dir), -p (--install-path), -od (--overwrite-dir).
+    # Long forms (--bundle-deps, --binary, etc.) are not accepted by 1.0.5.
     dylibbundler \
-        --bundle-deps \
-        --binary "$BIN" \
-        --dest-dir "$LIBS_DIR" \
-        --install-path "@rpath/libs/" \
-        --overwrite-dir \
-        --fix-file "$BIN"
+        -b \
+        -x "$BIN" \
+        -d "$LIBS_DIR" \
+        -p "@executable_path/../libs/" \
+        -od
     # Ad-hoc sign each bundled dylib to avoid "mapped file has no cdhash" Gatekeeper error.
     # This error appears when a dylib inside a hardened-runtime .app is unsigned.
     # Bottom-up signing order is mandatory: dylibs first, then the binary, then the .app.
@@ -560,21 +565,42 @@ bundle-dylibs:
     for dylib in "$LIBS_DIR"/*.dylib; do
         codesign \
             --sign "$IDENTITY" \
-            --timestamp \
-            --options runtime \
             --force \
             "$dylib"
         echo "  signed: $(basename "$dylib")"
     done
+    # Re-sign the binary (dylibbundler modifies it, invalidating the prior signature).
+    codesign \
+        --sign "$IDENTITY" \
+        --entitlements packaging/pairwire.entitlements \
+        --options runtime \
+        --force \
+        "$BIN"
+    # Re-sign the outer bundle bottom-up (after binary is signed).
+    codesign \
+        --sign "$IDENTITY" \
+        --entitlements packaging/pairwire.entitlements \
+        --options runtime \
+        --force \
+        "$APP"
     echo "dylibs bundled and signed in $LIBS_DIR"
     echo "=== Verify inner binary signing: ==="
     codesign -dv "$BIN" 2>&1 | grep -E "Signature|Identifier|Format"
 ```
 
+**Note on deviations from original spec (discovered during Task 4 / P4.5.1.4 fix commits):**
+1. `APP` path uses `target/release/pairwire.app` — cargo-packager 0.11 actual output path.
+2. dylibbundler 1.0.5 requires short flags (`-b`, `-x`, `-d`, `-p`, `-od`); long forms are
+   not accepted. See LEARNINGS.md "mapped file has no cdhash".
+3. Re-signing the binary and outer `.app` after dylibbundler (which invalidates signatures)
+   is required and was added in the same commit that fixed dylibbundler flags. These steps
+   belong logically to Task 4 scope even though they were committed alongside Task 7 fixes.
+
 - [ ] After running `just bundle-dylibs`, verify the inner binary's codesign is intact:
 
 ```bash
-codesign -dv target/release/bundle/macos/pairwire.app/Contents/MacOS/pairwire 2>&1
+# NOTE: cargo-packager 0.11 outputs to target/release/pairwire.app (not bundle/macos/).
+codesign -dv target/release/pairwire.app/Contents/MacOS/pairwire 2>&1
 # Expected key lines:
 #   Executable=.../Contents/MacOS/pairwire
 #   Identifier=dev.pairwire.app
@@ -584,7 +610,7 @@ codesign -dv target/release/bundle/macos/pairwire.app/Contents/MacOS/pairwire 2>
 Verify each bundled dylib is individually signed (bottom-up requirement — unsigned dylibs inside a hardened-runtime bundle trigger "mapped file has no cdhash"):
 
 ```bash
-for dylib in target/release/bundle/macos/pairwire.app/Contents/libs/*.dylib; do
+for dylib in target/release/pairwire.app/Contents/libs/*.dylib; do
     codesign -dv "$dylib" 2>&1 | grep "Signature" || echo "UNSIGNED: $dylib"
 done
 # Expected: each line shows "Signature=adhoc" (no UNSIGNED lines)
@@ -715,29 +741,31 @@ plutil -lint packaging/Info.plist
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Hardened runtime base. Required for --options runtime codesign. -->
     <key>com.apple.security.cs.allow-jit</key>
     <false/>
-
-    <!-- wgpu (used by eframe) may require unsigned memory mapping on some drivers.
-         Enable this only if wgpu fails to initialize under hardened runtime.
-         Set to false initially; flip to true if codesign testing reveals issues. -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <false/>
-
-    <!-- Microphone access (cpal/CoreAudio). Required for audio capture. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
     <key>com.apple.security.device.audio-input</key>
     <true/>
-
-    <!-- Screen recording entitlement is NOT required here — ScreenCaptureKit
-         TCC permission is governed by NSScreenCaptureUsageDescription in Info.plist
-         and the TCC database, not by a hardened-runtime entitlement. -->
-
-    <!-- Accessibility (CGEvent injection) is also NOT an entitlement. It is a
-         separate TCC category requested via AXIsProcessTrustedWithOptions. -->
 </dict>
 </plist>
 ```
+
+**Note on `com.apple.security.cs.disable-library-validation`:** This entitlement is required
+when bundling Homebrew-derived dylibs (re-signed ad-hoc) into a hardened-runtime `.app` on
+macOS 15+ (Sequoia). Without it, dyld refuses to map dylibs whose Team ID does not match the
+process: `code signature in ... not valid for use in process: mapping process and mapped file
+(non-platform) have different Team IDs`. It is safe for ad-hoc distribution; evaluate removing
+it when the build switches to notarized Developer ID signing (all dylibs would then share the
+same Team ID). Also note: `codesign` (AMFI) rejects entitlements plist files that contain XML
+comments — the file above has none. See LEARNINGS.md "mapped file has no cdhash".
+
+**Note on `com.apple.security.device.audio-input`:** Microphone access (cpal/CoreAudio).
+Required for audio capture. Screen recording and Accessibility are NOT hardened-runtime
+entitlements — they are governed by NSScreenCaptureUsageDescription in Info.plist / TCC
+and AXIsProcessTrustedWithOptions respectively.
 
 - [ ] Verify entitlements plist:
 ```bash
@@ -862,8 +890,10 @@ application-folder-position = { x = 410, y = 180 }
 # Requires: assets/pairwire.icns (run `just icns` first; needs real icon asset)
 # Requires: packaging/dmg-background.png (created in Task 6 setup step)
 # Requires: FFMPEG_DIR / BINDGEN_EXTRA_CLANG_ARGS set (or CARGO_FEATURE_STATIC=1)
-# Output: target/release/bundle/macos/pairwire.app
-#         target/release/bundle/macos/pairwire_*.dmg
+# Output: target/release/pairwire.app
+#         target/release/pairwire_*.dmg
+# NOTE: cargo-packager 0.11 does NOT support --features; build separately first.
+# NOTE: cargo-packager 0.11 outputs to target/release/ not target/release/bundle/macos/.
 package:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -874,16 +904,20 @@ package:
         export BINDGEN_EXTRA_CLANG_ARGS="-I${FFMPEG_PREFIX}/include"
         export PKG_CONFIG_PATH="${FFMPEG_PREFIX}/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
     fi
-    # IMPORTANT: --features must come before '--' (anything after '--' is forwarded
-    # to the packaged binary at runtime, not to cargo).
+    # Step 1: Build the release binary with all production features.
+    # cargo-packager 0.11 does not accept --features; build separately first.
+    cargo build \
+        --release \
+        -p pairwire \
+        --features encode,capture,audio,gui,tray
+    # Step 2: Bundle the pre-built binary into .app and .dmg.
     CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}" \
     cargo packager \
         --release \
         --formats app,dmg \
-        -p pairwire \
-        --features encode,capture,audio,gui,tray
+        -p pairwire
     echo "=== Bundle output ==="
-    ls -lh target/release/bundle/macos/
+    ls -lh target/release/pairwire.app target/release/pairwire_*.dmg
 
 # Alias — same as `package` (kept for semantic clarity in docs).
 dmg: package
@@ -1040,7 +1074,7 @@ The "damaged" rejection means `Info.plist` is malformed, entitlements are incons
 # Expected: prints HELP_TEXT (usage, commands, options)
 ```
 
-- [ ] Verify the TCC usage strings appear in the bundle's Info.plist:
+- [ ] Verify the TCC usage strings and minimum OS version appear in the bundle's Info.plist:
 ```bash
 /usr/libexec/PlistBuddy -c "Print :NSScreenCaptureUsageDescription" "$APP/Contents/Info.plist"
 # Expected: pairwire needs to capture your screen...
@@ -1048,6 +1082,8 @@ The "damaged" rejection means `Info.plist` is malformed, entitlements are incons
 # Expected: pairwire needs microphone access...
 /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist"
 # Expected: 12.3
+# Note: LSMinimumSystemVersion must also be verified in the verify-bundle recipe —
+# the prose steps above and the recipe template must stay in sync.
 ```
 
 - [ ] Add a `verify-bundle` recipe to `justfile`:
@@ -1057,7 +1093,11 @@ The "damaged" rejection means `Info.plist` is malformed, entitlements are incons
 verify-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
-    APP="target/release/bundle/macos/pairwire.app"
+    # NOTE: cargo-packager 0.11 outputs to target/release/pairwire.app, NOT
+    # target/release/bundle/macos/pairwire.app (the latter is what the spec
+    # originally specified before the end-to-end run revealed the actual output
+    # path). See LEARNINGS.md "cargo-packager 0.11 does not accept --features".
+    APP="target/release/pairwire.app"
     if [ ! -d "$APP" ]; then
         echo "ERROR: $APP not found — run 'just package' first"
         exit 1
@@ -1075,6 +1115,7 @@ verify-bundle:
     echo "=== TCC usage strings ==="
     /usr/libexec/PlistBuddy -c "Print :NSScreenCaptureUsageDescription" "$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist"
     echo "=== Verify complete ==="
 ```
 
