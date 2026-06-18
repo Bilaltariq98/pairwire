@@ -315,10 +315,15 @@ Each entry should include:
 - **What**: `sentry` is pre-1.0 and breaks on minor bumps. Also, setting `enabled: false` at init time prevents re-enabling at runtime — the correct GDPR pattern is to leave Sentry enabled but gate events via `before_send` so consent can be toggled mid-session. The panic hook is auto-registered by the `panic` feature flag — no explicit `register_panic_handler()` call is needed.
 - **Resolution**: Pin to exact version (verified: `=0.48.2` at 2026-06-18). Use `before_send` callback that calls `pairwire_telemetry::consent::is_consented()` and returns `None` (drop) when not consented. Never use `ClientOptions { enabled: false }` for the consent gate.
 
-### 2026-06-18 — posthog-rs version: 0.4 is not published; use 0.13.x builder API
+### 2026-06-18 — posthog-rs version: 0.4 is not published; use 0.13.x tuple shorthand
 - **Area**: telemetry, posthog
-- **What**: `posthog-rs = "0.4"` is not published on crates.io. The latest stable version at 2026-06-18 is `0.13.1`. The v0.13 API is builder-style: `ClientOptions::new(key).endpoint(url)` then `posthog_rs::client(options)`, vs the old `posthog_rs::client(key, endpoint)` free-function form.
+- **What**: `posthog-rs = "0.4"` is not published on crates.io. The latest stable version at 2026-06-18 is `0.13.1`. `(&str, &str)` implements `From<(&str, &str)> for ClientOptions` — the idiomatic pattern is `posthog_rs::client((api_key, host_url))` with the tuple shorthand; no `ClientOptions::new()` call needed. See `crates/telemetry/src/posthog.rs:84`.
 - **Resolution**: Pin to `"0.13.1"`. Always verify with `cargo search posthog-rs` before adding to `Cargo.toml`. Verify method signatures at implementation time with `cargo doc -p posthog-rs --open`.
+
+### 2026-06-18 — ConnectionEstablished telemetry reports relayed=false unconditionally (known gap)
+- **Area**: telemetry, session
+- **What**: `relayed: false` is hardcoded in both the host and guest `ConnectionEstablished` event paths (`crates/app/src/session.rs:329` and `:1156`). iroh does expose path information via `conn.remote_info()` / `DirectAddrInfo`, but extracting relay vs. direct status requires querying the connection after the handshake and is not yet wired. Until the TODO is resolved, PostHog will report 0% relay connections even when relay is actually used — the data is factually incorrect for relayed sessions.
+- **Resolution**: When implementing relay detection, use `iroh::endpoint::Connection::remote_info()` to inspect the path; if `remote_info.relay_url` is `Some` and no direct addresses are reachable, `relayed = true`. Update both call sites and the `TelemetryEvent::ConnectionEstablished` shape if a `relay_url` field is also wanted.
 
 ### 2026-06-18 — egui 0.31: no Frame::window() — use Frame::NONE.fill()
 - **Area**: UI, egui

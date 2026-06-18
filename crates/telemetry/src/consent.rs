@@ -55,8 +55,14 @@ pub fn reset_for_test() {
 /// consent state must hold this guard for the duration of the test so that
 /// cargo's parallel test runner cannot interleave consent mutations across
 /// tests in different modules.
-#[cfg(test)]
-pub(crate) static TELEMETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// Exposed under `feature = "test-support"` so that external crates using
+/// [`reset_for_test`] can also serialize their own tests against concurrent
+/// consent mutations. Without holding this lock, parallel tests in dependent
+/// crates can still interleave `set_consent` / `reset_for_test` calls and
+/// produce flaky results.
+#[cfg(any(test, feature = "test-support"))]
+pub static TELEMETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
