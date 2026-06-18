@@ -9,6 +9,11 @@ mod control_state;
 mod guest_ctrl;
 mod host_ctrl;
 mod host_overlay_transparent;
+// launcher is only used when the gui feature is compiled in (the non-gui
+// run_launcher stub in main.rs does not need the module at all).
+#[cfg(feature = "gui")]
+mod launcher;
+mod permissions;
 mod reconnect;
 mod session;
 mod tray;
@@ -19,6 +24,22 @@ use reconnect::{ConnectionState, ReconnectPolicy};
 use tracing::info;
 
 fn main() -> Result<()> {
+    let cmd = cli::parse_args()?;
+
+    // Handle non-runtime commands before initialising logging — running
+    // `pairwire --version` or `pairwire --help` must not emit any log lines.
+    match &cmd {
+        cli::Command::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        cli::Command::Help => {
+            print!("{}", cli::HELP_TEXT);
+            return Ok(());
+        }
+        _ => {}
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -28,8 +49,6 @@ fn main() -> Result<()> {
         .init();
 
     info!(version = env!("CARGO_PKG_VERSION"), "pairwire starting");
-
-    let cmd = cli::parse_args()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -42,12 +61,59 @@ fn main() -> Result<()> {
         cli::Command::Join(args) => {
             run_join_command(args, &rt)?;
         }
+        // Handled above (pre-runtime early returns at lines 31–40); this arm
+        // exists only for match exhaustiveness — do not remove the early returns
+        // thinking this arm covers it, as the tokio runtime would then be built
+        // unnecessarily before --version / --help output.
+        cli::Command::Version | cli::Command::Help => {}
+        cli::Command::Launcher => run_launcher(&rt)?,
     }
 
     Ok(())
 }
 
+/// Show the native Host/Join chooser and dispatch to the appropriate handler.
+///
+/// When the `gui` feature is enabled the chooser uses a native `NSAlert` so it
+/// does not consume winit's `EventLoop`; the host overlay / viewer `eframe` loop
+/// starts cleanly after the choice is made.
+#[cfg(feature = "gui")]
+fn run_launcher(rt: &tokio::runtime::Runtime) -> Result<()> {
+    match launcher::show_launcher()? {
+        Some(launcher::LaunchChoice::Host(args)) => run_host_command(args, rt),
+        Some(launcher::LaunchChoice::Join(args)) => run_join_command(args, rt),
+        None => {
+            info!("launcher: cancelled");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "gui"))]
+fn run_launcher(_rt: &tokio::runtime::Runtime) -> Result<()> {
+    anyhow::bail!(
+        "no subcommand given — rebuild with --features gui for the launch chooser, \
+         or run `pairwire host` / `pairwire join <invite>`"
+    )
+}
+
 fn run_host_command(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    // ── Screen Recording permission gate (macOS + capture feature only) ───────
+    // Check and, if necessary, request the macOS TCC Screen Recording permission
+    // BEFORE launching the overlay or session. If not granted, the function
+    // shows a native guidance dialog and returns false — we exit gracefully here
+    // so the user never sees the blue-screen error that would occur later when
+    // the capture thread fails to start inside run_host().
+    //
+    // This gate covers BOTH the `pairwire host` CLI path and the Launcher's
+    // "Host" choice, since both paths call this function.
+    #[cfg(feature = "capture")]
+    {
+        if !permissions::ensure_screen_recording_or_guide() {
+            return Ok(());
+        }
+    }
+
     // Three valid configurations:
     //   1. gui (overlay on main thread, tray ignored if compiled in)
     //   2. tray only — no gui (tray on main thread)

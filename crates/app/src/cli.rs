@@ -13,6 +13,12 @@ pub enum Command {
     Host(HostArgs),
     /// Join a session using an invite link.
     Join(JoinArgs),
+    /// No subcommand given (double-clicked app): show the native Host/Join chooser.
+    Launcher,
+    /// Print the version string and exit.
+    Version,
+    /// Print usage help and exit.
+    Help,
 }
 
 /// Resolution preset for the capture pipeline.
@@ -91,6 +97,34 @@ pub struct JoinArgs {
     pub no_gui: bool,
 }
 
+/// Usage help text printed by `--help` / `-h`.
+pub const HELP_TEXT: &str = "\
+pairwire — P2P screen sharing and pair programming
+
+USAGE:
+    pairwire host [OPTIONS]
+    pairwire join <invite-url> [OPTIONS]
+    pairwire --version
+    pairwire --help
+
+COMMANDS:
+    host    Start a sharing session and print an invite link
+    join    Join a session using an invite link
+
+OPTIONS (host):
+    --fps <N>                   Capture frame rate (default: 30)
+    --resolution <preset>       native | 1080p | 720p (default: 1080p)
+    --allow-remote-control      Auto-grant remote control to guests
+    --no-overlay                Skip the annotation overlay window
+
+OPTIONS (join):
+    --no-gui                    Run headless (for testing)
+
+GLOBAL OPTIONS:
+    --version, -V               Print version and exit
+    --help, -h                  Print this help and exit
+";
+
 /// Parse `std::env::args()` into a `Command`.
 pub fn parse_args() -> anyhow::Result<Command> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -99,6 +133,14 @@ pub fn parse_args() -> anyhow::Result<Command> {
 
 /// Parse a pre-split argument list (without the program name) into a `Command`.
 fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
+    // Handle global flags before subcommand dispatch.
+    if let Some(first) = args.first() {
+        match first.as_str() {
+            "--version" | "-V" => return Ok(Command::Version),
+            "--help" | "-h" => return Ok(Command::Help),
+            _ => {}
+        }
+    }
     match args.first().map(std::string::String::as_str) {
         Some("host") => {
             let mut a = HostArgs::default();
@@ -133,13 +175,14 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
                 anyhow::bail!("usage: pairwire join <invite-url> [--no-gui]");
             }
             let invite_url = args[1].clone();
+            validate_invite(&invite_url)?;
             let no_gui = args.iter().any(|a| a == "--no-gui");
             Ok(Command::Join(JoinArgs { invite_url, no_gui }))
         }
         Some(cmd) => {
             anyhow::bail!("unknown command: {cmd}\nUsage: pairwire host | pairwire join <invite>")
         }
-        None => anyhow::bail!("Usage: pairwire host | pairwire join <invite>"),
+        None => Ok(Command::Launcher),
     }
 }
 
@@ -147,6 +190,18 @@ fn parse_u32(args: &[String], i: usize, flag: &str) -> anyhow::Result<u32> {
     args.get(i)
         .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))
         .and_then(|v| u32::from_str(v).map_err(|_| anyhow::anyhow!("{flag} must be a number")))
+}
+
+/// Validate an invite URL at the boundary. Pairwire invites are `pairwire://...`.
+pub fn validate_invite(url: &str) -> anyhow::Result<()> {
+    let url = url.trim();
+    if url.is_empty() {
+        anyhow::bail!("invite link is empty");
+    }
+    if !url.starts_with("pairwire://") {
+        anyhow::bail!("invite link must start with pairwire://");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -282,7 +337,70 @@ mod tests {
     }
 
     #[test]
-    fn parse_no_args_errors() {
-        assert!(parse(&[]).is_err());
+    fn parse_no_args_returns_launcher() {
+        let cmd = parse(&[]).unwrap();
+        assert!(matches!(cmd, Command::Launcher));
+    }
+
+    #[test]
+    fn validate_invite_accepts_pairwire_url() {
+        assert!(validate_invite("pairwire://abc?token=0000000000000000000000000000000000").is_ok());
+    }
+
+    #[test]
+    fn validate_invite_rejects_empty_and_non_pairwire() {
+        assert!(validate_invite("").is_err());
+        assert!(validate_invite("https://example.com").is_err());
+    }
+
+    #[test]
+    fn parse_join_rejects_non_pairwire_url() {
+        // A plain HTTPS URL must be rejected at the parse boundary.
+        assert!(parse(&["join", "https://example.com/invite"]).is_err());
+    }
+
+    #[test]
+    fn parse_join_rejects_flag_as_url() {
+        // `pairwire join --no-gui` would previously store "--no-gui" as the
+        // invite URL and only fail much later. With validate_invite wired in,
+        // this is caught immediately at the CLI boundary.
+        assert!(parse(&["join", "--no-gui"]).is_err());
+    }
+
+    #[test]
+    fn parse_join_rejects_empty_url() {
+        assert!(parse(&["join", ""]).is_err());
+    }
+
+    #[test]
+    fn parse_version_flag() {
+        let cmd = parse(&["--version"]).unwrap();
+        let Command::Version = cmd else {
+            panic!("expected Version command");
+        };
+    }
+
+    #[test]
+    fn parse_version_short() {
+        let cmd = parse(&["-V"]).unwrap();
+        let Command::Version = cmd else {
+            panic!("expected Version command");
+        };
+    }
+
+    #[test]
+    fn parse_help_flag() {
+        let cmd = parse(&["--help"]).unwrap();
+        let Command::Help = cmd else {
+            panic!("expected Help command");
+        };
+    }
+
+    #[test]
+    fn parse_help_short() {
+        let cmd = parse(&["-h"]).unwrap();
+        let Command::Help = cmd else {
+            panic!("expected Help command");
+        };
     }
 }

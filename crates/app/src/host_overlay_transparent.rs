@@ -314,6 +314,58 @@ mod inner {
         // No-op on non-macOS platforms.
     }
 
+    // ── NSWindow focus helper ──────────────────────────────────────────────────
+
+    /// Call `NSWindow.makeKeyAndOrderFront(nil)` so the overlay reclaims keyboard
+    /// focus.  Needed when the host presses Cmd+Shift+D to enter drawing mode while
+    /// another application currently owns the key window — without this, the Escape
+    /// key and other in-drawing shortcuts never reach the overlay.
+    ///
+    /// On exit from drawing mode we do NOT explicitly release focus; the next click
+    /// through the click-through window naturally focuses the app below.
+    ///
+    /// # Safety
+    ///
+    /// `frame` must contain a valid `NSView*` — eframe guarantees this inside
+    /// `App::update`.
+    #[cfg(target_os = "macos")]
+    fn make_key_window(frame: &eframe::Frame) {
+        use objc2_app_kit::NSView;
+
+        let handle = match frame.window_handle() {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(error = %e, "could not obtain window handle for makeKeyAndOrderFront");
+                return;
+            }
+        };
+        let RawWindowHandle::AppKit(appkit_handle) = handle.as_raw() else {
+            warn!("expected AppKit window handle on macOS");
+            return;
+        };
+        // SAFETY: eframe guarantees the pointer is a valid NSView for the lifetime
+        // of App::update. We do not retain the reference beyond this function.
+        let ns_view: &NSView = unsafe {
+            appkit_handle
+                .ns_view
+                .as_ptr()
+                .cast::<NSView>()
+                .as_ref()
+                .expect("ns_view pointer was null — should not happen in eframe")
+        };
+        let Some(ns_window) = ns_view.window() else {
+            warn!("NSView has no NSWindow — cannot make key window");
+            return;
+        };
+        ns_window.makeKeyAndOrderFront(None);
+        debug!("transparent overlay: makeKeyAndOrderFront called — overlay now has key focus");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn make_key_window(_frame: &eframe::Frame) {
+        // No-op on non-macOS platforms.
+    }
+
     // ── App state ──────────────────────────────────────────────────────────────
 
     /// egui application state for the transparent host overlay.
@@ -364,6 +416,13 @@ mod inner {
         click_through_init: bool,
         /// Tracks whether NSWindow level / collection behavior were applied.
         chrome_init: bool,
+        /// Host-drawn strokes echoed back locally so they persist after pen-up.
+        ///
+        /// Guest strokes arrive via `strokes_rx` (the watch channel from the session).
+        /// Host-drawn strokes are sent to the guest but never loop back through that
+        /// watch, so they vanish at pen-up.  We keep a local copy here and render it
+        /// with the same fade/alpha logic as guest strokes.
+        local_strokes: Vec<TimedStroke>,
         /// Menu-bar tray, present only in `gui + tray` builds once created on the
         /// main thread. Polled each `update()`.
         #[cfg(feature = "tray")]
@@ -395,6 +454,7 @@ mod inner {
                 capture_size: (capture_width as f32, capture_height as f32),
                 click_through_init: false,
                 chrome_init: false,
+                local_strokes: Vec::new(),
                 #[cfg(feature = "tray")]
                 tray: None,
             }
@@ -464,7 +524,20 @@ mod inner {
 
         /// Render all strokes received from the broadcast channel as overlays on the
         /// transparent canvas. The canvas is the full `ctx.screen_rect()`.
-        fn render_strokes(&self, ui: &egui::Ui, canvas: egui::Rect) {
+        fn render_strokes(&mut self, ui: &egui::Ui, canvas: egui::Rect) {
+            // Evict expired laser strokes from the local (host-drawn) stroke list.
+            // Mirror the per-peer eviction already applied to guest strokes inside
+            // the render loop below — same constant, same age computation.
+            {
+                let now = Instant::now();
+                const LASER_EVICT_MS: u128 = 2000;
+                self.local_strokes.retain(|t| {
+                    !(matches!(t.stroke.mode, DrawMode::Laser)
+                        && now.saturating_duration_since(t.received_at).as_millis()
+                            >= LASER_EVICT_MS)
+                });
+            }
+
             let strokes = self.strokes_rx.borrow();
             let p = ui.painter();
 
@@ -491,6 +564,34 @@ mod inner {
             const PERSISTENT_ALPHA: u8 = 230;
 
             for timed in strokes.iter() {
+                let stroke = &timed.stroke;
+                if stroke.points.len() < 2 {
+                    continue;
+                }
+                let alpha = match stroke.mode {
+                    DrawMode::Laser => {
+                        let age_ms = now.saturating_duration_since(timed.received_at).as_millis();
+                        if age_ms >= LASER_FADE_MS {
+                            continue;
+                        }
+                        let frac = 1.0 - (age_ms as f32 / LASER_FADE_MS as f32);
+                        (LASER_BASE_ALPHA * frac).clamp(0.0, 255.0) as u8
+                    }
+                    DrawMode::Persistent => PERSISTENT_ALPHA,
+                };
+                let base = resolve_color(stroke);
+                let color = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
+                let egui_stroke = egui::Stroke::new(3.0, color);
+                for window in stroke.points.windows(2) {
+                    let a = to_screen(window[0].0, window[0].1);
+                    let b = to_screen(window[1].0, window[1].1);
+                    p.line_segment([a, b], egui_stroke);
+                }
+            }
+
+            // Host-drawn strokes echoed locally (self-echo path).
+            // Rendered with the same fade/alpha/colour/width logic as guest strokes.
+            for timed in self.local_strokes.iter() {
                 let stroke = &timed.stroke;
                 if stroke.points.len() < 2 {
                     continue;
@@ -721,6 +822,13 @@ mod inner {
                             // drawing_mode = false → pass through mouse (use desktop)
                             set_window_ignores_mouse_events(frame, !self.drawing_mode);
 
+                            // When entering drawing mode, claim keyboard focus so
+                            // Escape and other shortcuts reach the overlay even if
+                            // another app currently holds the key window.
+                            if self.drawing_mode {
+                                make_key_window(frame);
+                            }
+
                             info!(
                                 drawing_mode = self.drawing_mode,
                                 "transparent overlay: drawing mode toggled"
@@ -734,6 +842,7 @@ mod inner {
                                 peer_id: Some(self.peer_id),
                             }));
                             self.current_stroke.clear();
+                            self.local_strokes.clear();
                             self.drawing_active = false;
                             continue;
                         }
@@ -770,6 +879,13 @@ mod inner {
                                         points: std::mem::take(&mut self.current_stroke),
                                         mode: self.draw_mode.clone(),
                                     };
+                                    // Echo the host's own stroke into local_strokes so it
+                                    // persists after pen-up (it is never looped back via
+                                    // strokes_rx, which only carries guest→host strokes).
+                                    self.local_strokes.push(TimedStroke {
+                                        stroke: stroke.clone(),
+                                        received_at: Instant::now(),
+                                    });
                                     self.send_drawing(DrawingEvent::Stroke(stroke));
                                 } else {
                                     self.current_stroke.clear();

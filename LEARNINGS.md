@@ -295,6 +295,86 @@ Each entry should include:
 - **Key insight — send overlay channels BEFORE the accept loop**: `overlay_tx` used to fire only after the first guest connected (inside the accept loop, when capture started), so the overlay (and now the tray) appeared only once a guest joined — useless for a tray whose job is copying the invite link *before* anyone connects. The overlay never renders the self-preview (`frame_rx` is dropped), so the late `frame_rx` it waited for was unnecessary. Channels are now sent once, before the loop, using `capture_config.width/height` (known early) and an empty preview watch. This also means the host overlay shows its "Waiting for guest…" banner immediately on start in gui-only builds too.
 - **cfg gotcha**: `run_transparent_host_overlay` (plain) is now `#[cfg(not(feature = "tray"))]` and `run_host_with_overlay` is `#[cfg(all(feature = "gui", not(feature = "tray")))]`, else they trip `dead_code` under `-D warnings` in the gui+tray combo. `TrayHandle::copy_item` / `set_invite_url` are `#[allow(dead_code)]` (used only by the tray-only host loop). NOTE: `just lint` only checks default features (tray, no gui), so gui/gui+tray lint regressions are invisible there — check `--features gui,tray` explicitly.
 
+### 2026-06-18 — Task-boundary note: icns, tray-placeholder, verify-bundle recipes landed in Task 6 commit
+- **Area**: packaging, task tracking
+- **What**: The `icns` and `tray-placeholder` justfile recipes belong to Task 3 (plan lines 342–410); `verify-bundle` belongs to Task 7 (plan lines 1053–1079). All three were added inside the Task 6 commit (6bad4c3) without Tasks 3 and 7 being marked complete. Recipe content is correct per spec.
+- **Impact**: Tasks 3 and 7 are partially complete in an untracked commit. Future agents should mark P4.5.1.3 (icns + tray-placeholder) and P4.5.1.7 (verify-bundle) as already-done when they reach those tasks, rather than re-implementing them.
+- **Resolution**: No code change needed — content is correct. This entry records the cross-task boundary for continuity.
+
+### 2026-06-18 — cargo-packager 0.11 does not accept --features; entitlements plist must have no XML comments
+- **Area**: packaging, cargo-packager, codesign
+- **What**: Two issues discovered when running `just package` end-to-end for the first time:
+  1. `cargo packager 0.11.x` does NOT accept a `--features` flag. Passing `--features encode,capture,audio,gui,tray` directly to `cargo packager` exits with "unexpected argument '--features' found". The correct workflow is to run `cargo build --release -p pairwire --features ...` first, then run `cargo packager --release --formats app,dmg -p pairwire` separately.
+  2. `codesign` (via AMFI's `AMFIUnserializeXML`) rejects entitlements plist files that contain XML comments (`<!-- ... -->`). The error is: `Failed to parse entitlements: AMFIUnserializeXML: syntax error near line N`. Remove all XML comments from `.entitlements` files before signing.
+  3. cargo-packager 0.11 places output at `target/release/pairwire.app` and `target/release/pairwire_0.1.0_aarch64.dmg`, not in a `target/release/bundle/macos/` subdirectory. Update any hardcoded references to use `target/release/` directly.
+- **Resolution**: justfile `package` recipe split into two steps (cargo build, then cargo packager); `packaging/pairwire.entitlements` comments stripped; APP path in `bundle-dylibs` and `verify-bundle` recipes updated to `target/release/pairwire.app`.
+- **Key insight**: cargo-packager operates on already-compiled binaries — it is a post-build bundler, not a build wrapper. Always build the binary separately first, then invoke the packager.
+
+### 2026-06-18 — FFmpeg static linking vs VideoToolbox in packaged .app
+- **Area**: ffmpeg, build, packaging
+- **What**: Attempted `CARGO_FEATURE_STATIC=1` build (P4.5.1.1 spike) for a self-contained .app with no Homebrew dependency.
+- **Outcome**: **Build failed — static linking cannot be completed on the dev machine.** The link stage fails with `ld: library 'mp3lame' not found` and `search path '/opt/homebrew/Cellar/svt-av1/4.0.1/lib' not found`. Root cause: `CARGO_FEATURE_STATIC=1` (without `CARGO_FEATURE_BUILD`) instructs `ffmpeg-sys-next` to use static `.a` archives via pkg-config, but Homebrew's FFmpeg codec dependencies (`dav1d`, `svt-av1`, `libvpx`) are distributed as dynamic-only `.dylib` files with no corresponding `.a`. The Homebrew FFmpeg `.a` archives themselves exist but their transitive codec deps do not. Additionally, the stale search path `/opt/homebrew/Cellar/svt-av1/4.0.1/lib` (installed version is 4.1.0) reveals a stale cached build state that compounds the problem.
+- **Resolution**: **dylibbundler fallback chosen (Task 4 path).** The `CARGO_FEATURE_BUILD=1` (source-from-git) alternative would build a minimal FFmpeg without codec deps and take 20-60 min, but: (a) it requires careful configure flags to avoid VideoToolbox breakage; (b) the CI runner will need this long every build; (c) the dylibbundler approach is proven and standard for macOS .app bundling. Use `dylibbundler` to copy Homebrew FFmpeg `.dylib` files into `Contents/libs/` and rewrite `@rpath` references with `install_name_tool`. VideoToolbox is a system framework (not a dylib) and is unaffected by dylibbundler — it will work correctly.
+- **Detail**: Linker errors from `/tmp/ffmpeg-spike.log`: `ld: warning: search path '/opt/homebrew/Cellar/svt-av1/4.0.1/lib' not found` and `ld: library 'mp3lame' not found`. The ffmpeg-sys-next `static` feature without `build` passes `--static` to pkg-config, which tries to resolve every transitive codec dep as a `.a`. dav1d and svt-av1 are dynamic-only on Homebrew. The `build` feature (source compilation) is a separate 20-60 min path not tested here.
+- **VideoToolbox note**: VideoToolbox (`/System/Library/Frameworks/VideoToolbox.framework`) is a system framework present on all macOS 10.8+ machines — it does NOT need to be bundled regardless of dylibbundler or static strategy. h264_videotoolbox availability depends on the framework being present at runtime, which it always is. The dylibbundler path does not break VideoToolbox.
+
+### 2026-06-18 — "mapped file has no cdhash" + "different Team IDs" for bundled dylibs
+- **Area**: packaging, codesign, Gatekeeper
+- **What**: When a .app with hardened runtime entitlements contains unsigned dylibs in
+  Contents/libs/, macOS Gatekeeper rejects launch with "The application ... is damaged
+  and can't be opened." The system log shows: `mapped file has no cdhash, skipping
+  validation`. The binary itself may be correctly signed but the unsigned dylibs
+  trigger the rejection.
+- **Related issue**: Even after ad-hoc signing each dylib, macOS 15+ (Sequoia) may still
+  reject loading with: `code signature in ... not valid for use in process: mapping process
+  and mapped file (non-platform) have different Team IDs`. This happens because the dylibs
+  were originally signed by Homebrew (Apple-issued Team ID) and the ad-hoc process has no
+  Team ID. The loader refuses to map files with mismatched Team IDs for hardened-runtime
+  processes.
+- **Resolution (part 1)**: Ad-hoc sign each dylib (`codesign --sign -`) AFTER dylibbundler
+  rewrites the @rpath references. Bottom-up signing order is mandatory: dylibs first, then
+  the binary, then the .app bundle. dylibbundler invalidates the signature — signing must
+  happen after dylibbundler runs.
+- **Resolution (part 2)**: Add `com.apple.security.cs.disable-library-validation = true` to
+  `packaging/pairwire.entitlements`. This entitlement permits a hardened-runtime process to
+  load dylibs that don't match its own Team ID (or have no Team ID). Without this, the
+  "different Team IDs" rejection occurs at dlopen/dyld time. This is safe for ad-hoc
+  distribution; evaluate removing it when switching to notarized Developer ID signing.
+- **Verification**: `codesign -dv <path/to/dylib> 2>&1 | grep Signature` shows `Signature=adhoc`;
+  `just verify-bundle` → Version check returns `0.1.0` (binary launches inside .app);
+  `spctl` shows "rejected" (expected — not "damaged" which would indicate structural error).
+- **dylibbundler flag change**: dylibbundler 1.0.5 uses `-x` (not `--binary`) and `-b`
+  (not `--bundle-deps` long form). The `-od` flag (overwrite-dir) is correct. The
+  `--fix-file` long form also works. Verified with dylibbundler 1.0.5 on Homebrew.
+- **CI placement**: In `.github/workflows/release.yml`, run `just bundle-dylibs` AFTER
+  `cargo packager` produces the `.app` skeleton and BEFORE the DMG is created, so the
+  final DMG contains the fully patched and signed bundle.
+
+### 2026-06-18 — P4.5.1 spec deviations discovered during implementation (reviewer audit)
+- **Area**: packaging, task tracking, spec compliance
+- **What**: A spec-compliance review of commit 9d7f798 (P4.5.1.7) identified four categories of deviation from the implementation plan. All deviations were correct engineering decisions; the spec was the authoritative source that needed updating.
+- **Deviations and resolutions**:
+  1. **APP path**: The spec (Task 7, Task 4) used `target/release/bundle/macos/pairwire.app` throughout. cargo-packager 0.11 actually outputs to `target/release/pairwire.app`. The plan doc (`docs/superpowers/plans/2026-06-18-A-macos-dmg-packaging.md`) has been updated to use the correct path everywhere. The justfile was already correct from commit f646c88 onward.
+  2. **`com.apple.security.cs.disable-library-validation` entitlement**: Added to `packaging/pairwire.entitlements` during Task 4/7 fix work (required for macOS 15+ dylib loading with mismatched Team IDs). The spec's Task 5 entitlements template did not include this key. The plan doc Task 5 template has been updated to include it with rationale.
+  3. **bundle-dylibs scope boundary**: The dylibbundler flag changes (`-b`, `-x`, `-d`, `-p`, `-od` instead of long forms) and the re-signing steps for the binary and outer `.app` after dylibbundler were added in commit 9d7f798 (tagged P4.5.1.7) but belong to Task 4's scope. Content is correct; the commit conflated Task 4 and Task 7 changes. The plan doc Task 4 recipe has been updated to reflect the actual flags and re-signing steps.
+  4. **`LSMinimumSystemVersion` plist check**: The spec's prose verification steps (Task 7, step "Verify TCC usage strings") included this check, but the `verify-bundle` recipe template in the same task omitted it. The justfile and the plan doc recipe template have both been updated to include the `LSMinimumSystemVersion` PlistBuddy check.
+- **Commit message note**: The actual commit message for 9d7f798 was `feat(P4.5.1.7): verify-bundle recipe + ad-hoc codesign verification` instead of the spec-required `feat(P4.5.1.7): verify-bundle recipe + inner-binary codesign + spctl/plist verification steps`. A follow-up commit records the spec-compliance fixes. Future commits should use the exact message from the plan.
+
+### 2026-06-18 — P4.5.4 launch chooser: NSAlert blocks main thread; setActivationPolicy(Regular) brings dialog to front
+
+- **Area**: app, gui, NSAlert, launcher
+- **What**: During Task 3 manual-run verification (`cargo run -p pairwire --features gui,tray,encode,capture,audio` with no args), the process:
+  1. Logged "pairwire starting"
+  2. Called `show_launcher()` → `NSAlert::runModal()` — this is a **blocking synchronous call** on the main thread; the process stayed alive and alive waiting for a button click (no crash, no error log).
+  3. When "Host" was clicked, the full host path fired immediately: iroh endpoint bound, invite link printed, overlay + tray created — indistinguishable from `pairwire host`.
+- **NSAlert quirks observed**:
+  - `setActivationPolicy(Regular)` **before** `NSAlert::runModal()` is required to bring the dialog to the foreground for an `LSUIElement=true` bundle. Without it the dialog hides behind the active application.
+  - `NSAlert::new(mtm)` and all method calls (`addButtonWithTitle`, `setAccessoryView`, `runModal`, etc.) do NOT require an extra `unsafe {}` block in objc2-app-kit 0.3 — the `#[unsafe(method(...))]` safety annotation is on the generated method, but the Rust call site is safe. Only raw pointer dereferences or `AnyObject` casts need `unsafe` here.
+  - `NSTextField::new(mtm)` exists and returns an `Id<NSTextField>`; `field.setPlaceholderString(Some(ns_string!(...)))` and `field.stringValue()` are both safe calls. The Deref coercion chain `NSTextField → NSControl → NSView` makes `&**field` a `&NSView` for `setAccessoryView`.
+  - `NSAlertFirstButtonReturn` / `NSAlertSecondButtonReturn` / `NSAlertThirdButtonReturn` are `NSModalResponse` newtypes (isize wrappers). Comparing with `==` works; the `.0` inner field is not needed — compare the enum constants directly.
+- **Cancel path**: The process exits cleanly (exit code 0) when the dialog is dismissed. Confirmed: `run_launcher` returns `Ok(())` on `None`, and `main()` returns `Ok(())`.
+- **One-EventLoop constraint confirmed**: The NSAlert path creates no winit/eframe `EventLoop`, so the subsequent `run_host_with_overlay_and_tray` → `eframe::run_native` starts cleanly. If a future task tries to replace the NSAlert with an eframe window, the host overlay `EventLoop` will panic with "EventLoop already exists" — document this constraint and keep the native NSAlert.
+
 ### 2026-06-18 — iroh-relay port matrix: TCP 443 WebSocket required, UDP optional, STUN dead
 - **Area**: iroh, relay, hosting, deployment
 - **What**: While scoping a self-hosted relay for ship, verified iroh-relay's actual network requirements (workspace pins `iroh` + `iroh-relay` at **0.97.0** per Cargo.lock; an earlier assumption that it "needs raw UDP STUN/QAD on 3478" was WRONG):

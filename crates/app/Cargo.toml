@@ -26,7 +26,7 @@ arboard = { workspace = true, optional = true }
 [features]
 default = ["tray"]
 # Enable the graphical viewer. Requires a display and GPU.
-gui = ["dep:egui", "dep:eframe", "dep:raw-window-handle", "dep:objc2-app-kit", "dep:objc2-foundation"]
+gui = ["dep:egui", "dep:eframe", "dep:raw-window-handle", "dep:arboard", "dep:objc2-app-kit", "dep:objc2-foundation"]
 # Enable the macOS menu bar / system tray icon.
 tray = ["dep:tray-icon", "dep:arboard", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # Enable H.264 encode/decode. Requires system FFmpeg libraries.
@@ -51,7 +51,7 @@ optional = true
 version = "0.21"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-foundation = { version = "0.3", optional = true, features = ["NSDate", "NSString", "NSThread"] }
+objc2-foundation = { version = "0.3", optional = true, features = ["NSDate", "NSString", "NSThread", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSApplication",
     "NSRunningApplication",
@@ -64,7 +64,57 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSColor",
     "NSScreen",
     "NSResponder",
+    # Required for the native launch chooser (P4.5.4): NSAlert + NSTextField
+    "NSAlert",
+    "NSButton",
+    "NSControl",
+    "NSTextField",
 ] }
 # raw-window-handle is a transitive dep of winit/eframe; pull it in directly so
 # we can extract the NSView* from eframe::Frame in host_overlay_transparent.rs.
 raw-window-handle = { version = "0.6", optional = true }
+
+# ── cargo-packager configuration ─────────────────────────────────────────────
+# Produces: target/release/pairwire.app
+#           target/release/pairwire_0.1.0_aarch64.dmg
+# (cargo-packager 0.11 outputs directly to target/release/, not bundle/macos/)
+#
+# Usage (via justfile):
+#   just package
+#
+# Direct usage (two-step: cargo-packager 0.11 does not accept --features):
+#   cargo build --release -p pairwire --features encode,capture,audio,gui,tray
+#   CODESIGN_IDENTITY="-" cargo packager --release --formats app,dmg -p pairwire
+#
+# Environment variables:
+#   CODESIGN_IDENTITY  (default: "-" for ad-hoc; set to Developer ID cert name
+#                       to enable Developer ID signing in a future release)
+#
+[package.metadata.packager]
+product-name = "pairwire"
+identifier   = "dev.pairwire.app"
+version      = "0.1.0"
+description  = "P2P screen sharing and pair programming"
+long-description = "Real-time screen sharing and pair programming over QUIC."
+homepage     = "https://pairwire.dev"
+icons        = ["../../assets/pairwire.icns"]
+
+# The binary to bundle. Must match [[bin]] name in Cargo.toml.
+binaries = [{ path = "pairwire", main = true }]
+
+# macOS-specific packaging settings.
+[package.metadata.packager.macos]
+minimum-system-version = "12.3"
+info-plist-path        = "../../packaging/Info.plist"
+entitlements           = "../../packaging/pairwire.entitlements"
+# Signing identity — plain string as required by cargo-packager 0.11.
+# The just package recipe passes CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+# so this field is overridden at invocation time via the env var.
+signing-identity       = "-"
+
+# DMG appearance.
+[package.metadata.packager.dmg]
+background       = "../../packaging/dmg-background.png"
+window-size      = { width = 540, height = 380 }
+app-position     = { x = 130, y = 180 }
+application-folder-position = { x = 410, y = 180 }
