@@ -79,6 +79,139 @@ bundle-dylibs:
     echo "=== Verify inner binary signing: ==="
     codesign -dv "$BIN" 2>&1 | grep -E "Signature|Identifier|Format"
 
+# Build the macOS .app bundle and .dmg using cargo-packager.
+# Requires: cargo install cargo-packager --version "^0.11" --locked
+# Requires: assets/pairwire.icns (run `just icns` first; needs real icon asset)
+# Requires: packaging/dmg-background.png (solid-colour placeholder committed in Task 6)
+# Requires: FFMPEG_DIR / BINDGEN_EXTRA_CLANG_ARGS set (or CARGO_FEATURE_STATIC=1)
+# Output: target/release/bundle/macos/pairwire.app
+#         target/release/bundle/macos/pairwire_*.dmg
+package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # FFmpeg env — Homebrew path used in local dev; CI sets FFMPEG_DIR from a step.
+    FFMPEG_PREFIX="$(brew --prefix ffmpeg 2>/dev/null || echo '')"
+    if [ -n "$FFMPEG_PREFIX" ]; then
+        export FFMPEG_DIR="$FFMPEG_PREFIX"
+        export BINDGEN_EXTRA_CLANG_ARGS="-I${FFMPEG_PREFIX}/include"
+        export PKG_CONFIG_PATH="${FFMPEG_PREFIX}/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+    fi
+    # IMPORTANT: --features must come before '--' (anything after '--' is forwarded
+    # to the packaged binary at runtime, not to cargo).
+    CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}" \
+    cargo packager \
+        --release \
+        --formats app,dmg \
+        -p pairwire \
+        --features encode,capture,audio,gui,tray
+    echo "=== Bundle output ==="
+    ls -lh target/release/bundle/macos/
+
+# Alias — same as `package` (kept for semantic clarity in docs).
+dmg: package
+
+# Stub: sign with Developer ID — no-op until Apple enrollment.
+# Set CODESIGN_IDENTITY and APPLE_TEAM_ID env vars to activate.
+sign:
+    @echo "sign: CODESIGN_IDENTITY=${CODESIGN_IDENTITY:-(not set — ad-hoc only)}"
+    @echo "sign: Stub. No-op for ad-hoc/unsigned builds."
+    @echo "sign: To enable: set CODESIGN_IDENTITY='Developer ID Application: <Name> (<TeamID>)'"
+
+# Stub: notarize with Apple notary service — requires Developer ID (deferred).
+# Uncomment and fill in when Apple enrollment is complete.
+notarize:
+    @echo "notarize: Stub. Requires Apple Developer ID enrollment (deferred for v1)."
+    @echo "notarize: When ready: xcrun notarytool submit target/release/bundle/macos/*.dmg"
+    @echo "notarize:             --apple-id <email> --team-id <team> --password <app-specific>"
+    @echo "notarize:             xcrun stapler staple target/release/bundle/macos/pairwire.app"
+
+# Generate pairwire.icns from assets/icon.iconset/icon_1024x1024.png.
+# Requires: Xcode CLI tools (sips, iconutil).
+# [human] Drop the 1024×1024 PNG at assets/icon.iconset/icon_1024x1024.png first.
+icns:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SRC="assets/icon.iconset/icon_1024x1024.png"
+    if [ ! -f "$SRC" ]; then
+        echo "ERROR: $SRC not found — provide the 1024×1024 PNG first (task #9)"
+        exit 1
+    fi
+    ICONSET="assets/icon.iconset"
+    sips -z 16 16     "$SRC" --out "$ICONSET/icon_16x16.png"
+    sips -z 32 32     "$SRC" --out "$ICONSET/icon_16x16@2x.png"
+    sips -z 32 32     "$SRC" --out "$ICONSET/icon_32x32.png"
+    sips -z 64 64     "$SRC" --out "$ICONSET/icon_32x32@2x.png"
+    sips -z 128 128   "$SRC" --out "$ICONSET/icon_128x128.png"
+    sips -z 256 256   "$SRC" --out "$ICONSET/icon_128x128@2x.png"
+    sips -z 256 256   "$SRC" --out "$ICONSET/icon_256x256.png"
+    sips -z 512 512   "$SRC" --out "$ICONSET/icon_256x256@2x.png"
+    sips -z 512 512   "$SRC" --out "$ICONSET/icon_512x512.png"
+    cp "$SRC"                      "$ICONSET/icon_512x512@2x.png"
+    iconutil -c icns "$ICONSET" -o assets/pairwire.icns
+    echo "Generated assets/pairwire.icns"
+    file assets/pairwire.icns
+
+# Generate a minimal 32x32 RGBA placeholder tray PNG (dark circle on transparent background).
+# Replace assets/tray-icon.png with the real 32x32 RGBA design asset before production release.
+tray-placeholder:
+    #!/usr/bin/env python3
+    import struct, zlib, os
+
+    def png_chunk(name, data):
+        crc = zlib.crc32(name + data) & 0xffffffff
+        return struct.pack('>I', len(data)) + name + data + struct.pack('>I', crc)
+
+    W = 32
+    H = 32
+    cx = W // 2
+    cy = H // 2
+    r = 12
+    raw = b''
+    for y in range(H):
+        raw += b'\x00'
+        for x in range(W):
+            dist2 = (x - cx) ** 2 + (y - cy) ** 2
+            if dist2 <= r * r:
+                raw += bytes([30, 30, 30, 220])
+            else:
+                raw += bytes([0, 0, 0, 0])
+
+    compressed = zlib.compress(raw)
+    ihdr = struct.pack('>II', W, H) + bytes([8, 6, 0, 0, 0])
+    png  = b'\x89PNG\r\n\x1a\n'
+    png += png_chunk(b'IHDR', ihdr)
+    png += png_chunk(b'IDAT', compressed)
+    png += png_chunk(b'IEND', b'')
+
+    os.makedirs('assets', exist_ok=True)
+    with open('assets/tray-icon-placeholder.png', 'wb') as f:
+        f.write(png)
+    print('Written assets/tray-icon-placeholder.png (32x32 RGBA)')
+
+# Verify bundle signing and plist integrity.
+verify-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    APP="target/release/bundle/macos/pairwire.app"
+    if [ ! -d "$APP" ]; then
+        echo "ERROR: $APP not found — run 'just package' first"
+        exit 1
+    fi
+    echo "=== Info.plist lint ==="
+    plutil -lint "$APP/Contents/Info.plist"
+    echo "=== Inner binary codesign (bottom-up verification) ==="
+    codesign -dv "$APP/Contents/MacOS/pairwire" 2>&1 | grep -E "Signature|Identifier|Format"
+    echo "=== Outer bundle codesign + entitlements ==="
+    codesign -d --entitlements - -vvv "$APP" 2>&1
+    echo "=== spctl assessment ==="
+    spctl --assess --type execute --verbose "$APP" 2>&1 || true
+    echo "=== Version check ==="
+    "$APP/Contents/MacOS/pairwire" --version
+    echo "=== TCC usage strings ==="
+    /usr/libexec/PlistBuddy -c "Print :NSScreenCaptureUsageDescription" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$APP/Contents/Info.plist"
+    echo "=== Verify complete ==="
+
 # Test static FFmpeg linkage — decides P4.5.1 bundling strategy.
 # Requires: brew install nasm pkg-config
 # If this succeeds and VideoToolbox works in a clean VM → use static.

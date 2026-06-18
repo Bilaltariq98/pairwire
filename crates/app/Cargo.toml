@@ -68,3 +68,46 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
 # raw-window-handle is a transitive dep of winit/eframe; pull it in directly so
 # we can extract the NSView* from eframe::Frame in host_overlay_transparent.rs.
 raw-window-handle = { version = "0.6", optional = true }
+
+# ── cargo-packager configuration ─────────────────────────────────────────────
+# Produces: target/release/bundle/macos/pairwire.app
+#           target/release/bundle/macos/pairwire_0.1.0_aarch64.dmg
+#
+# Usage (via justfile):
+#   just package
+#
+# Direct usage:
+#   CODESIGN_IDENTITY="-" cargo packager --release --formats app,dmg -p pairwire --features encode,capture,audio,gui,tray
+#
+# Environment variables:
+#   CODESIGN_IDENTITY  (default: "-" for ad-hoc; set to Developer ID cert name
+#                       to enable Developer ID signing in a future release)
+#
+[package.metadata.packager]
+product-name = "pairwire"
+identifier   = "dev.pairwire.app"
+version      = "0.1.0"
+description  = "P2P screen sharing and pair programming"
+long-description = "Real-time screen sharing and pair programming over QUIC."
+homepage     = "https://pairwire.dev"
+icons        = ["../../assets/pairwire.icns"]
+
+# The binary to bundle. Must match [[bin]] name in Cargo.toml.
+binaries = [{ path = "pairwire", main = true }]
+
+# macOS-specific packaging settings.
+[package.metadata.packager.macos]
+minimum-system-version = "12.3"
+info-plist-path        = "../../packaging/Info.plist"
+entitlements-path      = "../../packaging/pairwire.entitlements"
+# Signing identity — plain string as required by cargo-packager 0.11.
+# The just package recipe passes CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+# so this field is overridden at invocation time via the env var.
+signing-identity       = "-"
+
+# DMG appearance.
+[package.metadata.packager.dmg]
+background       = "../../packaging/dmg-background.png"
+window-size      = { width = 540, height = 380 }
+app-position     = { x = 130, y = 180 }
+application-folder-position = { x = 410, y = 180 }
