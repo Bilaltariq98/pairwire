@@ -5,9 +5,9 @@
 
 **Goal:** Wire pairwire clients to a self-hosted iroh-relay on Hetzner CX22, provisioned reproducibly with Terraform IaC, so the team has full cost/traffic visibility from day 1.
 
-**Architecture:** The iroh-relay binary (buildable via `cargo install iroh-relay --version 0.97.0 --locked --features server`) runs on Hetzner CX22 (EU, nbg1) behind a Hetzner firewall that allows only TCP 443 (WebSocket relay) and UDP 7842 (QAD). The client transport layer reads `PAIRWIRE_RELAY_URL` (or falls back to `https://relay.pairwire.dev`) and builds a merged `RelayMap` that contains both our relay and n0's public relays, so a relay outage degrades gracefully without hard-failing sessions. All infra is codified in `infra/terraform/` so it is reproducible and tear-down-able with no click-ops.
+**Architecture:** The iroh-relay binary (buildable via `cargo install iroh-relay --version 0.97.0 --locked --features server`) runs on Hetzner CX22 (EU, nbg1) behind a Hetzner firewall that allows only TCP 443 (WebSocket relay) and UDP 7842 (QAD). The client transport layer calls `resolve_relay_mode()` in the transport crate to decide the `RelayMode`. Precedence (highest first): (1) `PAIRWIRE_RELAY_URL=<url>` → Custom(url); (2) `PAIRWIRE_RELAY=public|disabled|ours`; (3) build-profile default — **debug** → `RelayMode::Default` (n0 public, for internal dogfooding); **release** → `RelayMode::Custom(vec![https://relay.pairwire.dev])` (our relay only, **no n0 in the map** — end-user traffic never touches n0). All infra is codified in `infra/terraform/` so it is reproducible and tear-down-able with no click-ops.
 
-**Tech Stack:** Rust (iroh 0.97 `RelayMode::Custom`, `RelayMap`), Terraform (hetznercloud/hcloud + cloudflare/cloudflare providers), cloud-init YAML (Debian 12, systemd), iroh-relay 0.97.0 binary, Cloudflare DNS, Grafana Cloud (monitoring — human wires alert)
+**Tech Stack:** Rust (iroh 0.97 `RelayMode::Custom`/`Default`/`Disabled`, `RelayUrl`), Terraform (hetznercloud/hcloud + cloudflare/cloudflare providers), cloud-init YAML (Debian 12, systemd), iroh-relay 0.97.0 binary, Cloudflare DNS, Grafana Cloud (monitoring — human wires alert)
 
 **PLAN.md task ID(s):** P4.5.1 (macOS packaging/distribution phase — relay is the infrastructure prerequisite for this workstream; no dedicated relay task exists in PLAN.md)
 
@@ -17,7 +17,7 @@
 
 | Path | Responsibility |
 |---|---|
-| `crates/transport/src/transport.rs` | **Modify** — `Transport::bind()` accepts optional relay URL, builds merged `RelayMap` |
+| `crates/transport/src/transport.rs` | **Modify** — add `resolve_relay_mode()` / `select_relay_mode()` and wire into `Transport::bind()` |
 | `crates/core/src/config.rs` | **Modify** — add `relay_url: Option<String>` to a new `NetworkConfig`; add `NetworkConfig::validate()` |
 | `crates/core/src/lib.rs` | **Modify** — re-export `NetworkConfig` |
 | `infra/terraform/providers.tf` | **Create** — provider pins (hcloud 1.x, cloudflare 4.x) |
@@ -28,7 +28,7 @@
 | `infra/terraform/outputs.tf` | **Create** — relay_url, server_ip_v4, server_ip_v6 |
 | `infra/terraform/cloud-init/relay.yaml` | **Create** — installs iroh-relay, writes config + systemd unit |
 | `justfile` | **Modify** — add `relay-plan`, `relay-apply`, `relay-destroy` recipes |
-| `LEARNINGS.md` | **Modify** — add entry about iroh 0.97 `RelayMap::extend` pattern for merged relay maps |
+| `LEARNINGS.md` | **Modify** — add entry about `resolve_relay_mode()` design: debug→n0-public / release→ours-only split and env overrides |
 
 ---
 
@@ -114,17 +114,17 @@
 
   /// Network connectivity configuration.
   ///
-  /// Controls which iroh-relay servers the transport layer contacts.
-  /// The custom relay is **merged** with n0's public relays (not a replacement),
-  /// so a relay outage degrades gracefully instead of hard-failing sessions.
+  /// Stores an optional relay URL override for serialization in config files or
+  /// CLI flags. At runtime, relay mode selection is handled by `resolve_relay_mode()`
+  /// in the transport crate (which also reads env vars and the build profile).
+  /// `NetworkConfig` is a config-persistence type, not the runtime selector.
   #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
   pub struct NetworkConfig {
-      /// Custom relay URL to prepend to the relay map.
+      /// Custom relay URL override (must be `https://`).
       ///
-      /// Must be an `https://` URL (iroh-relay uses TLS WebSocket since 0.91).
-      /// When `None`, only n0's public relays are used.
-      ///
-      /// Override at runtime with the `PAIRWIRE_RELAY_URL` environment variable.
+      /// When `Some`, this value is passed to the transport layer as the explicit
+      /// relay URL. When `None`, the transport layer falls back to env vars and
+      /// build-profile defaults (see `resolve_relay_mode()`).
       pub relay_url: Option<String>,
   }
 
@@ -153,27 +153,11 @@
           }
           Ok(())
       }
-
-      /// Resolve the effective relay URL, preferring the `PAIRWIRE_RELAY_URL`
-      /// environment variable over the config field, and the config field over
-      /// the compiled-in default.
-      ///
-      /// Returns `None` only if the env var is set to the empty string (explicit
-      /// opt-out of a custom relay).
-      pub fn effective_relay_url() -> Option<String> {
-          match std::env::var("PAIRWIRE_RELAY_URL") {
-              Ok(val) if val.is_empty() => None,
-              Ok(val) => Some(val),
-              Err(_) => Some(DEFAULT_RELAY_URL.to_owned()),
-          }
-      }
   }
 
   impl Default for NetworkConfig {
       fn default() -> Self {
-          Self {
-              relay_url: Some(DEFAULT_RELAY_URL.to_owned()),
-          }
+          Self { relay_url: None }
       }
   }
   ```
@@ -224,121 +208,334 @@
 
 ---
 
-### Task 2: Wire `RelayMode::Custom` into `Transport::bind()` [agent]
+### Task 2: Add `resolve_relay_mode()` to the transport crate and wire into `Transport::bind()` [agent]
 
 **Files:**
-- Modify: `crates/transport/src/transport.rs` — add relay URL resolution and `RelayMap` merge
+- Modify: `crates/transport/src/transport.rs` — add pure inner function + public wrapper, wire into `bind()`
 
-**Key iroh 0.97 API facts (verified from source):**
-- `iroh::RelayMode` is `pub enum RelayMode { Disabled, Default, Staging, Custom(RelayMap) }`
-- `RelayMode::custom(urls: impl IntoIterator<Item = RelayUrl>)` builds a `Custom` variant from URLs
-- `Builder::relay_mode(mode: RelayMode) -> Self` replaces the relay config (not additive)
-- `iroh::RelayMap::extend(&self, other: &RelayMap)` merges two maps in-place
-- `iroh::defaults::prod::default_relay_map()` returns the n0 production relay map
-- `iroh::RelayUrl` is from `iroh_base`, re-exported as `iroh::RelayUrl`
+**Design (owner directive 2026-06-18):** relay selection is a pure, fully unit-testable inner function
+plus a thin env-reading wrapper. Release builds use our relay only — no n0 in the map. Debug builds
+default to n0 public relays so `cargo run` and debug DMGs work without standing up our relay.
 
-**Strategy for "custom relay + n0 public relays as fallback":** `Builder::relay_mode` is a replacement, not an additive call. To merge, build the custom `RelayMap`, call `.extend(&prod_map)` on it, then pass `RelayMode::Custom(merged)` to `relay_mode()`. This gives us our relay first (clients will attempt it) plus n0's as fallback. The tradeoff: if our relay is down, hole-punch regression (LEARNINGS 2026-03-30 v0.96) may keep some sessions on n0's public relays permanently until reconnect — acceptable for beta.
+**Key iroh 0.97 API facts — VERIFY before finalising** (per LEARNINGS: iroh APIs differ from docs):
+
+> Before writing any `RelayMode`/`RelayUrl` call, grep the installed crate source to confirm variant
+> names and `RelayUrl` parse API:
+>
+> ```bash
+> grep -r "RelayMode" ~/.cargo/registry/src --include="*.rs" -l 2>/dev/null | grep iroh | head -5
+> grep -rn "pub enum RelayMode" ~/.cargo/registry/src --include="*.rs" | grep iroh | head -5
+> grep -rn "RelayUrl" ~/.cargo/registry/src --include="*.rs" | grep "iroh" | grep "pub struct RelayUrl\|impl.*RelayUrl\|from_str" | head -10
+> ```
+>
+> Expected (iroh 0.97): `pub enum RelayMode { Disabled, Default, Staging, Custom(RelayMap) }`.
+> Confirm `RelayMode::Custom`, `RelayMode::Default`, `RelayMode::Disabled` all exist. Confirm
+> `RelayUrl` is parseable from a `&str`. If variant names differ, adjust the code below accordingly.
+
+**Relay selection precedence (no n0 merge):**
+1. `PAIRWIRE_RELAY_URL=<url>` → `RelayMode::Custom` with that single URL (any build)
+2. `PAIRWIRE_RELAY=public` → `RelayMode::Default` (n0 public); `=disabled` → `RelayMode::Disabled`; `=ours` → `RelayMode::Custom(our_relay)`
+3. No env → build-profile default: **debug** (`is_debug=true`) → `RelayMode::Default`; **release** (`is_debug=false`) → `RelayMode::Custom(our relay only, 1 relay, no n0)`
 
 #### Steps
 
-- [ ] **Step 2.1 — Write failing unit test** [agent]
+- [ ] **Step 2.0 — Grep iroh 0.97 source for RelayMode variants and RelayUrl parse API** [agent]
 
-  In `crates/transport/src/transport.rs`, add at the bottom of the file before `}` of the module (or inside a test module if one exists — check the current file first):
+  ```bash
+  grep -rn "pub enum RelayMode" ~/.cargo/registry/src --include="*.rs" | grep iroh | head -5
+  grep -rn "RelayUrl" ~/.cargo/registry/src --include="*.rs" | grep "iroh" | grep "pub struct RelayUrl\|impl.*RelayUrl\|from_str" | head -10
+  # Record the exact variant names. If Custom/Default/Disabled exist as-is, proceed.
+  # If not, adjust select_relay_mode() below to use the actual names.
+  ```
+
+- [ ] **Step 2.1 — Write failing tests for `select_relay_mode`** [agent]
+
+  In `crates/transport/src/transport.rs`, add a test module (or extend the existing one) with a
+  full table of cases covering every branch of `select_relay_mode`. These tests are pure — no
+  network, no endpoint binding:
 
   ```rust
   #[cfg(test)]
-  mod tests {
-      use super::*;
-      use iroh::defaults::prod as iroh_prod_defaults;
+  mod relay_mode_tests {
+      use super::select_relay_mode;
 
-      /// Verify that an https:// relay URL is accepted without error.
-      /// This test does NOT bind a real endpoint — it only exercises the URL
-      /// parsing / RelayMap construction path.
+      const OUR_RELAY: &str = "https://relay.pairwire.dev";
+
+      // 1. Explicit URL override (any build, debug or release)
       #[test]
-      fn relay_url_valid_https_parses() {
-          let url: iroh::RelayUrl = "https://relay.pairwire.dev"
-              .parse()
-              .expect("valid https relay URL should parse");
-          // The RelayMap should contain exactly our URL.
-          let map = iroh::RelayMap::from_iter([url.clone()]);
-          assert!(map.contains(&url));
+      fn explicit_url_override_returns_custom() {
+          let mode = select_relay_mode(
+              Some("https://custom.relay.example.com"),
+              None,
+              true,  // is_debug irrelevant when URL set
+              OUR_RELAY,
+          )
+          .expect("valid https URL must succeed");
+          // Must be Custom with exactly the supplied URL (not OUR_RELAY, not n0).
+          match mode {
+              iroh::RelayMode::Custom(map) => {
+                  assert_eq!(map.len(), 1, "explicit override must produce exactly 1 relay");
+                  let url: iroh::RelayUrl = "https://custom.relay.example.com"
+                      .parse()
+                      .unwrap();
+                  assert!(map.contains(&url), "custom map must contain the supplied URL");
+              }
+              other => panic!("expected Custom, got {other:?}"),
+          }
       }
 
-      /// Verify that an invalid (non-https) URL is rejected at the RelayUrl parse step.
+      // 2. PAIRWIRE_RELAY=public → Default (n0 public)
       #[test]
-      fn relay_url_invalid_scheme_rejected() {
-          let result: Result<iroh::RelayUrl, _> = "ftp://relay.example.com".parse();
-          assert!(result.is_err(), "non-https URL must be rejected by RelayUrl::parse");
+      fn env_mode_public_returns_default() {
+          let mode = select_relay_mode(None, Some("public"), false, OUR_RELAY)
+              .expect("public must succeed");
+          assert!(
+              matches!(mode, iroh::RelayMode::Default),
+              "PAIRWIRE_RELAY=public must yield RelayMode::Default, got {mode:?}"
+          );
       }
 
-      /// Verify that merging our custom map with the n0 prod map yields a map
-      /// that contains both our relay and at least one n0 relay.
-      /// The prod map has 4 nodes (NA-east, NA-west, EU, AP), so merged is 5.
+      // 3. PAIRWIRE_RELAY=disabled → Disabled
       #[test]
-      fn relay_map_merge_contains_both() {
-          let our_url: iroh::RelayUrl = "https://relay.pairwire.dev".parse()
-              .expect("test relay URL must parse");
-          let custom = iroh::RelayMap::from_iter([our_url.clone()]);
-          let prod = iroh_prod_defaults::default_relay_map();
-          custom.extend(&prod);
-          // Our relay is present.
-          assert!(custom.contains(&our_url), "custom relay must be in merged map");
-          // At least one n0 relay is present (prod map has 4 nodes).
-          assert!(custom.len() > 1, "merged map must contain n0 relays too");
+      fn env_mode_disabled_returns_disabled() {
+          let mode = select_relay_mode(None, Some("disabled"), false, OUR_RELAY)
+              .expect("disabled must succeed");
+          assert!(
+              matches!(mode, iroh::RelayMode::Disabled),
+              "PAIRWIRE_RELAY=disabled must yield RelayMode::Disabled, got {mode:?}"
+          );
+      }
+
+      // 4. PAIRWIRE_RELAY=ours → Custom(ours-only, no n0)
+      #[test]
+      fn env_mode_ours_returns_custom_ours_only() {
+          let mode = select_relay_mode(None, Some("ours"), false, OUR_RELAY)
+              .expect("ours must succeed");
+          match mode {
+              iroh::RelayMode::Custom(map) => {
+                  assert_eq!(map.len(), 1, "ours must produce exactly 1 relay (no n0)");
+                  let url: iroh::RelayUrl = OUR_RELAY.parse().unwrap();
+                  assert!(map.contains(&url));
+              }
+              other => panic!("expected Custom(ours), got {other:?}"),
+          }
+      }
+
+      // 5. Debug default (is_debug=true, no env) → Default (n0 public, for dogfooding)
+      #[test]
+      fn debug_default_returns_relay_mode_default() {
+          let mode = select_relay_mode(None, None, true, OUR_RELAY)
+              .expect("debug default must succeed");
+          assert!(
+              matches!(mode, iroh::RelayMode::Default),
+              "debug build with no env must yield RelayMode::Default (n0 public), got {mode:?}"
+          );
+      }
+
+      // 6. Release default (is_debug=false, no env) → Custom(ours-only, exactly 1 relay, no n0)
+      #[test]
+      fn release_default_returns_custom_ours_only_one_relay() {
+          let mode = select_relay_mode(None, None, false, OUR_RELAY)
+              .expect("release default must succeed");
+          match mode {
+              iroh::RelayMode::Custom(map) => {
+                  assert_eq!(
+                      map.len(),
+                      1,
+                      "release default must have exactly 1 relay (our relay only, no n0 in map)"
+                  );
+                  let url: iroh::RelayUrl = OUR_RELAY.parse().unwrap();
+                  assert!(
+                      map.contains(&url),
+                      "release map must contain relay.pairwire.dev"
+                  );
+              }
+              other => panic!("expected Custom(ours-only), got {other:?}"),
+          }
+      }
+
+      // 7. Malformed URL → Err
+      #[test]
+      fn malformed_url_returns_err() {
+          let result = select_relay_mode(Some("not_a_url"), None, false, OUR_RELAY);
+          assert!(
+              result.is_err(),
+              "malformed URL must return Err, got Ok({:?})",
+              result
+          );
+      }
+
+      // 8. Non-https scheme in explicit URL → Err (RelayUrl rejects non-https)
+      #[test]
+      fn non_https_explicit_url_returns_err() {
+          let result = select_relay_mode(Some("ftp://relay.example.com"), None, false, OUR_RELAY);
+          assert!(result.is_err(), "non-https URL must be rejected");
+      }
+
+      // 9. Unknown PAIRWIRE_RELAY value → Err
+      #[test]
+      fn unknown_env_mode_returns_err() {
+          let result = select_relay_mode(None, Some("blah"), false, OUR_RELAY);
+          assert!(result.is_err(), "unknown PAIRWIRE_RELAY value must return Err");
       }
   }
   ```
 
-  Run (these are pure unit tests — no network, no endpoint binding needed):
+  Run (expected FAIL — `select_relay_mode` does not exist yet):
 
   ```bash
-  cargo test -p pairwire-transport relay_url 2>&1 | head -30
-  # Expected: test tests::relay_url_valid_https_parses ... ok
-  # Expected: test tests::relay_url_invalid_scheme_rejected ... ok
-  cargo test -p pairwire-transport relay_map_merge 2>&1 | head -30
-  # Expected: test tests::relay_map_merge_contains_both ... ok
+  cargo test -p pairwire-transport relay_mode_tests 2>&1 | head -20
+  # Expected: error[E0425]: cannot find function `select_relay_mode` in this scope
   ```
 
-  If the tests fail to compile, the most likely cause is that `iroh::RelayMap::from_iter` or `iroh::defaults::prod` is not available — check the iroh version in `crates/transport/Cargo.toml` first (`grep iroh crates/transport/Cargo.toml`). Do not add a new version pin without checking; use whatever is already in the workspace.
+- [ ] **Step 2.2 — Implement `select_relay_mode` (pure) and `resolve_relay_mode` (wrapper)** [agent]
 
-- [ ] **Step 2.2 — Update `Transport::bind()` to accept an optional relay URL** [agent]
+  Add this import at the top of `crates/transport/src/transport.rs` (below the existing `use iroh::...` lines):
 
-  Replace the current `Transport::bind()` signature and body in `crates/transport/src/transport.rs`.
-
-  Current signature:
   ```rust
-  pub async fn bind() -> Result<Self> {
+  use iroh::{RelayMode, RelayUrl};
   ```
 
-  New signature and imports. Add to the top-level `use` block in `transport.rs` (the existing `use iroh::{Endpoint, endpoint::{...}}` line is already there — add a new `use` line below it):
-  ```rust
-  use iroh::{RelayMap, RelayMode, RelayUrl};
-  use iroh::defaults::prod as iroh_prod_defaults;
-  ```
-
-  `iroh::defaults::prod` is a module path, not a type. It is not imported implicitly by `use iroh::*` — the fully-qualified module must be brought into scope explicitly. The call `iroh_prod_defaults::default_relay_map()` in `bind()` below is the only use site.
-
-  Replace the `pub async fn bind() -> Result<Self>` function entirely with:
+  Add the two functions immediately before `impl Transport {` (or before the existing `pub async fn bind()`):
 
   ```rust
-  /// Bind a new iroh endpoint with an optional custom relay.
+  /// Pure, testable relay-mode selector.
   ///
-  /// The relay URL is resolved in this order:
-  /// 1. `relay_url` parameter (if `Some`)
-  /// 2. `PAIRWIRE_RELAY_URL` environment variable
-  /// 3. Compiled-in default `https://relay.pairwire.dev`
+  /// Precedence (highest first):
+  /// 1. `env_url`  — explicit `PAIRWIRE_RELAY_URL` value → `Custom(vec![url])`
+  /// 2. `env_mode` — `PAIRWIRE_RELAY` keyword:
+  ///    `"public"` → `Default` (n0 public), `"disabled"` → `Disabled`,
+  ///    `"ours"` → `Custom(vec![our_relay])`
+  /// 3. Build-profile default (no env):
+  ///    `is_debug=true` → `Default` (n0 public, for internal dogfooding)
+  ///    `is_debug=false` → `Custom(vec![our_relay])` — **our relay only, no n0 in map**
   ///
-  /// The custom relay is **merged** with n0's public production relays so that
-  /// a relay outage degrades (slower hole-punch, more relaying via n0) rather
-  /// than hard-failing. Pass `relay_url = Some("")` to use n0 relays only (not
-  /// recommended for production).
+  /// URL validation is strict: `RelayUrl::parse` rejects non-https and malformed URLs.
   ///
   /// # Errors
   ///
-  /// Returns an error if the relay URL cannot be parsed or the endpoint cannot
-  /// be bound (e.g., port conflict).
+  /// Returns an error if `env_url` is `Some` but cannot be parsed as a `RelayUrl`,
+  /// or if `env_mode` is `Some` but not a recognised keyword.
+  fn select_relay_mode(
+      env_url: Option<&str>,
+      env_mode: Option<&str>,
+      is_debug: bool,
+      our_relay: &str,
+  ) -> crate::Result<RelayMode> {
+      // 1. Explicit URL override.
+      if let Some(url_str) = env_url {
+          let parsed: RelayUrl = url_str.parse().map_err(|e| {
+              crate::Error::Transport(format!(
+                  "PAIRWIRE_RELAY_URL '{url_str}' is not a valid relay URL: {e}"
+              ))
+          })?;
+          let map = iroh::RelayMap::from_iter([parsed]);
+          return Ok(RelayMode::Custom(map));
+      }
+
+      // 2. Keyword env override.
+      if let Some(kw) = env_mode {
+          return match kw {
+              "public" => Ok(RelayMode::Default),
+              "disabled" => Ok(RelayMode::Disabled),
+              "ours" => {
+                  let url: RelayUrl = our_relay.parse().map_err(|e| {
+                      crate::Error::Transport(format!(
+                          "compiled-in relay URL '{our_relay}' is invalid: {e}"
+                      ))
+                  })?;
+                  Ok(RelayMode::Custom(iroh::RelayMap::from_iter([url])))
+              }
+              other => Err(crate::Error::Transport(format!(
+                  "PAIRWIRE_RELAY='{other}' is not a recognised value; \
+                   use 'public', 'disabled', or 'ours'"
+              ))),
+          };
+      }
+
+      // 3. Build-profile default.
+      if is_debug {
+          // Debug/internal: use n0's public relays so cargo-run and debug DMGs
+          // work without standing up our relay server.
+          tracing::debug!("relay_mode=Default (debug build, no env override)");
+          Ok(RelayMode::Default)
+      } else {
+          // Release: our relay only. End-user traffic must not touch n0's public network.
+          let url: RelayUrl = our_relay.parse().map_err(|e| {
+              crate::Error::Transport(format!(
+                  "compiled-in relay URL '{our_relay}' is invalid: {e}"
+              ))
+          })?;
+          tracing::info!(
+              relay_url = %url,
+              total_relays = 1u32,
+              "relay_mode=Custom(ours-only, release build, no n0 in map)"
+          );
+          Ok(RelayMode::Custom(iroh::RelayMap::from_iter([url])))
+      }
+  }
+
+  /// Reads `PAIRWIRE_RELAY_URL` and `PAIRWIRE_RELAY` from the environment,
+  /// passes `cfg!(debug_assertions)` as the build-profile flag, and delegates
+  /// to [`select_relay_mode`].
+  ///
+  /// This is the only function that touches `std::env` — keeping env reads out
+  /// of the pure inner function makes it trivially unit-testable.
+  ///
+  /// # Errors
+  ///
+  /// Propagates errors from [`select_relay_mode`] (malformed URL, unknown keyword).
+  pub fn resolve_relay_mode() -> crate::Result<RelayMode> {
+      let env_url = std::env::var("PAIRWIRE_RELAY_URL").ok();
+      let env_mode = std::env::var("PAIRWIRE_RELAY").ok();
+      select_relay_mode(
+          env_url.as_deref(),
+          env_mode.as_deref(),
+          cfg!(debug_assertions),
+          "https://relay.pairwire.dev",
+      )
+  }
+  ```
+
+  **Note:** `iroh::RelayMap::from_iter` is the constructor for a single-entry map. Verify this
+  compiles against the installed iroh 0.97 source (Step 2.0 grep). If the constructor differs,
+  adjust accordingly. Do NOT use `RelayMap::extend` — there is no n0 merge in this design.
+
+- [ ] **Step 2.3 — Run tests (expected PASS)** [agent]
+
+  ```bash
+  cargo test -p pairwire-transport relay_mode_tests 2>&1
+  # Expected: all 9 tests pass
+  # test relay_mode_tests::debug_default_returns_relay_mode_default ... ok
+  # test relay_mode_tests::env_mode_disabled_returns_disabled ... ok
+  # test relay_mode_tests::env_mode_ours_returns_custom_ours_only ... ok
+  # test relay_mode_tests::env_mode_public_returns_default ... ok
+  # test relay_mode_tests::explicit_url_override_returns_custom ... ok
+  # test relay_mode_tests::malformed_url_returns_err ... ok
+  # test relay_mode_tests::non_https_explicit_url_returns_err ... ok
+  # test relay_mode_tests::release_default_returns_custom_ours_only_one_relay ... ok
+  # test relay_mode_tests::unknown_env_mode_returns_err ... ok
+  # test result: ok. 9 passed; 0 failed
+  ```
+
+- [ ] **Step 2.4 — Update `Transport::bind()` to call `resolve_relay_mode()`** [agent]
+
+  `Transport::bind()` retains its original zero-argument signature. Replace only the relay
+  resolution logic inside it:
+
+  ```rust
+  /// Bind a new iroh endpoint using the relay mode from [`resolve_relay_mode`].
+  ///
+  /// Relay mode is determined by environment variables and the build profile —
+  /// see [`resolve_relay_mode`] for precedence. Call sites pass no relay argument;
+  /// all configuration is via env or build flags.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if relay mode resolution fails (malformed URL, unknown env
+  /// value) or if the endpoint cannot be bound (e.g., port conflict).
   #[instrument(name = "transport_bind")]
-  pub async fn bind(relay_url: Option<&str>) -> Result<Self> {
+  pub async fn bind() -> Result<Self> {
       let idle_timeout = IdleTimeout::try_from(TRANSPORT_MAX_IDLE_TIMEOUT)
           .map_err(|e| Error::Transport(format!("invalid idle timeout: {e}")))?;
 
@@ -347,29 +544,7 @@
           .max_idle_timeout(Some(idle_timeout))
           .build();
 
-      // Resolve effective relay URL: parameter → env var → default.
-      let effective_url = relay_url
-          .map(|s| s.to_owned())
-          .or_else(pairwire_core::NetworkConfig::effective_relay_url);
-
-      let relay_mode = if let Some(url_str) = effective_url {
-          let parsed: RelayUrl = url_str.parse().map_err(|e| {
-              Error::Transport(format!("invalid relay URL '{url_str}': {e}"))
-          })?;
-          // Build our custom map, then extend with n0 prod relays for fallback.
-          let custom_map = RelayMap::from_iter([parsed.clone()]);
-          let prod_map = iroh_prod_defaults::default_relay_map();
-          custom_map.extend(&prod_map);
-          tracing::info!(
-              relay_url = %parsed,
-              total_relays = custom_map.len(),
-              "using merged relay map (custom + n0 prod)"
-          );
-          RelayMode::Custom(custom_map)
-      } else {
-          tracing::info!("relay_url explicitly disabled; using n0 public relays only");
-          RelayMode::Default
-      };
+      let relay_mode = resolve_relay_mode()?;
 
       let endpoint = Endpoint::builder(presets::N0)
           .relay_mode(relay_mode)
@@ -388,62 +563,36 @@
   }
   ```
 
-  **Note:** `presets::N0` already calls `builder.relay_mode(default_relay_mode())` inside its `apply()`. Our subsequent `.relay_mode(relay_mode)` call on the builder **replaces** the preset's relay config (the builder method overwrites the `TransportConfig::Relay` entry in `self.transports`). This is the correct and intended behavior — verified in iroh 0.97 `endpoint.rs:516-534`.
+  **Note:** `Transport::bind()` retains its zero-argument signature — existing call sites in
+  `session.rs` require no changes.
 
-- [ ] **Step 2.3 — Update all callers of `Transport::bind()`** [agent]
+  **Note:** `presets::N0` sets a default relay mode inside its `apply()`. Our subsequent
+  `.relay_mode(relay_mode)` call **replaces** that — verified in iroh 0.97 `endpoint.rs:516-534`.
 
-  There are exactly two call sites (verified from codebase):
-  - `crates/app/src/session.rs:125` — inside `run_host_session()`
-  - `crates/app/src/session.rs:1106` — inside `run_guest_session()`
-
-  Neither function has a `NetworkConfig` parameter yet. Pass `None` to use the default relay URL resolution (env var `PAIRWIRE_RELAY_URL`, then compiled-in default `https://relay.pairwire.dev`):
-
-  In `crates/app/src/session.rs` at line 125, replace:
-  ```rust
-  let transport = Transport::bind()
-      .await
-      .context("failed to bind iroh endpoint")?;
-  ```
-  with:
-  ```rust
-  // Relay URL resolved from PAIRWIRE_RELAY_URL env var or compiled default.
-  let transport = Transport::bind(None)
-      .await
-      .context("failed to bind iroh endpoint")?;
-  ```
-
-  At line 1106, replace the same pattern identically.
-
-  Confirm no other call sites remain:
-  ```bash
-  grep -rn "Transport::bind" /Users/bilal/Documents/personal/Github/rust-sharing/crates/ --include="*.rs"
-  # Expected: only the two lines above, now showing Transport::bind(None)
-  ```
-
-- [ ] **Step 2.4 — Run transport tests** [agent]
+- [ ] **Step 2.5 — Run transport tests** [agent]
 
   ```bash
   cargo test -p pairwire-transport 2>&1 | tail -10
   # Expected: test result: ok. N passed; 0 failed
   ```
 
-- [ ] **Step 2.5 — Run workspace check** [agent]
+- [ ] **Step 2.6 — Run workspace check** [agent]
 
   ```bash
   cargo check --workspace 2>&1 | tail -5
   # Expected: no errors
   ```
 
-- [ ] **Step 2.6 — Commit** [agent]
+- [ ] **Step 2.7 — Commit** [agent]
 
   ```bash
-  git add crates/transport/src/transport.rs crates/app/src/
-  git commit -m "feat(P4.5.1): wire RelayMode::Custom + n0 fallback into Transport::bind"
+  git add crates/transport/src/transport.rs
+  git commit -m "feat(P4.5.1): add resolve_relay_mode (debug→n0-public / release→ours-only) with 9 unit tests"
   ```
 
 ---
 
-### Task 3: Update LEARNINGS.md with the relay map merge pattern [agent]
+### Task 3: Update LEARNINGS.md with the relay-mode design [agent]
 
 **Files:**
 - Modify: `LEARNINGS.md`
@@ -455,19 +604,32 @@
   Add at the end of `LEARNINGS.md`:
 
   ```markdown
-  ### 2026-06-18 — iroh 0.97 / iroh-relay 0.97.0: RelayMap::extend() is the correct way to merge custom + n0 relays
+  ### 2026-06-18 — iroh 0.97: relay-mode selection — debug→n0-public / release→ours-only, with env overrides
 
   - **Area**: iroh, transport, relay
-  - **What**: `Builder::relay_mode(mode)` is a replacement, not additive. Calling it twice sets the relay to the second value only. To combine a custom relay with n0's public relays, you must build the two `RelayMap`s separately and merge them with `custom_map.extend(&prod_map)` before wrapping in `RelayMode::Custom(merged)`. The `RelayMap::extend` method acquires a write lock on the inner `BTreeMap` and inserts all entries from `other`.
-  - **Resolution**: See `crates/transport/src/transport.rs` `Transport::bind()`. The `effective_url` path builds `custom_map` from a single parsed `RelayUrl`, extends it with `iroh_prod_defaults::default_relay_map()`, then passes `RelayMode::Custom(custom_map)`. The `presets::N0` relay mode set by the preset is overwritten by our subsequent `.relay_mode()` call — this is intentional and verified in iroh-0.97.0/src/endpoint.rs:516-534.
-  - **Key insight**: `iroh::defaults::prod` is a module path, not a type. It is NOT implicitly available. Use `use iroh::defaults::prod as iroh_prod_defaults;` and call `iroh_prod_defaults::default_relay_map()`. Calling `iroh::defaults::prod::default_relay_map()` as a fully-qualified path (without a use statement) also works but is verbose.
+  - **What**: `Builder::relay_mode(mode)` is a replacement, not additive. The new design
+    does NOT merge custom + n0 maps. Instead `resolve_relay_mode()` (transport crate) selects
+    a single `RelayMode` via this precedence: (1) `PAIRWIRE_RELAY_URL=<url>` → Custom(url);
+    (2) `PAIRWIRE_RELAY=public|disabled|ours`; (3) build-profile default:
+    - **debug** (`cfg!(debug_assertions)=true`) → `RelayMode::Default` (n0 public) — so
+      `cargo run` and debug DMGs dogfood on n0 without standing up our relay.
+    - **release** (`cfg!(debug_assertions)=false`) → `RelayMode::Custom(vec![relay.pairwire.dev])`
+      — **our relay only, `total_relays=1`, no n0 in map**. End-user traffic must never
+      touch n0's public network.
+  - **Resolution**: See `select_relay_mode()` (pure, unit-tested) and `resolve_relay_mode()`
+    (thin env-reading wrapper) in `crates/transport/src/transport.rs`. The separation of pure
+    logic from env reads makes all branches unit-testable without process env mutation.
+  - **Key insight**: For the debug/public case, use `PAIRWIRE_RELAY=public` or run a debug
+    build; verify with `RUST_LOG=pairwire_transport=debug` — log line will say
+    `relay_mode=Default (debug build, no env override)`. For release, verify with
+    `total_relays=1` in the log — confirms no n0 relay leaked into the map.
   ```
 
 - [ ] **Step 3.2 — Commit** [agent]
 
   ```bash
   git add LEARNINGS.md
-  git commit -m "docs(P4.5.1): document RelayMap::extend merge pattern for custom + n0 fallback"
+  git commit -m "docs(P4.5.1): document relay-mode debug/release split and env overrides"
   ```
 
 ---
@@ -1174,10 +1336,20 @@ This is the end-to-end validation that proves the relay is reachable and carries
 
   In the debug logs, look for:
   ```
-  # On host or guest:
-  pairwire_transport::transport: using merged relay map (custom + n0 prod) relay_url=https://relay.pairwire.dev total_relays=5
+  # Release build — our relay only (total_relays=1, no n0 in map):
+  pairwire_transport::transport: relay_mode=Custom(ours-only, release build, no n0 in map) relay_url=https://relay.pairwire.dev total_relays=1
+  # Debug build or PAIRWIRE_RELAY=public — n0 public relays selected:
+  pairwire_transport::transport: relay_mode=Default (debug build, no env override)
   # iroh debug showing relay path (not direct):
   iroh::...: relay addr used for connection
+  ```
+
+  **Separate verification for dev/public case** — confirms `RelayMode::Default` (n0 public) is
+  selected in a debug build or with `PAIRWIRE_RELAY=public`:
+  ```bash
+  PAIRWIRE_RELAY=public RUST_LOG="pairwire_transport=debug" \
+    ./target/debug/pairwire host 2>&1 | grep relay_mode
+  # Expected: relay_mode=Default (n0 public)
   ```
 
   On the relay server:
@@ -1321,26 +1493,40 @@ iroh-relay exposes Prometheus metrics. We document the scrape config and alert r
   # cargo test --workspace        → all tests pass
   ```
 
-  If clippy warns about the `iroh_prod_defaults` import in `transport.rs` (unused import), ensure the import `use iroh::defaults::prod as iroh_prod_defaults;` is present and `iroh_prod_defaults::default_relay_map()` is called inside `bind()`. Both the module-level import and the test-module import must be present.
+  If clippy warns about unused imports in `transport.rs`, ensure only `use iroh::{RelayMode, RelayUrl};` is present (no `iroh::defaults::prod` — that import was part of the old n0-merge design and is not needed here).
 
-- [ ] **Step 11.2 — Verify `PAIRWIRE_RELAY_URL=""` explicitly disables custom relay** [agent]
+- [ ] **Step 11.2 — Verify `PAIRWIRE_RELAY=disabled` disables relay entirely** [agent]
 
   In a test shell:
   ```bash
-  PAIRWIRE_RELAY_URL="" RUST_LOG="pairwire_transport=debug" \
+  PAIRWIRE_RELAY=disabled RUST_LOG="pairwire_transport=debug" \
     cargo run --bin pairwire -- host 2>&1 | head -10
-  # Expected log line:
-  # pairwire_transport::transport: relay_url explicitly disabled; using n0 public relays only
+  # Expected: no relay log line (RelayMode::Disabled passed to iroh endpoint)
   ```
 
-- [ ] **Step 11.3 — Verify default relay URL without env var** [agent]
+- [ ] **Step 11.3 — Verify release-default is ours-only (total_relays=1, no n0)** [agent]
 
   ```bash
+  # Build a release binary (cfg!(debug_assertions)=false)
+  cargo build --release -p pairwire 2>&1 | tail -3
+  RUST_LOG="pairwire_transport=debug" \
+    ./target/release/pairwire host 2>&1 | head -10
+  # Expected log line (release build, no env):
+  # pairwire_transport::transport: relay_mode=Custom(ours-only, release build, no n0 in map) relay_url=https://relay.pairwire.dev total_relays=1
+  ```
+
+- [ ] **Step 11.3b — Verify debug/public case selects n0 (RelayMode::Default)** [agent]
+
+  ```bash
+  # Debug binary (cfg!(debug_assertions)=true) — no env override → Default
   RUST_LOG="pairwire_transport=debug" \
     cargo run --bin pairwire -- host 2>&1 | head -10
-  # Expected log line:
-  # pairwire_transport::transport: using merged relay map (custom + n0 prod) \
-  #   relay_url=https://relay.pairwire.dev total_relays=5
+  # Expected: relay_mode=Default (debug build, no env override)
+
+  # Or explicitly via env (works in any build):
+  PAIRWIRE_RELAY=public RUST_LOG="pairwire_transport=debug" \
+    cargo run --bin pairwire -- host 2>&1 | head -10
+  # Expected: relay_mode=Default (n0 public)
   ```
 
 - [ ] **Step 11.4 — Final commit** [agent]
@@ -1370,7 +1556,7 @@ iroh-relay metrics exposed on `localhost:9090/metrics`. All metrics use the `rel
 
 ## Open questions / tradeoffs
 
-**RelayMode::Custom replaces, not appends:** `Builder::relay_mode()` replaces any existing relay config (including the n0 default from `presets::N0`). We compensate by merging the custom map with `iroh_prod_defaults::default_relay_map()` (imported as `use iroh::defaults::prod as iroh_prod_defaults`) before passing to `relay_mode()`. The tradeoff: if the n0 prod relay map changes in a future iroh version, we pick up the change automatically (which is good). No manual sync needed.
+**No n0 fallback in release builds (by design):** `Builder::relay_mode()` is a replacement, not additive. The new design intentionally does NOT merge n0 into the release relay map. In release builds, `resolve_relay_mode()` returns `RelayMode::Custom(vec![relay.pairwire.dev])` — exactly 1 relay (`total_relays=1`). If our relay is down, sessions fall back to direct hole-punching only (no n0). This is the honest trade for not routing end-user traffic through n0's public network. Internal/debug builds use `RelayMode::Default` (n0 public) so development works without standing up our relay. The `PAIRWIRE_RELAY=public` env var gives an explicit n0 escape hatch in any build if ever needed.
 
 **iroh-relay has no per-node rate limiting (issue #2967):** The relay is open by default. The cost-cap knob is the Hetzner firewall: modifying the TCP 443 / UDP 7842 `source_ips` from `0.0.0.0/0` to a specific CIDR stops public relay usage. For early beta with known testers this is acceptable; revisit when issue #2967 is closed.
 

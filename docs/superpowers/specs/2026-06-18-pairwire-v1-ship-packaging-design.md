@@ -109,9 +109,23 @@ standalone binary (version-matched to the pinned `iroh 0.97.0` in Cargo.lock) wi
 `enable_metrics=true` (Prometheus-compatible).
 TLS via the relay's built-in ACME or a fronting reverse proxy at `relay.pairwire.dev`.
 
-**Client wiring:** `Endpoint::builder().relay_mode(RelayMode::Custom(vec![relay_url]))` in the
-transport crate's endpoint constructor. Make the relay URL a config/env value (default baked to
-`relay.pairwire.dev`) so we can fall back to iroh public relays if ours is down.
+**Client wiring + relay selection.** A single `resolve_relay_mode()` in the transport crate
+decides the `RelayMode` with this precedence (highest first):
+1. `PAIRWIRE_RELAY_URL=<url>` → `RelayMode::Custom(vec![url])` — explicit override, any build.
+2. `PAIRWIRE_RELAY=public` → `RelayMode::Default` (n0's public relays) — the dev/internal toggle.
+   `PAIRWIRE_RELAY=disabled` → `RelayMode::Disabled` (direct-only). `PAIRWIRE_RELAY=ours` →
+   our relay (same as the release default).
+3. **Build-profile default (no env set):**
+   - **Debug builds** (`cfg!(debug_assertions)`) default to `RelayMode::Default` (n0 public) — so
+     `cargo run` and debug DMGs dogfood on n0 without standing up our relay.
+   - **Release builds** default to `RelayMode::Custom(vec![relay.pairwire.dev])` — **our relay
+     only, no n0 in the map.** Shipped end-user traffic never touches n0's public network.
+
+Rationale (owner directive, 2026-06-18): we may use n0's public relay *internally* but must not
+route *end-user* traffic through it. The debug/release split enforces this automatically; the env
+vars give explicit control (and let an operator opt into n0 as a fallback if ever desired). Default
+release has **no n0 fallback** — a relay outage degrades to direct-only (hole-punched) sessions,
+which is the honest trade for not free-riding n0. Validate the URL at the boundary; reject malformed.
 
 **Monitoring + cost-cap:**
 - Grafana Cloud free tier (10k metrics) scrapes the relay's Prometheus endpoint.
