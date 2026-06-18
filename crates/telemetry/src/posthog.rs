@@ -70,6 +70,12 @@ fn api_key() -> Option<String> {
 ///
 /// **Pre-condition**: caller must check [`crate::consent::is_consented()`]
 /// before calling this function. `send` does NOT re-check consent.
+///
+/// # Panics
+///
+/// Panics if called outside a tokio async runtime context. This function
+/// internally calls [`tokio::spawn`], which requires an active tokio runtime.
+/// Ensure a runtime (e.g. `#[tokio::main]`) is active before calling `send`.
 pub fn send(event: TelemetryEvent) {
     let Some(key) = api_key() else {
         debug!(

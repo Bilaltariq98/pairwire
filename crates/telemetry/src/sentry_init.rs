@@ -22,7 +22,7 @@
 //! crash capture. **Mitigate abuse by enabling rate limiting and PII scrubbing
 //! on the Sentry project** (see the [human] task in the plan).
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// DSN baked at compile time. `None` in builds without the env var set.
@@ -54,7 +54,17 @@ pub fn init_sentry(device_id: Uuid) -> sentry::ClientInitGuard {
     info!("initialising Sentry EU crash reporting");
 
     let guard = sentry::init(sentry::ClientOptions {
-        dsn: dsn_str.parse().ok(),
+        dsn: dsn_str
+            .parse()
+            .map_err(|e| {
+                warn!(
+                    error = %e,
+                    dsn = %dsn_str,
+                    "Sentry DSN is malformed — crash reporting disabled"
+                );
+                e
+            })
+            .ok(),
         // Pin the release to the binary version for symbolication.
         release: Some(std::borrow::Cow::Borrowed(env!("CARGO_PKG_VERSION"))),
         // EU ingest endpoint is encoded in the DSN itself when using
@@ -92,17 +102,25 @@ pub fn init_sentry(device_id: Uuid) -> sentry::ClientInitGuard {
 mod tests {
     use super::*;
     use crate::consent;
+    use std::sync::Mutex;
+
+    /// Serialise all tests that read/write `PAIRWIRE_SENTRY_DSN` so that
+    /// concurrent test threads cannot observe each other's env mutations.
+    /// `unsafe` `remove_var` / `set_var` is safe within a single thread;
+    /// this lock ensures only one thread touches the variable at a time.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// `init_sentry` returns without panic when no DSN is configured.
     #[test]
     fn init_without_dsn_is_noop() {
-        // Ensure env var is not set for this test.
-        // SAFETY: tests run single-threaded (--test-threads=1); no concurrent
-        // reads of PAIRWIRE_SENTRY_DSN in this test binary.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: ENV_LOCK serialises all access to PAIRWIRE_SENTRY_DSN in
+        // this test binary — no other thread reads or writes the var while the
+        // lock is held.
         unsafe { std::env::remove_var("PAIRWIRE_SENTRY_DSN") };
         let device_id = Uuid::new_v4();
         // Should not panic or error.
-        let _guard = init_sentry(device_id);
+        let _guard2 = init_sentry(device_id);
     }
 
     /// `before_send` drops events when consent has not been granted.
