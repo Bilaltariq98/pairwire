@@ -175,6 +175,7 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
                 anyhow::bail!("usage: pairwire join <invite-url> [--no-gui]");
             }
             let invite_url = args[1].clone();
+            validate_invite(&invite_url)?;
             let no_gui = args.iter().any(|a| a == "--no-gui");
             Ok(Command::Join(JoinArgs { invite_url, no_gui }))
         }
@@ -350,6 +351,25 @@ mod tests {
     fn validate_invite_rejects_empty_and_non_pairwire() {
         assert!(validate_invite("").is_err());
         assert!(validate_invite("https://example.com").is_err());
+    }
+
+    #[test]
+    fn parse_join_rejects_non_pairwire_url() {
+        // A plain HTTPS URL must be rejected at the parse boundary.
+        assert!(parse(&["join", "https://example.com/invite"]).is_err());
+    }
+
+    #[test]
+    fn parse_join_rejects_flag_as_url() {
+        // `pairwire join --no-gui` would previously store "--no-gui" as the
+        // invite URL and only fail much later. With validate_invite wired in,
+        // this is caught immediately at the CLI boundary.
+        assert!(parse(&["join", "--no-gui"]).is_err());
+    }
+
+    #[test]
+    fn parse_join_rejects_empty_url() {
+        assert!(parse(&["join", ""]).is_err());
     }
 
     #[test]
