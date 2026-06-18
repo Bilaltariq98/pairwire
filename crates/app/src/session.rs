@@ -183,8 +183,13 @@ pub async fn run_host(
     // Broadcast sender for the host overlay window to emit drawing events.
     // Bridged into the mpsc that feeds DrawingSender so overlay strokes reach the guest.
     // Created once so the overlay's subscription stays alive across reconnects.
+    // `_overlay_drawing_keepalive` is a dummy receiver that keeps the broadcast
+    // channel alive for the full lifetime of `run_host`, even between guest
+    // connections when no per-connection subscriber has been created yet.
+    // Without it the channel would be torn down the moment the last per-connection
+    // subscriber is dropped, causing subsequent overlay strokes to be silently lost.
     #[cfg(feature = "gui")]
-    let (overlay_drawing_bcast_tx, _overlay_drawing_rx0) =
+    let (overlay_drawing_bcast_tx, _overlay_drawing_keepalive) =
         tokio::sync::broadcast::channel::<pairwire_transport::DrawingEvent>(32);
     // Watch channels so the overlay can render accumulated strokes and live points.
     // Created outside the loop so the overlay's receivers keep working across reconnects.
@@ -423,7 +428,12 @@ pub async fn run_host(
                                 if rx.changed().await.is_err() {
                                     break;
                                 }
-                                let _ = fwd_strokes_tx.send(rx.borrow().clone());
+                                let strokes = rx.borrow().clone();
+                                tracing::debug!(
+                                    count = strokes.len(),
+                                    "fwd-strokes: forwarding guest strokes to overlay"
+                                );
+                                let _ = fwd_strokes_tx.send(strokes);
                             }
                         });
                         let fwd_live_tx = host_live_pt_watch_tx.clone();
