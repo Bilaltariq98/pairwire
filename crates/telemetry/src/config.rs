@@ -55,25 +55,39 @@ pub fn config_path() -> Result<PathBuf, ConfigError> {
 /// Load config from disk. Returns `TelemetryConfig::default()` if the file
 /// does not exist (first run). Propagates I/O or parse errors.
 pub fn load() -> Result<TelemetryConfig, ConfigError> {
-    let path = config_path()?;
-    if !path.exists() {
-        return Ok(TelemetryConfig::default());
-    }
-    let raw = std::fs::read_to_string(&path)?;
-    let cfg: TelemetryConfig = toml::from_str(&raw)?;
-    Ok(cfg)
+    load_from(&config_path()?)
 }
 
 /// Persist `cfg` to the OS config dir.
 ///
 /// Creates the `pairwire/` directory if it does not exist.
 pub fn save(cfg: &TelemetryConfig) -> Result<(), ConfigError> {
-    let path = config_path()?;
+    save_to(cfg, &config_path()?)
+}
+
+/// Load config from an explicit path.
+///
+/// Returns `TelemetryConfig::default()` when the file is absent.
+/// Avoids the TOCTOU race that arises from checking `path.exists()` before
+/// reading: we match directly on the `read_to_string` result so a concurrent
+/// delete is handled as "not found" rather than surfacing a confusing I/O error.
+pub(crate) fn load_from(path: &std::path::Path) -> Result<TelemetryConfig, ConfigError> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => toml::from_str(&raw).map_err(Into::into),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TelemetryConfig::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Persist `cfg` to an explicit path.
+///
+/// Creates parent directories if they do not exist.
+pub(crate) fn save_to(cfg: &TelemetryConfig, path: &std::path::Path) -> Result<(), ConfigError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let toml_str = toml::to_string_pretty(cfg)?;
-    std::fs::write(&path, toml_str)?;
+    std::fs::write(path, toml_str)?;
     Ok(())
 }
 
@@ -94,7 +108,11 @@ mod tests {
         assert_eq!(decoded.device_id, original.device_id);
     }
 
-    /// `device_id` survives a save/load cycle via a tempdir.
+    /// `device_id` and `consent` survive a real `save_to`/`load_from` cycle.
+    ///
+    /// This exercises the actual I/O plumbing (directory creation, TOML
+    /// serialisation, atomic write, deserialisation) rather than raw
+    /// `std::fs` calls, so regressions in `save_to`/`load_from` are caught.
     #[test]
     fn device_id_persists_across_load_save() {
         let dir = tempfile::tempdir().unwrap();
@@ -105,20 +123,28 @@ mod tests {
             device_id: Uuid::new_v4(),
         };
 
-        // Save manually to the tempdir path (bypassing config_path()).
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let toml_str = toml::to_string_pretty(&original).unwrap();
-        std::fs::write(&path, toml_str).unwrap();
+        // Exercise save_to — this must create the parent dir and write the file.
+        save_to(&original, &path).expect("save_to should succeed");
 
-        // Load from the same path.
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let loaded: TelemetryConfig = toml::from_str(&raw).unwrap();
+        // Exercise load_from — must read and deserialise the file written above.
+        let loaded = load_from(&path).expect("load_from should succeed");
 
         assert_eq!(
             loaded.device_id, original.device_id,
             "device_id must survive a save/load round-trip"
         );
         assert_eq!(loaded.consent, original.consent);
+    }
+
+    /// `load_from` returns `TelemetryConfig::default()` for a nonexistent path
+    /// rather than propagating a `NotFound` I/O error.
+    #[test]
+    fn load_from_missing_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent").join("telemetry.toml");
+        let cfg = load_from(&path).expect("missing file should yield default, not error");
+        assert_eq!(cfg.consent, None);
+        assert_ne!(cfg.device_id, Uuid::nil());
     }
 
     /// Default produces a valid UUID (not nil).
