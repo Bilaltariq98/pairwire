@@ -70,14 +70,16 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
 raw-window-handle = { version = "0.6", optional = true }
 
 # ── cargo-packager configuration ─────────────────────────────────────────────
-# Produces: target/release/bundle/macos/pairwire.app
-#           target/release/bundle/macos/pairwire_0.1.0_aarch64.dmg
+# Produces: target/release/pairwire.app
+#           target/release/pairwire_0.1.0_aarch64.dmg
+# (cargo-packager 0.11 outputs directly to target/release/, not bundle/macos/)
 #
 # Usage (via justfile):
 #   just package
 #
-# Direct usage:
-#   CODESIGN_IDENTITY="-" cargo packager --release --formats app,dmg -p pairwire --features encode,capture,audio,gui,tray
+# Direct usage (two-step: cargo-packager 0.11 does not accept --features):
+#   cargo build --release -p pairwire --features encode,capture,audio,gui,tray
+#   CODESIGN_IDENTITY="-" cargo packager --release --formats app,dmg -p pairwire
 #
 # Environment variables:
 #   CODESIGN_IDENTITY  (default: "-" for ad-hoc; set to Developer ID cert name

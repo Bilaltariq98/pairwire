@@ -57,13 +57,13 @@ jobs:
         env:
           CODESIGN_IDENTITY: "-"    # Ad-hoc sign. Change to Developer ID cert name when enrolled.
         run: |
+          # cargo-packager 0.11 does not accept --features (see LEARNINGS.md 2026-06-18).
+          # Step 1: compile the binary with all required features.
+          cargo build --release -p pairwire --features encode,capture,audio,gui,tray
+          # Step 2: invoke the packager against the already-compiled binary.
           # Produce the .app only — the DMG is created in a later step AFTER dylibs are
           # injected so the sealed DMG contains the patched bundle.
-          cargo packager \
-            --release \
-            --formats app \
-            -p pairwire \
-            --features encode,capture,audio,gui,tray
+          cargo packager --release --formats app -p pairwire
 
       - name: Bundle FFmpeg dylibs into .app
         # dylibbundler copies Homebrew FFmpeg .dylib files into Contents/libs/,
@@ -81,10 +81,11 @@ jobs:
         # hdiutil is used directly rather than cargo-packager --formats dmg to avoid
         # re-running the build step and to ensure no caching of the pre-patch .app.
         run: |
-          APP="target/release/bundle/macos/pairwire.app"
+          # cargo-packager 0.11 outputs to target/release/ directly (see LEARNINGS.md 2026-06-18).
+          APP="target/release/pairwire.app"
           VERSION="${{ steps.version.outputs.VERSION }}"
           DMG_NAME="pairwire_${VERSION}_aarch64.dmg"
-          DMG_PATH="target/release/bundle/macos/${DMG_NAME}"
+          DMG_PATH="target/release/${DMG_NAME}"
           STAGING="$(mktemp -d)"
           cp -R "$APP" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
@@ -98,7 +99,7 @@ jobs:
 
       - name: Verify bundle signing (inner binary + outer bundle)
         run: |
-          APP="target/release/bundle/macos/pairwire.app"
+          APP="target/release/pairwire.app"
           plutil -lint "$APP/Contents/Info.plist"
           echo "=== Inner binary codesign ==="
           codesign -dv "$APP/Contents/MacOS/pairwire" 2>&1 | grep -E "Signature|Identifier"
@@ -110,12 +111,12 @@ jobs:
           "$APP/Contents/MacOS/pairwire" --version
 
       - name: List produced artifacts
-        run: ls -lh target/release/bundle/macos/
+        run: ls -lh target/release/
 
       - name: Upload DMG to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/bundle/macos/*.dmg
+          files: target/release/*.dmg
           name: pairwire v${{ steps.version.outputs.VERSION }}
           body: |
             ## pairwire v${{ steps.version.outputs.VERSION }}
