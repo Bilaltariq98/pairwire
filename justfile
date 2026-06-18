@@ -13,8 +13,11 @@ lint:
     cargo clippy --workspace -- -D warnings
 
 # Run all tests
+# pairwire-telemetry uses process-global AtomicBool statics so its tests must
+# run single-threaded; all other crates run with default parallelism.
 test:
-    cargo test --workspace
+    cargo test -p pairwire-telemetry -- --test-threads=1
+    cargo test --workspace --exclude pairwire-telemetry
 
 # Check formatting (non-destructive)
 fmt-check:

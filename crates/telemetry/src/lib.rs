@@ -18,7 +18,7 @@ pub mod sentry_init;
 use tracing::{debug, warn};
 
 pub use config::TelemetryConfig;
-pub use consent::{is_consented, set_consent};
+pub use consent::{consent_was_set, is_consented, set_consent};
 pub use events::TelemetryEvent;
 pub use sentry_init::init_sentry;
 
