@@ -7,6 +7,13 @@
     <false/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <false/>
+    <!-- Required for ad-hoc signed builds: allows loading dylibs that don't share
+         the same Team ID as the process. Without this, macOS rejects bundled
+         Homebrew-derived dylibs (re-signed ad-hoc) with "different Team IDs" error.
+         This entitlement is safe for ad-hoc distribution; a future Developer ID build
+         should evaluate whether this can be removed once dylibs are Apple-notarized. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
     <key>com.apple.security.device.audio-input</key>
     <true/>
 </dict>

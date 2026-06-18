@@ -318,23 +318,37 @@ Each entry should include:
 - **Detail**: Linker errors from `/tmp/ffmpeg-spike.log`: `ld: warning: search path '/opt/homebrew/Cellar/svt-av1/4.0.1/lib' not found` and `ld: library 'mp3lame' not found`. The ffmpeg-sys-next `static` feature without `build` passes `--static` to pkg-config, which tries to resolve every transitive codec dep as a `.a`. dav1d and svt-av1 are dynamic-only on Homebrew. The `build` feature (source compilation) is a separate 20-60 min path not tested here.
 - **VideoToolbox note**: VideoToolbox (`/System/Library/Frameworks/VideoToolbox.framework`) is a system framework present on all macOS 10.8+ machines — it does NOT need to be bundled regardless of dylibbundler or static strategy. h264_videotoolbox availability depends on the framework being present at runtime, which it always is. The dylibbundler path does not break VideoToolbox.
 
-### 2026-06-18 — "mapped file has no cdhash" Gatekeeper error for unsigned dylibs
+### 2026-06-18 — "mapped file has no cdhash" + "different Team IDs" for bundled dylibs
 - **Area**: packaging, codesign, Gatekeeper
 - **What**: When a .app with hardened runtime entitlements contains unsigned dylibs in
   Contents/libs/, macOS Gatekeeper rejects launch with "The application ... is damaged
   and can't be opened." The system log shows: `mapped file has no cdhash, skipping
   validation`. The binary itself may be correctly signed but the unsigned dylibs
   trigger the rejection.
-- **Resolution**: Ad-hoc sign each dylib (`codesign --sign - --options runtime`) BEFORE
-  signing the outer .app. Bottom-up signing order is mandatory: dylibs first, then the
-  binary, then the .app bundle. dylibbundler rewrites @rpath references; signing must
-  happen after dylibbundler runs (signing is invalidated by any file modification).
+- **Related issue**: Even after ad-hoc signing each dylib, macOS 15+ (Sequoia) may still
+  reject loading with: `code signature in ... not valid for use in process: mapping process
+  and mapped file (non-platform) have different Team IDs`. This happens because the dylibs
+  were originally signed by Homebrew (Apple-issued Team ID) and the ad-hoc process has no
+  Team ID. The loader refuses to map files with mismatched Team IDs for hardened-runtime
+  processes.
+- **Resolution (part 1)**: Ad-hoc sign each dylib (`codesign --sign -`) AFTER dylibbundler
+  rewrites the @rpath references. Bottom-up signing order is mandatory: dylibs first, then
+  the binary, then the .app bundle. dylibbundler invalidates the signature — signing must
+  happen after dylibbundler runs.
+- **Resolution (part 2)**: Add `com.apple.security.cs.disable-library-validation = true` to
+  `packaging/pairwire.entitlements`. This entitlement permits a hardened-runtime process to
+  load dylibs that don't match its own Team ID (or have no Team ID). Without this, the
+  "different Team IDs" rejection occurs at dlopen/dyld time. This is safe for ad-hoc
+  distribution; evaluate removing it when switching to notarized Developer ID signing.
 - **Verification**: `codesign -dv <path/to/dylib> 2>&1 | grep Signature` shows `Signature=adhoc`;
-  `spctl --assess --type execute /path/to/pairwire.app` exits 0 (or "accepted: ...").
+  `just verify-bundle` → Version check returns `0.1.0` (binary launches inside .app);
+  `spctl` shows "rejected" (expected — not "damaged" which would indicate structural error).
+- **dylibbundler flag change**: dylibbundler 1.0.5 uses `-x` (not `--binary`) and `-b`
+  (not `--bundle-deps` long form). The `-od` flag (overwrite-dir) is correct. The
+  `--fix-file` long form also works. Verified with dylibbundler 1.0.5 on Homebrew.
 - **CI placement**: In `.github/workflows/release.yml`, run `just bundle-dylibs` AFTER
-  `cargo packager` produces the `.app` skeleton and BEFORE the final `codesign` of the
-  outer bundle. The `just bundle-dylibs` recipe signs each dylib individually before
-  the outer bundle codesign runs (bottom-up signing requirement).
+  `cargo packager` produces the `.app` skeleton and BEFORE the DMG is created, so the
+  final DMG contains the fully patched and signed bundle.
 
 ### 2026-06-18 — iroh-relay port matrix: TCP 443 WebSocket required, UDP optional, STUN dead
 - **Area**: iroh, relay, hosting, deployment

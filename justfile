@@ -55,13 +55,16 @@ bundle-dylibs:
     BIN="$APP/Contents/MacOS/pairwire"
     LIBS_DIR="$APP/Contents/libs"
     mkdir -p "$LIBS_DIR"
+    # dylibbundler 1.x uses -x (--fix-file) and -b (--bundle-deps).
+    # -od (--overwrite-dir) recreates the dest dir; -cd (--create-dir) is implied.
+    # -p sets the @rpath rewrite prefix embedded in each dylib LC_RPATH entry.
+    # @executable_path/../libs/ is the standard macOS .app relative path.
     dylibbundler \
-        --bundle-deps \
-        --binary "$BIN" \
-        --dest-dir "$LIBS_DIR" \
-        --install-path "@rpath/libs/" \
-        --overwrite-dir \
-        --fix-file "$BIN"
+        -b \
+        -x "$BIN" \
+        -d "$LIBS_DIR" \
+        -p "@executable_path/../libs/" \
+        -od
     # Ad-hoc sign each bundled dylib to avoid "mapped file has no cdhash" Gatekeeper error.
     # This error appears when a dylib inside a hardened-runtime .app is unsigned.
     # Bottom-up signing order is mandatory: dylibs first, then the binary, then the .app.
@@ -69,12 +72,24 @@ bundle-dylibs:
     for dylib in "$LIBS_DIR"/*.dylib; do
         codesign \
             --sign "$IDENTITY" \
-            --timestamp \
-            --options runtime \
             --force \
             "$dylib"
         echo "  signed: $(basename "$dylib")"
     done
+    # Re-sign the binary (dylibbundler modifies it, invalidating the prior signature).
+    codesign \
+        --sign "$IDENTITY" \
+        --entitlements packaging/pairwire.entitlements \
+        --options runtime \
+        --force \
+        "$BIN"
+    # Re-sign the outer bundle bottom-up (after binary is signed).
+    codesign \
+        --sign "$IDENTITY" \
+        --entitlements packaging/pairwire.entitlements \
+        --options runtime \
+        --force \
+        "$APP"
     echo "dylibs bundled and signed in $LIBS_DIR"
     echo "=== Verify inner binary signing: ==="
     codesign -dv "$BIN" 2>&1 | grep -E "Signature|Identifier|Format"
