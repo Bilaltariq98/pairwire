@@ -44,6 +44,41 @@ test-crate crate:
 check-crate crate:
     cargo check -p {{crate}}
 
+# Bundle FFmpeg dylibs into the .app and rewrite rpaths.
+# Run AFTER cargo build --release and AFTER cargo-packager creates the .app skeleton.
+# Requires: brew install dylibbundler
+# APP variable can be overridden: APP=path/to/pairwire.app just bundle-dylibs
+bundle-dylibs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    APP="${APP:-target/release/bundle/macos/pairwire.app}"
+    BIN="$APP/Contents/MacOS/pairwire"
+    LIBS_DIR="$APP/Contents/libs"
+    mkdir -p "$LIBS_DIR"
+    dylibbundler \
+        --bundle-deps \
+        --binary "$BIN" \
+        --dest-dir "$LIBS_DIR" \
+        --install-path "@rpath/libs/" \
+        --overwrite-dir \
+        --fix-file "$BIN"
+    # Ad-hoc sign each bundled dylib to avoid "mapped file has no cdhash" Gatekeeper error.
+    # This error appears when a dylib inside a hardened-runtime .app is unsigned.
+    # Bottom-up signing order is mandatory: dylibs first, then the binary, then the .app.
+    IDENTITY="${CODESIGN_IDENTITY:--}"
+    for dylib in "$LIBS_DIR"/*.dylib; do
+        codesign \
+            --sign "$IDENTITY" \
+            --timestamp \
+            --options runtime \
+            --force \
+            "$dylib"
+        echo "  signed: $(basename "$dylib")"
+    done
+    echo "dylibs bundled and signed in $LIBS_DIR"
+    echo "=== Verify inner binary signing: ==="
+    codesign -dv "$BIN" 2>&1 | grep -E "Signature|Identifier|Format"
+
 # Test static FFmpeg linkage — decides P4.5.1 bundling strategy.
 # Requires: brew install nasm pkg-config
 # If this succeeds and VideoToolbox works in a clean VM → use static.

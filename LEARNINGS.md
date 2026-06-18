@@ -303,6 +303,24 @@ Each entry should include:
 - **Detail**: Linker errors from `/tmp/ffmpeg-spike.log`: `ld: warning: search path '/opt/homebrew/Cellar/svt-av1/4.0.1/lib' not found` and `ld: library 'mp3lame' not found`. The ffmpeg-sys-next `static` feature without `build` passes `--static` to pkg-config, which tries to resolve every transitive codec dep as a `.a`. dav1d and svt-av1 are dynamic-only on Homebrew. The `build` feature (source compilation) is a separate 20-60 min path not tested here.
 - **VideoToolbox note**: VideoToolbox (`/System/Library/Frameworks/VideoToolbox.framework`) is a system framework present on all macOS 10.8+ machines — it does NOT need to be bundled regardless of dylibbundler or static strategy. h264_videotoolbox availability depends on the framework being present at runtime, which it always is. The dylibbundler path does not break VideoToolbox.
 
+### 2026-06-18 — "mapped file has no cdhash" Gatekeeper error for unsigned dylibs
+- **Area**: packaging, codesign, Gatekeeper
+- **What**: When a .app with hardened runtime entitlements contains unsigned dylibs in
+  Contents/libs/, macOS Gatekeeper rejects launch with "The application ... is damaged
+  and can't be opened." The system log shows: `mapped file has no cdhash, skipping
+  validation`. The binary itself may be correctly signed but the unsigned dylibs
+  trigger the rejection.
+- **Resolution**: Ad-hoc sign each dylib (`codesign --sign - --options runtime`) BEFORE
+  signing the outer .app. Bottom-up signing order is mandatory: dylibs first, then the
+  binary, then the .app bundle. dylibbundler rewrites @rpath references; signing must
+  happen after dylibbundler runs (signing is invalidated by any file modification).
+- **Verification**: `codesign -dv <path/to/dylib> 2>&1 | grep Signature` shows `Signature=adhoc`;
+  `spctl --assess --type execute /path/to/pairwire.app` exits 0 (or "accepted: ...").
+- **CI placement**: In `.github/workflows/release.yml`, run `just bundle-dylibs` AFTER
+  `cargo packager` produces the `.app` skeleton and BEFORE the final `codesign` of the
+  outer bundle. The `just bundle-dylibs` recipe signs each dylib individually before
+  the outer bundle codesign runs (bottom-up signing requirement).
+
 ### 2026-06-18 — iroh-relay port matrix: TCP 443 WebSocket required, UDP optional, STUN dead
 - **Area**: iroh, relay, hosting, deployment
 - **What**: While scoping a self-hosted relay for ship, verified iroh-relay's actual network requirements (workspace pins `iroh` + `iroh-relay` at **0.97.0** per Cargo.lock; an earlier assumption that it "needs raw UDP STUN/QAD on 3478" was WRONG):
