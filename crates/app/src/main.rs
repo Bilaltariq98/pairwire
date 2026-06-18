@@ -60,7 +60,10 @@ fn main() -> Result<()> {
         cli::Command::Join(args) => {
             run_join_command(args, &rt)?;
         }
-        // Version and Help are handled above before the runtime is built.
+        // Handled above (pre-runtime early returns at lines 31–40); this arm
+        // exists only for match exhaustiveness — do not remove the early returns
+        // thinking this arm covers it, as the tokio runtime would then be built
+        // unnecessarily before --version / --help output.
         cli::Command::Version | cli::Command::Help => {}
         cli::Command::Launcher => run_launcher(&rt)?,
     }

@@ -15,6 +15,19 @@ pub enum LaunchChoice {
     Join(JoinArgs),
 }
 
+/// Build a [`JoinArgs`] from a raw invite string entered by the user.
+///
+/// Trims whitespace and delegates validation to [`crate::cli::validate_invite`].
+/// Extracted as a pure function so it can be tested without AppKit.
+pub fn make_join_args(invite: &str) -> anyhow::Result<JoinArgs> {
+    let trimmed = invite.trim().to_string();
+    crate::cli::validate_invite(&trimmed)?;
+    Ok(JoinArgs {
+        invite_url: trimmed,
+        no_gui: false,
+    })
+}
+
 /// Show the native Host/Join chooser and return the user's choice.
 ///
 /// Returns `Ok(None)` when the user cancels or dismisses the dialog.
@@ -67,20 +80,19 @@ pub fn show_launcher() -> anyhow::Result<Option<LaunchChoice>> {
     } else if response == NSAlertSecondButtonReturn {
         // "Join…" — validate the invite URL from the accessory field.
         let invite = field.stringValue().to_string();
-        match crate::cli::validate_invite(&invite) {
-            Ok(()) => {
+        match make_join_args(&invite) {
+            Ok(args) => {
                 tracing::debug!("launcher: Join chosen");
-                Ok(Some(LaunchChoice::Join(JoinArgs {
-                    invite_url: invite.trim().to_string(),
-                    no_gui: false,
-                })))
+                Ok(Some(LaunchChoice::Join(args)))
             }
             Err(e) => {
-                // Show a simple error alert and return None (user can relaunch).
+                // Show a simple error alert. The process will exit after the
+                // dialog — the informative text tells the user to relaunch.
                 let err_alert = NSAlert::new(mtm);
                 err_alert.setMessageText(ns_string!("Invalid invite link"));
-                err_alert
-                    .setInformativeText(ns_string!("Paste a link that starts with pairwire://"));
+                err_alert.setInformativeText(ns_string!(
+                    "Paste a link that starts with pairwire://\nPlease relaunch Pairwire to try again."
+                ));
                 err_alert.addButtonWithTitle(ns_string!("OK"));
                 err_alert.runModal();
                 tracing::warn!(error = %e, "launcher: invalid invite link entered");
@@ -98,4 +110,34 @@ pub fn show_launcher() -> anyhow::Result<Option<LaunchChoice>> {
 #[cfg(not(target_os = "macos"))]
 pub fn show_launcher() -> anyhow::Result<Option<LaunchChoice>> {
     anyhow::bail!("no subcommand given — run `pairwire host` or `pairwire join <invite>`")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_join_args_accepts_valid_invite() {
+        let args = make_join_args("pairwire://abc?token=0000").unwrap();
+        assert_eq!(args.invite_url, "pairwire://abc?token=0000");
+        assert!(!args.no_gui, "no_gui must default to false");
+    }
+
+    #[test]
+    fn make_join_args_trims_whitespace() {
+        let args = make_join_args("  pairwire://abc  ").unwrap();
+        assert_eq!(args.invite_url, "pairwire://abc");
+    }
+
+    #[test]
+    fn make_join_args_rejects_empty_string() {
+        assert!(make_join_args("").is_err());
+        assert!(make_join_args("   ").is_err());
+    }
+
+    #[test]
+    fn make_join_args_rejects_non_pairwire_scheme() {
+        assert!(make_join_args("https://example.com/invite").is_err());
+        assert!(make_join_args("pairwire-copy://abc").is_err());
+    }
 }
