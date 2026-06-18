@@ -84,6 +84,9 @@ static POSTHOG_CLIENT: OnceLock<posthog_rs::Client> = OnceLock::new();
 /// `async fn` call path all the way up to `send()` and would complicate the
 /// fire-and-forget API surface without meaningful benefit.
 fn posthog_client(key: &str) -> &'static posthog_rs::Client {
+    // NOTE: client key is fixed at first successful call; runtime env-var changes
+    // after init have no effect. Subsequent calls with a different `key` argument
+    // silently reuse the client that was created on the first call.
     POSTHOG_CLIENT.get_or_init(|| {
         // `posthog_rs::client` is async but does no I/O during construction —
         // it only builds a reqwest::Client and fills in options.  Block on it

@@ -110,21 +110,21 @@ mod tests {
     use super::*;
     use crate::consent;
     use crate::consent::TELEMETRY_TEST_LOCK;
-    use std::sync::Mutex;
-
-    /// Serialise all tests that read/write `PAIRWIRE_SENTRY_DSN` so that
-    /// concurrent test threads cannot observe each other's env mutations.
-    /// `unsafe` `remove_var` / `set_var` is safe within a single thread;
-    /// this lock ensures only one thread touches the variable at a time.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// `init_sentry` returns without panic when no DSN is configured.
     #[test]
     fn init_without_dsn_is_noop() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: ENV_LOCK serialises all access to PAIRWIRE_SENTRY_DSN in
-        // this test binary — no other thread reads or writes the var while the
-        // lock is held.
+        // Use the crate-wide TELEMETRY_TEST_LOCK rather than a module-local
+        // ENV_LOCK so that all env-var mutations (both PAIRWIRE_SENTRY_DSN and
+        // PAIRWIRE_POSTHOG_KEY) are serialised under a single lock. This
+        // prevents a future test that reads both variables from being unprotected
+        // against concurrent mutations from the other module.
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: TELEMETRY_TEST_LOCK serialises all access to telemetry env
+        // vars in this test binary — no other thread reads or writes them while
+        // the lock is held.
         unsafe { std::env::remove_var("PAIRWIRE_SENTRY_DSN") };
         let device_id = Uuid::new_v4();
         // Should not panic or error.

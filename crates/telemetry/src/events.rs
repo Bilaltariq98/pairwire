@@ -231,7 +231,8 @@ mod tests {
         ];
 
         for event in &events {
-            let json = serde_json::to_string(event).unwrap_or_else(|_| format!("{:?}", event));
+            let json = serde_json::to_string(event)
+                .expect("serialisation must not fail for TelemetryEvent");
             let json_lower = json.to_lowercase();
             for key in &denylisted_keys {
                 assert!(
