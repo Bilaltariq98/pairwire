@@ -295,6 +295,12 @@ Each entry should include:
 - **Key insight — send overlay channels BEFORE the accept loop**: `overlay_tx` used to fire only after the first guest connected (inside the accept loop, when capture started), so the overlay (and now the tray) appeared only once a guest joined — useless for a tray whose job is copying the invite link *before* anyone connects. The overlay never renders the self-preview (`frame_rx` is dropped), so the late `frame_rx` it waited for was unnecessary. Channels are now sent once, before the loop, using `capture_config.width/height` (known early) and an empty preview watch. This also means the host overlay shows its "Waiting for guest…" banner immediately on start in gui-only builds too.
 - **cfg gotcha**: `run_transparent_host_overlay` (plain) is now `#[cfg(not(feature = "tray"))]` and `run_host_with_overlay` is `#[cfg(all(feature = "gui", not(feature = "tray")))]`, else they trip `dead_code` under `-D warnings` in the gui+tray combo. `TrayHandle::copy_item` / `set_invite_url` are `#[allow(dead_code)]` (used only by the tray-only host loop). NOTE: `just lint` only checks default features (tray, no gui), so gui/gui+tray lint regressions are invisible there — check `--features gui,tray` explicitly.
 
+### 2026-06-18 — Task-boundary note: icns, tray-placeholder, verify-bundle recipes landed in Task 6 commit
+- **Area**: packaging, task tracking
+- **What**: The `icns` and `tray-placeholder` justfile recipes belong to Task 3 (plan lines 342–410); `verify-bundle` belongs to Task 7 (plan lines 1053–1079). All three were added inside the Task 6 commit (6bad4c3) without Tasks 3 and 7 being marked complete. Recipe content is correct per spec.
+- **Impact**: Tasks 3 and 7 are partially complete in an untracked commit. Future agents should mark P4.5.1.3 (icns + tray-placeholder) and P4.5.1.7 (verify-bundle) as already-done when they reach those tasks, rather than re-implementing them.
+- **Resolution**: No code change needed — content is correct. This entry records the cross-task boundary for continuity.
+
 ### 2026-06-18 — cargo-packager 0.11 does not accept --features; entitlements plist must have no XML comments
 - **Area**: packaging, cargo-packager, codesign
 - **What**: Two issues discovered when running `just package` end-to-end for the first time:
