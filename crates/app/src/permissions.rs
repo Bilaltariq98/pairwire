@@ -16,7 +16,8 @@
 
 /// The System Settings deep-link URL for the Screen Recording privacy pane.
 /// Opening this URL with `open(1)` takes the user directly to the right panel.
-pub const SCREEN_RECORDING_SETTINGS_URL: &str =
+#[cfg(all(feature = "capture", target_os = "macos"))]
+pub(crate) const SCREEN_RECORDING_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
 /// Returns `true` if the host session may proceed.
@@ -32,6 +33,7 @@ pub const SCREEN_RECORDING_SETTINGS_URL: &str =
 ///    - **"Open Settings"** — opens the Screen Recording pane in System
 ///      Settings so the user can enable the permission.
 ///    - **"Quit"** — dismisses without opening Settings.
+///
 ///    Then returns `false` so the caller exits without launching the overlay.
 ///
 /// When `capture` is not a compile-time feature (e.g. headless CI builds),
@@ -44,7 +46,9 @@ pub const SCREEN_RECORDING_SETTINGS_URL: &str =
 /// overlay or async work begins.
 #[cfg(feature = "capture")]
 pub fn ensure_screen_recording_or_guide() -> bool {
-    use pairwire_capture::{request_screen_recording_permission, screen_recording_permission_granted};
+    use pairwire_capture::{
+        request_screen_recording_permission, screen_recording_permission_granted,
+    };
 
     // Fast path: already authorised.
     if screen_recording_permission_granted() {
@@ -57,9 +61,7 @@ pub fn ensure_screen_recording_or_guide() -> bool {
     if request_screen_recording_permission() {
         // Permission was just granted. ScreenCaptureKit still won't pick it up
         // until the process restarts, so we fall through to the guidance dialog.
-        tracing::info!(
-            "Screen Recording permission granted; showing restart-required notice"
-        );
+        tracing::info!("Screen Recording permission granted; showing restart-required notice");
         show_restart_required_alert();
         return false;
     }
@@ -72,7 +74,8 @@ pub fn ensure_screen_recording_or_guide() -> bool {
 
 /// Stub for non-capture builds — no Screen Recording permission needed.
 #[cfg(not(feature = "capture"))]
-pub fn ensure_screen_recording_or_guide() -> bool {
+#[allow(dead_code)]
+pub(crate) fn ensure_screen_recording_or_guide() -> bool {
     true
 }
 
@@ -85,15 +88,15 @@ pub fn ensure_screen_recording_or_guide() -> bool {
 /// and a "Quit" button that dismisses.
 #[cfg(all(feature = "capture", target_os = "macos"))]
 fn show_permission_guidance_alert() {
-    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy};
+    use objc2_app_kit::{
+        NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy,
+    };
     use objc2_foundation::{MainThreadMarker, ns_string};
 
     let mtm = match MainThreadMarker::new() {
         Some(m) => m,
         None => {
-            tracing::error!(
-                "ensure_screen_recording_or_guide must be called from the main thread"
-            );
+            tracing::error!("ensure_screen_recording_or_guide must be called from the main thread");
             return;
         }
     };
@@ -125,15 +128,13 @@ fn show_permission_guidance_alert() {
 /// but a restart is required for ScreenCaptureKit to pick it up.
 #[cfg(all(feature = "capture", target_os = "macos"))]
 fn show_restart_required_alert() {
-    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy};
+    use objc2_app_kit::{NSAlert, NSApplication, NSApplicationActivationPolicy};
     use objc2_foundation::{MainThreadMarker, ns_string};
 
     let mtm = match MainThreadMarker::new() {
         Some(m) => m,
         None => {
-            tracing::error!(
-                "ensure_screen_recording_or_guide must be called from the main thread"
-            );
+            tracing::error!("ensure_screen_recording_or_guide must be called from the main thread");
             return;
         }
     };
@@ -152,7 +153,6 @@ fn show_restart_required_alert() {
 
     // Ignore the return value — there is only one button.
     let _ = alert.runModal();
-    let _ = NSAlertFirstButtonReturn; // suppress unused-variable lint
 }
 
 /// Opens the Screen Recording privacy pane in System Settings.
@@ -201,15 +201,14 @@ fn show_restart_required_alert() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Verify that the Settings URL constant has the expected format.
     /// This is pure logic — no UI is shown.
+    #[cfg(all(feature = "capture", target_os = "macos"))]
     #[test]
     fn screen_recording_settings_url_is_well_formed() {
+        use super::SCREEN_RECORDING_SETTINGS_URL;
         assert!(
-            SCREEN_RECORDING_SETTINGS_URL
-                .starts_with("x-apple.systempreferences:"),
+            SCREEN_RECORDING_SETTINGS_URL.starts_with("x-apple.systempreferences:"),
             "URL must use the x-apple.systempreferences scheme"
         );
         assert!(
