@@ -13,6 +13,10 @@ pub enum Command {
     Host(HostArgs),
     /// Join a session using an invite link.
     Join(JoinArgs),
+    /// Print the version string and exit.
+    Version,
+    /// Print usage help and exit.
+    Help,
 }
 
 /// Resolution preset for the capture pipeline.
@@ -91,6 +95,34 @@ pub struct JoinArgs {
     pub no_gui: bool,
 }
 
+/// Usage help text printed by `--help` / `-h`.
+pub const HELP_TEXT: &str = "\
+pairwire — P2P screen sharing and pair programming
+
+USAGE:
+    pairwire host [OPTIONS]
+    pairwire join <invite-url> [OPTIONS]
+    pairwire --version
+    pairwire --help
+
+COMMANDS:
+    host    Start a sharing session and print an invite link
+    join    Join a session using an invite link
+
+OPTIONS (host):
+    --fps <N>                   Capture frame rate (default: 30)
+    --resolution <preset>       native | 1080p | 720p (default: 1080p)
+    --allow-remote-control      Auto-grant remote control to guests
+    --no-overlay                Skip the annotation overlay window
+
+OPTIONS (join):
+    --no-gui                    Run headless (for testing)
+
+GLOBAL OPTIONS:
+    --version, -V               Print version and exit
+    --help, -h                  Print this help and exit
+";
+
 /// Parse `std::env::args()` into a `Command`.
 pub fn parse_args() -> anyhow::Result<Command> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -99,6 +131,14 @@ pub fn parse_args() -> anyhow::Result<Command> {
 
 /// Parse a pre-split argument list (without the program name) into a `Command`.
 fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
+    // Handle global flags before subcommand dispatch.
+    if let Some(first) = args.first() {
+        match first.as_str() {
+            "--version" | "-V" => return Ok(Command::Version),
+            "--help" | "-h" => return Ok(Command::Help),
+            _ => {}
+        }
+    }
     match args.first().map(std::string::String::as_str) {
         Some("host") => {
             let mut a = HostArgs::default();
@@ -284,5 +324,29 @@ mod tests {
     #[test]
     fn parse_no_args_errors() {
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn parse_version_flag() {
+        let cmd = parse(&["--version"]).unwrap();
+        let Command::Version = cmd else {
+            panic!("expected Version command");
+        };
+    }
+
+    #[test]
+    fn parse_help_flag() {
+        let cmd = parse(&["--help"]).unwrap();
+        let Command::Help = cmd else {
+            panic!("expected Help command");
+        };
+    }
+
+    #[test]
+    fn parse_help_short() {
+        let cmd = parse(&["-h"]).unwrap();
+        let Command::Help = cmd else {
+            panic!("expected Help command");
+        };
     }
 }

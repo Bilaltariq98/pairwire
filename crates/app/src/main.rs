@@ -31,6 +31,19 @@ fn main() -> Result<()> {
 
     let cmd = cli::parse_args()?;
 
+    // Handle non-runtime commands before spinning up tokio.
+    match &cmd {
+        cli::Command::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        cli::Command::Help => {
+            print!("{}", cli::HELP_TEXT);
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -42,6 +55,8 @@ fn main() -> Result<()> {
         cli::Command::Join(args) => {
             run_join_command(args, &rt)?;
         }
+        // Version and Help are handled above before the runtime is built.
+        cli::Command::Version | cli::Command::Help => {}
     }
 
     Ok(())
