@@ -175,7 +175,7 @@ pub const DEFAULT_RELAY_URL: &str = "https://relay.pairwire.dev";
 /// CLI flags. At runtime, relay mode selection is handled by `resolve_relay_mode()`
 /// in the transport crate (which also reads env vars and the build profile).
 /// `NetworkConfig` is a config-persistence type, not the runtime selector.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NetworkConfig {
     /// Custom relay URL override (must be `https://`).
     ///
@@ -198,10 +198,7 @@ impl NetworkConfig {
                         .into(),
                 ));
             }
-            let scheme = url
-                .split_once("://")
-                .map(|(s, _)| s)
-                .unwrap_or_default();
+            let scheme = url.split_once("://").map(|(s, _)| s).unwrap_or_default();
             if scheme != "https" {
                 return Err(crate::Error::InvalidConfig(format!(
                     "NetworkConfig: relay_url must use https:// scheme, got '{scheme}://'"
@@ -209,12 +206,6 @@ impl NetworkConfig {
             }
         }
         Ok(())
-    }
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self { relay_url: None }
     }
 }
 

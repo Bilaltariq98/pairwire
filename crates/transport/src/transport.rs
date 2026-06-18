@@ -120,7 +120,7 @@ fn select_relay_mode(
 /// # Errors
 ///
 /// Propagates errors from [`select_relay_mode`] (malformed URL, unknown keyword).
-pub fn resolve_relay_mode() -> Result<RelayMode> {
+pub(crate) fn resolve_relay_mode() -> Result<RelayMode> {
     let env_url = std::env::var("PAIRWIRE_RELAY_URL").ok();
     let env_mode = std::env::var("PAIRWIRE_RELAY").ok();
     select_relay_mode(
@@ -389,5 +389,38 @@ mod relay_mode_tests {
             result.is_err(),
             "unknown PAIRWIRE_RELAY value must return Err"
         );
+    }
+
+    // 10. Both env_url AND env_mode set → URL wins (precedence rule)
+    //
+    // A user who mistakenly exports both PAIRWIRE_RELAY_URL and PAIRWIRE_RELAY
+    // should get the explicit URL, not the keyword behaviour.
+    #[test]
+    fn explicit_url_beats_env_mode_keyword() {
+        let mode = select_relay_mode(
+            Some("https://custom.relay.example.com"),
+            Some("public"), // keyword would give RelayMode::Default if it won
+            false,
+            OUR_RELAY,
+        )
+        .expect("valid https URL must succeed even when env_mode is also set");
+
+        match mode {
+            iroh::RelayMode::Custom(map) => {
+                assert_eq!(
+                    map.len(),
+                    1,
+                    "URL override must produce exactly 1 relay, not n0 or ours"
+                );
+                let url: iroh::RelayUrl = "https://custom.relay.example.com".parse().unwrap();
+                assert!(
+                    map.contains(&url),
+                    "custom map must contain the explicit URL, not the keyword-derived relay"
+                );
+            }
+            other => panic!(
+                "expected Custom(explicit URL) when both env_url and env_mode are set; got {other:?}"
+            ),
+        }
     }
 }
