@@ -166,6 +166,58 @@ impl Default for AudioConfig {
     }
 }
 
+/// The default relay URL used when `PAIRWIRE_RELAY_URL` is not set.
+pub const DEFAULT_RELAY_URL: &str = "https://relay.pairwire.dev";
+
+/// Network connectivity configuration.
+///
+/// Stores an optional relay URL override for serialization in config files or
+/// CLI flags. At runtime, relay mode selection is handled by `resolve_relay_mode()`
+/// in the transport crate (which also reads env vars and the build profile).
+/// `NetworkConfig` is a config-persistence type, not the runtime selector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    /// Custom relay URL override (must be `https://`).
+    ///
+    /// When `Some`, this value is passed to the transport layer as the explicit
+    /// relay URL. When `None`, the transport layer falls back to env vars and
+    /// build-profile defaults (see `resolve_relay_mode()`).
+    pub relay_url: Option<String>,
+}
+
+impl NetworkConfig {
+    /// Validate the network configuration.
+    ///
+    /// Returns an error if `relay_url` is set to an empty string or a URL
+    /// whose scheme is not `https`.
+    pub fn validate(&self) -> crate::Result<()> {
+        if let Some(url) = &self.relay_url {
+            if url.is_empty() {
+                return Err(crate::Error::InvalidConfig(
+                    "NetworkConfig: relay_url must not be empty (set to None to use default)"
+                        .into(),
+                ));
+            }
+            let scheme = url
+                .split_once("://")
+                .map(|(s, _)| s)
+                .unwrap_or_default();
+            if scheme != "https" {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "NetworkConfig: relay_url must use https:// scheme, got '{scheme}://'"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self { relay_url: None }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +394,52 @@ mod tests {
         let mut cfg = SessionConfig::default();
         cfg.audio.channels = 0;
         assert!(cfg.validate().is_err());
+    }
+
+    // --- NetworkConfig validation ---
+
+    #[test]
+    fn network_config_default_is_valid() {
+        NetworkConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn network_config_rejects_empty_relay_url() {
+        let cfg = NetworkConfig {
+            relay_url: Some(String::new()),
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn network_config_rejects_invalid_scheme() {
+        let cfg = NetworkConfig {
+            relay_url: Some("ftp://relay.example.com".into()),
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn network_config_accepts_https_url() {
+        let cfg = NetworkConfig {
+            relay_url: Some("https://relay.pairwire.dev".into()),
+        };
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn network_config_accepts_none() {
+        let cfg = NetworkConfig { relay_url: None };
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn network_config_round_trip() {
+        let cfg = NetworkConfig {
+            relay_url: Some("https://relay.pairwire.dev".into()),
+        };
+        let bytes = postcard::to_allocvec(&cfg).unwrap();
+        let decoded: NetworkConfig = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, cfg);
     }
 }

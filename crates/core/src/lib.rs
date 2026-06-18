@@ -11,6 +11,6 @@ pub mod types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_utils;
 
-pub use config::{AudioConfig, CaptureConfig, SessionConfig};
+pub use config::{AudioConfig, CaptureConfig, NetworkConfig, SessionConfig, DEFAULT_RELAY_URL};
 pub use error::{Error, Result};
 pub use types::{PeerId, SessionId};
