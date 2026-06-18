@@ -12,7 +12,7 @@
 pub mod config;
 pub mod consent;
 pub mod events;
-pub mod posthog;
+pub(crate) mod posthog;
 pub mod sentry_init;
 
 use tracing::{debug, warn};

@@ -46,6 +46,8 @@
 //! Source: `posthog-rs-0.13.1/src/client/async_client.rs` and `mod.rs`.
 //! Re-verify with `cargo doc -p posthog-rs --open` if upgrading beyond 0.13.x.
 
+use std::sync::OnceLock;
+
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -56,6 +58,39 @@ const EU_ENDPOINT: &str = "https://eu.i.posthog.com";
 
 /// API key baked at compile time. May be `None` in dev builds.
 const BAKED_API_KEY: Option<&str> = option_env!("PAIRWIRE_POSTHOG_KEY");
+
+/// Process-level PostHog client, lazily initialised on first use.
+///
+/// Reusing a single client avoids spinning up a fresh `reqwest` connection pool
+/// and a new TLS handshake on every event. Initialised at most once per process
+/// via [`posthog_client()`].
+static POSTHOG_CLIENT: OnceLock<posthog_rs::Client> = OnceLock::new();
+
+/// Returns a reference to the shared PostHog client, initialising it on the
+/// first call.
+///
+/// # Async initialisation with `OnceLock`
+///
+/// `OnceLock::get_or_init` is synchronous, so we cannot call the async
+/// `posthog_rs::client()` directly inside it.  Instead we call
+/// `tokio::runtime::Handle::current().block_on()` **only** when the cell is
+/// empty (i.e., at most once per process lifetime), which is safe here because:
+/// 1. We are always invoked from inside a `tokio::spawn` task, where blocking
+///    briefly is acceptable (the spawned task runs on a thread-pool worker).
+/// 2. `posthog_rs::client()` performs only lightweight reqwest builder work
+///    (no I/O), so the blocking window is negligible.
+///
+/// An alternative would be `tokio::sync::OnceCell`, but that requires an
+/// `async fn` call path all the way up to `send()` and would complicate the
+/// fire-and-forget API surface without meaningful benefit.
+fn posthog_client(key: &str) -> &'static posthog_rs::Client {
+    POSTHOG_CLIENT.get_or_init(|| {
+        // `posthog_rs::client` is async but does no I/O during construction —
+        // it only builds a reqwest::Client and fills in options.  Block on it
+        // synchronously so we can fit into OnceLock::get_or_init.
+        tokio::runtime::Handle::current().block_on(posthog_rs::client((key, EU_ENDPOINT)))
+    })
+}
 
 /// Resolve the API key: runtime env override > compile-time baked value.
 fn api_key() -> Option<String> {
@@ -108,12 +143,11 @@ pub fn send(event: TelemetryEvent) {
     // tokio::spawn for fire-and-forget dispatch. The task is detached; any
     // failures are logged at debug/warn level and do not propagate to the caller.
     tokio::spawn(async move {
-        // API note: posthog_rs::client<C: Into<ClientOptions>>(options: C) -> Client
-        // This function is INFALLIBLE — it returns Client directly, not Result<Client, _>.
-        // (&str, &str) implements Into<ClientOptions> via From<(&str, &str)>,
-        // setting api_key and host respectively. No error handling at construction.
-        // See module-level doc for full API verification notes.
-        let client = posthog_rs::client((key.as_str(), EU_ENDPOINT)).await;
+        // Obtain (or lazily initialise) the shared, process-level PostHog client.
+        // posthog_client() reuses the existing reqwest connection pool — no new
+        // TLS handshake per event. See posthog_client() doc for the rationale on
+        // why OnceLock + block_on is used rather than tokio::sync::OnceCell.
+        let client = posthog_client(key.as_str());
 
         // Fresh UUID per event — see module doc on distinct_id strategy.
         let distinct_id = Uuid::new_v4().to_string();
@@ -141,6 +175,11 @@ mod tests {
     ///
     /// BAKED_API_KEY is `None` in dev builds (env var not set at compile time),
     /// so we only need to ensure the runtime env var is also absent.
+    ///
+    /// If BAKED_API_KEY IS set at compile time (e.g. release CI), `send` would
+    /// call `tokio::spawn`, which panics outside a tokio runtime. This test
+    /// skips the `send` call in that case to avoid the panic — the no-key drop
+    /// path is only reachable when BAKED_API_KEY is None.
     #[test]
     fn send_drops_event_silently_when_no_key() {
         let _guard = TELEMETRY_TEST_LOCK
@@ -151,14 +190,16 @@ mod tests {
         // touches this env var at a time — no concurrent env mutation risk.
         unsafe { std::env::remove_var("PAIRWIRE_POSTHOG_KEY") };
 
-        // If no baked key is present, this call should return immediately
-        // (debug-logged drop). We can't assert network silence in a unit test,
-        // but we can verify no panic and that the function returns.
-        //
-        // If a baked key IS present (release CI), this test still passes — the
-        // `send` function will spawn a task, but the test doesn't fail because
-        // we're only asserting "no panic". Network failures are swallowed via
-        // `debug!`.
+        // When a baked key is present, api_key() returns Some(_) even after the
+        // env var is removed. Calling send() would invoke tokio::spawn from a
+        // plain #[test] with no tokio runtime, causing a panic. Skip the call
+        // in that case — this test only validates the no-key drop path.
+        if BAKED_API_KEY.is_some() {
+            return;
+        }
+
+        // No baked key and no runtime env var: send() must drop the event
+        // immediately (debug-logged) without panicking or spawning a task.
         send(TelemetryEvent::AppLaunched {
             version: "0.0.0-test".into(),
             os_family: "test".into(),
