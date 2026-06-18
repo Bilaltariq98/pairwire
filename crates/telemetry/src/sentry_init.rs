@@ -28,6 +28,21 @@ use uuid::Uuid;
 /// DSN baked at compile time. `None` in builds without the env var set.
 const BAKED_DSN: Option<&str> = option_env!("PAIRWIRE_SENTRY_DSN");
 
+/// Consent gate for Sentry's `before_send` hook.
+///
+/// Returns `Some(event)` when the user has consented, `None` to drop the event.
+/// Extracted as a named free function so tests can invoke the exact production
+/// logic without reconstructing it inline.
+pub(crate) fn consent_gate(
+    event: sentry::protocol::Event<'static>,
+) -> Option<sentry::protocol::Event<'static>> {
+    if crate::consent::is_consented() {
+        Some(event)
+    } else {
+        None // drop — user has not consented
+    }
+}
+
 /// Resolve the Sentry DSN: runtime env override > compile-time baked value.
 fn dsn() -> Option<String> {
     std::env::var("PAIRWIRE_SENTRY_DSN")
@@ -46,9 +61,7 @@ pub fn init_sentry(device_id: Uuid) -> sentry::ClientInitGuard {
     let Some(dsn_str) = dsn() else {
         debug!("PAIRWIRE_SENTRY_DSN not set — Sentry disabled");
         // Return a guard initialised with an empty options set (no-op).
-        return sentry::init(sentry::ClientOptions {
-            ..Default::default()
-        });
+        return sentry::init(sentry::ClientOptions::default());
     };
 
     info!("initialising Sentry EU crash reporting");
@@ -76,13 +89,7 @@ pub fn init_sentry(device_id: Uuid) -> sentry::ClientInitGuard {
         // before_send: gate on consent. If the user has not opted in, drop the
         // event. This is checked at event send time, not at init time, so
         // toggling consent mid-session works correctly.
-        before_send: Some(std::sync::Arc::new(|event| {
-            if crate::consent::is_consented() {
-                Some(event)
-            } else {
-                None // drop — user has not consented
-            }
-        })),
+        before_send: Some(std::sync::Arc::new(consent_gate)),
         ..Default::default()
     });
 
@@ -126,35 +133,28 @@ mod tests {
 
     /// `before_send` drops events when consent has not been granted.
     ///
-    /// This test exercises the consent gate directly through the before_send
-    /// closure logic (extracted into a testable helper) to verify that events
-    /// are dropped when `is_consented()` returns false, and forwarded when
-    /// it returns true.
-    ///
-    /// We test the gate logic, not the Sentry SDK integration (which would
-    /// require a live DSN). The closure is the same code that runs in production.
+    /// Calls the production `consent_gate` function directly — the same `Arc<Fn>`
+    /// registered in `sentry::ClientOptions::before_send` — so that any accidental
+    /// inversion of the consent check or removal of the hook will be caught.
     #[test]
     fn before_send_drops_event_when_not_consented() {
         let _guard = TELEMETRY_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         consent::reset_for_test();
-        // consent is NOT set → gate is shut
+        // consent is NOT set → gate must drop the event
 
-        // The before_send closure is: if is_consented() { Some(event) } else { None }
-        // Simulate it here with a dummy check:
-        let gate_result: Option<()> = if consent::is_consented() {
-            Some(())
-        } else {
-            None
-        };
+        let result = consent_gate(sentry::protocol::Event::new());
         assert!(
-            gate_result.is_none(),
+            result.is_none(),
             "before_send must return None (drop event) when consent is not granted"
         );
     }
 
     /// `before_send` forwards events when consent has been granted.
+    ///
+    /// Calls the production `consent_gate` function directly to verify it returns
+    /// `Some(event)` when the user has opted in.
     #[test]
     fn before_send_forwards_event_when_consented() {
         let _guard = TELEMETRY_TEST_LOCK
@@ -163,13 +163,9 @@ mod tests {
         consent::reset_for_test();
         consent::set_consent(true);
 
-        let gate_result: Option<()> = if consent::is_consented() {
-            Some(())
-        } else {
-            None
-        };
+        let result = consent_gate(sentry::protocol::Event::new());
         assert!(
-            gate_result.is_some(),
+            result.is_some(),
             "before_send must return Some(event) (forward event) when consent is granted"
         );
 
