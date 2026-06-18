@@ -335,6 +335,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_version_short() {
+        let cmd = parse(&["-V"]).unwrap();
+        let Command::Version = cmd else {
+            panic!("expected Version command");
+        };
+    }
+
+    #[test]
     fn parse_help_flag() {
         let cmd = parse(&["--help"]).unwrap();
         let Command::Help = cmd else {

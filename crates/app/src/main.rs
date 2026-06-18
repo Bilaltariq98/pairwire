@@ -19,19 +19,10 @@ use reconnect::{ConnectionState, ReconnectPolicy};
 use tracing::info;
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("pairwire=info".parse()?)
-                .add_directive("iroh=warn".parse()?),
-        )
-        .init();
-
-    info!(version = env!("CARGO_PKG_VERSION"), "pairwire starting");
-
     let cmd = cli::parse_args()?;
 
-    // Handle non-runtime commands before spinning up tokio.
+    // Handle non-runtime commands before initialising logging — running
+    // `pairwire --version` or `pairwire --help` must not emit any log lines.
     match &cmd {
         cli::Command::Version => {
             println!("{}", env!("CARGO_PKG_VERSION"));
@@ -43,6 +34,16 @@ fn main() -> Result<()> {
         }
         _ => {}
     }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("pairwire=info".parse()?)
+                .add_directive("iroh=warn".parse()?),
+        )
+        .init();
+
+    info!(version = env!("CARGO_PKG_VERSION"), "pairwire starting");
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
