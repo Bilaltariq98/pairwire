@@ -303,3 +303,23 @@ Each entry should include:
   - **QAD is a separate, OPTIONAL UDP server** (default port **7842**, `QuicConfig` in `iroh_relay::server::ServerConfig`). `quic: None` disables it and the relay still starts and forwards traffic; you only lose this host as a QAD address-discovery endpoint (n0's public relays already provide QAD).
 - **Resolution**: A self-hosted relay needs a VPS with a public IP and inbound **TCP 443** (required) + **UDP 7842** (recommended, for QAD). Hetzner CX22 fits. **Cloudflare Containers cannot host it** — all container ingress is proxied through a Worker ("end-users cannot make non-HTTP TCP or UDP requests to a Container instance"), which breaks the e2e-encrypted WebSocket QUIC tunnel and blocks UDP entirely. **Cloudflare's managed MoQ relay is irrelevant** — it speaks IETF moq-transport (draft-07→14), not moq-lite, and sits at the wrong layer (would require replacing iroh). Fly.io supports raw UDP + dedicated IPv4 but egress is ~$0.02/GB vs Hetzner's 20 TB included — pricier for relayed video.
 - **Key insight**: Wire the relay via `Endpoint::builder().relay_mode(RelayMode::Custom(vec![relay_url]))`. Keep n0's public relays as a fallback so a relay outage degrades (more relay-via-public / slower hole-punch) rather than hard-fails.
+
+### 2026-06-18 — iroh 0.97: relay-mode selection — debug→n0-public / release→ours-only, with env overrides
+
+- **Area**: iroh, transport, relay
+- **What**: `Builder::relay_mode(mode)` is a replacement, not additive. The new design
+  does NOT merge custom + n0 maps. Instead `resolve_relay_mode()` (transport crate) selects
+  a single `RelayMode` via this precedence: (1) `PAIRWIRE_RELAY_URL=<url>` → Custom(url);
+  (2) `PAIRWIRE_RELAY=public|disabled|ours`; (3) build-profile default:
+  - **debug** (`cfg!(debug_assertions)=true`) → `RelayMode::Default` (n0 public) — so
+    `cargo run` and debug DMGs dogfood on n0 without standing up our relay.
+  - **release** (`cfg!(debug_assertions)=false`) → `RelayMode::Custom(vec![relay.pairwire.dev])`
+    — **our relay only, `total_relays=1`, no n0 in map**. End-user traffic must never
+    touch n0's public network.
+- **Resolution**: See `select_relay_mode()` (pure, unit-tested) and `resolve_relay_mode()`
+  (thin env-reading wrapper) in `crates/transport/src/transport.rs`. The separation of pure
+  logic from env reads makes all branches unit-testable without process env mutation.
+- **Key insight**: For the debug/public case, use `PAIRWIRE_RELAY=public` or run a debug
+  build; verify with `RUST_LOG=pairwire_transport=debug` — log line will say
+  `relay_mode=Default (debug build, no env override)`. For release, verify with
+  `total_relays=1` in the log — confirms no n0 relay leaked into the map.
