@@ -11,8 +11,7 @@
 # For CI, set TF_TOKEN_app_terraform_io as a GitHub Actions secret.
 
 terraform {
-  backend "remote" {
-    hostname     = "app.terraform.io"
+  cloud {
     organization = "pairwire"
 
     workspaces {
