@@ -104,8 +104,9 @@ a beta; verify with `codesign -d --entitlements - -vvv` and `spctl --assess` bef
 
 ## Workstream B — Self-hosted iroh relay  (effort: M)
 
-**Server:** Hetzner CX22 (EU), ~€4/mo, 20 TB/mo egress included. Run the **`iroh-relay` 1.0**
-standalone binary (shipped 2026-06-15) with `enable_metrics=true` (Prometheus-compatible).
+**Server:** Hetzner CX22 (EU), ~€4/mo, 20 TB/mo egress included. Run the **`iroh-relay` 0.97.0**
+standalone binary (version-matched to the pinned `iroh 0.97.0` in Cargo.lock) with
+`enable_metrics=true` (Prometheus-compatible).
 TLS via the relay's built-in ACME or a fronting reverse proxy at `relay.pairwire.dev`.
 
 **Client wiring:** `Endpoint::builder().relay_mode(RelayMode::Custom(vec![relay_url]))` in the

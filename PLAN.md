@@ -1015,6 +1015,7 @@
 
 ### P4.5.1: macOS .app Bundle
 - **Status**: `[ ]`
+- **Plan**: Fully specced for the v1 unsigned-DMG cut — see `docs/superpowers/plans/2026-06-18-A-macos-dmg-packaging.md` (spec: `docs/superpowers/specs/2026-06-18-pairwire-v1-ship-packaging-design.md`). v1 ships ad-hoc/unsigned (no Apple enrollment); signing is parameterized so a Developer ID flips in later.
 - **Description**: Create a proper macOS application bundle that can be drag-installed to /Applications.
 - **Deliverables**:
   - `Info.plist` with correct bundle ID, permissions declarations (`NSScreenCaptureUsageDescription`, `NSMicrophoneUsageDescription`, `NSAccessibilityUsageDescription`)
@@ -1057,6 +1058,35 @@
   - Settings accessible from the window (fps, resolution, audio, permissions)
   - CLI `pairwire host` / `pairwire join <url>` still works exactly as before
 - **Notes**: Could use egui for consistency, or native platform dialogs for a more polished feel. tao+wry (webview) is another option — see project memory on UI strategy.
+
+---
+
+## Phase 4.6: v1 Launch Infrastructure (Unsigned DMG Ship)
+
+> **Goal**: Everything beyond the `.app`/DMG needed to put v1 in a colleague's hands: our own relay (monitored + cost-capped), a download site, opt-in telemetry, and an update check.
+> **Spec**: `docs/superpowers/specs/2026-06-18-pairwire-v1-ship-packaging-design.md`
+> **Index**: `docs/superpowers/plans/2026-06-18-00-INDEX-v1-ship.md` (dependency graph + human checklist)
+> **Scope decision (2026-06-18)**: v1 ships **unsigned** (no Apple enrollment), domain **pairwire.dev**, relay **self-hosted on Hetzner at launch**. QoL items are a fast-follow; persistent identity needs its own spec.
+
+### P4.6.1: Self-hosted iroh-relay + Terraform IaC
+- **Status**: `[ ]`
+- **Plan**: `docs/superpowers/plans/2026-06-18-B-relay-iac.md`
+- **Description**: iroh-relay 0.97.0 on a Hetzner CX22 (EU) provisioned via Terraform (`infra/terraform/`, hcloud + cloudflare providers, firewall-as-code). Wire `RelayMode::Custom(relay.pairwire.dev)` into the client with n0 public relays as fallback. Prometheus metrics → Grafana Cloud; firewall IP allowlist + 15 TB egress alert as the cost-cap. **NOT** the moq-relay (P5.1/P5.3, multi-party, deferred).
+
+### P4.6.2: pairwire.dev landing + download site
+- **Status**: `[ ]`
+- **Plan**: `docs/superpowers/plans/2026-06-18-C-website.md`
+- **Description**: Static `site/` on Cloudflare Pages; download resolves the latest GitHub Release `.dmg`; honest unsigned-beta + Gatekeeper "Open Anyway" + permission-grant guide; publishes `/version.json` (the update-check contract).
+
+### P4.6.3: Opt-in telemetry (PostHog EU + Sentry EU)
+- **Status**: `[ ]`
+- **Plan**: `docs/superpowers/plans/2026-06-18-D-telemetry.md`
+- **Description**: `crates/telemetry` — first-run consent gate (runtime `AtomicBool`), anonymous device id in config dir, allowlisted events (never screen/audio/keys/NodeIds), Sentry panic hook. Crash reporting honors the same opt-in as usage events.
+
+### P4.6.4: Minimal update version-check
+- **Status**: `[ ]`
+- **Plan**: `docs/superpowers/plans/2026-06-18-E-update-check.md`
+- **Description**: Non-blocking launch check against `pairwire.dev/version.json`; if newer than `CARGO_PKG_VERSION`, surface an "update available → download" notice. No in-place auto-install in v1.
 
 ---
 
