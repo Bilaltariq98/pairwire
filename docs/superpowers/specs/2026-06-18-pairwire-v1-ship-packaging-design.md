@@ -119,6 +119,22 @@ transport crate's endpoint constructor. Make the relay URL a config/env value (d
   either restrict inbound at the firewall or accept open-relay risk during early beta and watch
   the egress dashboard.
 
+**Infrastructure as code (Terraform):** all relay infra lives in `infra/terraform/`, reproducible
+and tear-down-able — no click-ops on Hetzner/Cloudflare.
+- **Providers:** `hetznercloud/hcloud` (server, firewall, ssh key) + `cloudflare/cloudflare`
+  (DNS records, optionally the Pages project). Optional `jianyuan/sentry` for the Sentry project.
+- **Resources:** `hcloud_server` (CX22, EU, IPv4+IPv6), `hcloud_firewall`
+  (**inbound allow: TCP 443, UDP 7842, SSH 22 from admin IP only; default-deny**),
+  `hcloud_ssh_key`; `cloudflare_record` for `relay.pairwire.dev` (A + AAAA).
+- **Server provisioning:** `cloud-init` (`user_data`) installs the `iroh-relay` binary, writes a
+  `systemd` unit, configures ACME TLS for `relay.pairwire.dev`, enables Prometheus metrics.
+- **State:** Terraform Cloud free tier *or* a Cloudflare R2 backend (keep state out of git;
+  secrets via `TF_VAR_*` env / GitHub Actions secrets, never committed).
+- **Wrapper:** `just relay-plan` / `just relay-apply` / `just relay-destroy`. Optional CI
+  `terraform plan` on PR.
+- **Note:** PostHog has no official TF provider — its project setup stays a manual task. The
+  egress cost-cap *alert* is a Grafana concern (not TF); the firewall IP allowlist *is* TF.
+
 **Cost reality:** a 1-hour relayed coding session at ~600 kbps ≈ €0.0003. Even fully-relayed
 beta traffic stays far inside the 20 TB allowance. Relay cost is **not** a concern at launch
 scale; the value is visibility and the cap mechanism.
@@ -234,6 +250,32 @@ must include B's relay wiring, D's telemetry, and E's version-check.
   before any public release to protect the hosted relay/rendezvous from free-riding. Decide
   before the download page goes public. Confirm no external-contributor consent needed.
 - **Bundle identifier** `dev.pairwire.app` — confirm naming.
+
+## Manual / human-in-the-loop tasks
+
+Agents cannot create paid accounts, buy domains, accept ToS, or hold secrets. These are
+**yours**, and each one unblocks downstream agent work. Do them first / in parallel.
+
+| # | Manual task | Unblocks | Notes |
+|---|---|---|---|
+| 1 | Register **pairwire.dev** | C (site), B (relay subdomain), E (version-check URL) | Cloudflare Registrar supports `.dev`, ~$12/yr. Payment required. |
+| 2 | Create **Hetzner Cloud** account + project + **API token** | B (Terraform `hcloud`) | Provide `TF_VAR_hcloud_token`. Card required. |
+| 3 | Create **Cloudflare** account + scoped **API token** (DNS edit + Pages) | B (DNS), C (Pages) | `TF_VAR_cloudflare_token`. Free. |
+| 4 | Provide an **SSH public key** for the relay server | B (server access) | Goes into `hcloud_ssh_key`. |
+| 5 | Create **PostHog Cloud (EU)** project → **project API key** | D (telemetry) | Free tier. No TF provider — manual. |
+| 6 | Create **Sentry (EU)** project → **DSN** | D (crash reporting) | Free dev plan. Can be TF'd (`jianyuan/sentry`) or manual. |
+| 7 | Choose **state backend secret** (Terraform Cloud token *or* R2 keys) | B (IaC state) | Keeps TF state out of git. |
+| 8 | Decide **license** (MIT/Apache → BSL 1.1?) before site goes public | C (public release) | Owner call; non-blocking for build. |
+| 9 | **App icon asset** (1024×1024 PNG) — design or commission | A (.icns + tray icon) | Only true creative blocker in A. |
+
+**Secrets handling:** store tokens in a password manager + GitHub Actions secrets. Never commit.
+The Sentry DSN *is* embedded in the release binary (unavoidable) — enable rate-limiting + abuse
+scrubbing on the Sentry project to compensate.
+
+**Agent vs human boundary:** agents author all code, Terraform configs, CI workflows, cloud-init,
+the landing page, and the telemetry/relay wiring. Humans run `terraform apply` (or approve the CI
+apply), perform account creation + payment above, and supply the icon asset. The plan will tag
+each task `[human]` or `[agent]` so the split is explicit.
 
 ## Cost summary (launch scale)
 
