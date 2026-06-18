@@ -54,21 +54,35 @@ bundle-dylibs:
     APP="${APP:-target/release/pairwire.app}"
     BIN="$APP/Contents/MacOS/pairwire"
     LIBS_DIR="$APP/Contents/libs"
+    IDENTITY="${CODESIGN_IDENTITY:--}"
+    # Locate FFmpeg dylib directory.
+    # FFMPEG_DIR takes precedence; fall back to `brew --prefix ffmpeg`.
+    FFMPEG_LIB="${FFMPEG_DIR:-$(brew --prefix ffmpeg 2>/dev/null || echo '')}/lib"
+    if [ ! -d "$FFMPEG_LIB" ]; then
+        echo "ERROR: FFmpeg lib directory not found ($FFMPEG_LIB). Set FFMPEG_DIR or install via Homebrew."
+        exit 1
+    fi
     mkdir -p "$LIBS_DIR"
-    # dylibbundler 1.x uses -x (--fix-file) and -b (--bundle-deps).
-    # -od (--overwrite-dir) recreates the dest dir; -cd (--create-dir) is implied.
-    # -p sets the @rpath rewrite prefix embedded in each dylib LC_RPATH entry.
-    # @executable_path/../libs/ is the standard macOS .app relative path.
+    # dylibbundler 1.x flags:
+    #   -b / --bundle-deps   copy transitive dependencies
+    #   -x / --fix-file      binary whose load commands to rewrite
+    #   -d / --dest-dir      destination directory for copied dylibs
+    #   -p / --install-path  @rpath prefix written into each dylib's LC_LOAD_DYLIB
+    #   -od / --overwrite-dir erase and recreate dest-dir (idempotent re-runs)
+    #   -s / --search-path   extra directory to resolve dylib source files
+    # -s $FFMPEG_LIB lets dylibbundler resolve libraries even when the binary
+    # load commands already use @executable_path/../libs/ (idempotent re-run).
     dylibbundler \
         -b \
         -x "$BIN" \
         -d "$LIBS_DIR" \
         -p "@executable_path/../libs/" \
+        -s "$FFMPEG_LIB" \
         -od
     # Ad-hoc sign each bundled dylib to avoid "mapped file has no cdhash" Gatekeeper error.
     # This error appears when a dylib inside a hardened-runtime .app is unsigned.
     # Bottom-up signing order is mandatory: dylibs first, then the binary, then the .app.
-    IDENTITY="${CODESIGN_IDENTITY:--}"
+    shopt -s nullglob
     for dylib in "$LIBS_DIR"/*.dylib; do
         codesign \
             --sign "$IDENTITY" \
@@ -76,6 +90,11 @@ bundle-dylibs:
             "$dylib"
         echo "  signed: $(basename "$dylib")"
     done
+    if [ -z "$(ls -A "$LIBS_DIR" 2>/dev/null)" ]; then
+        echo "ERROR: No dylibs were bundled into $LIBS_DIR — dylibbundler found nothing to copy."
+        echo "       Check that the binary links against Homebrew FFmpeg (not static)."
+        exit 1
+    fi
     # Re-sign the binary (dylibbundler modifies it, invalidating the prior signature).
     codesign \
         --sign "$IDENTITY" \
@@ -123,8 +142,17 @@ package:
         --release \
         --formats app,dmg \
         -p pairwire
+    # Step 3: Bundle FFmpeg dylibs into Contents/libs and rewrite load commands.
+    # cargo-packager produces the .app skeleton but does not copy the FFmpeg dylibs,
+    # so the produced .app only runs where Homebrew ffmpeg is installed.
+    # bundle-dylibs copies libavcodec/libavformat/libavutil/libswscale (and their
+    # transitive deps) from $FFMPEG_DIR/lib into Contents/libs, rewrites all
+    # @rpath load commands to @executable_path/../libs/ via install_name_tool,
+    # ad-hoc codesigns each dylib, then re-codesigns the binary and the .app.
+    just bundle-dylibs
     echo "=== Bundle output ==="
-    ls -lh target/release/pairwire.app target/release/pairwire_*.dmg
+    ls -lh target/release/pairwire.app target/release/pairwire_*.dmg 2>/dev/null || \
+        ls -lh target/release/pairwire.app target/release/pairwire_*.dmg
 
 # Alias — same as `package` (kept for semantic clarity in docs).
 dmg: package
