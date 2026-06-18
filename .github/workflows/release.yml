@@ -13,6 +13,8 @@ jobs:
   macos-dmg:
     name: macOS DMG (arm64)
     runs-on: macos-latest   # Apple Silicon runner; macos-latest → macOS 15 (Sequoia) arm64 as of 2026
+    permissions:
+      contents: write   # Required by softprops/action-gh-release@v2 to create/update releases
 
     steps:
       - name: Checkout
@@ -51,15 +53,15 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build release binary + produce .app and .dmg
+      - name: Build release binary + produce .app bundle
         env:
           CODESIGN_IDENTITY: "-"    # Ad-hoc sign. Change to Developer ID cert name when enrolled.
         run: |
-          # IMPORTANT: --features must come before '--' (there is no '--' needed here;
-          # features are cargo flags, not binary runtime flags).
+          # Produce the .app only — the DMG is created in a later step AFTER dylibs are
+          # injected so the sealed DMG contains the patched bundle.
           cargo packager \
             --release \
-            --formats app,dmg \
+            --formats app \
             -p pairwire \
             --features encode,capture,audio,gui,tray
 
@@ -69,10 +71,30 @@ jobs:
         # dylib individually (bottom-up signing order required — unsigned dylibs inside
         # a hardened-runtime .app trigger the "mapped file has no cdhash" Gatekeeper
         # rejection). Must run AFTER cargo packager creates the .app skeleton and BEFORE
-        # the outer bundle codesign verification.
+        # the DMG is created, so the final DMG contains the fully patched bundle.
         env:
           CODESIGN_IDENTITY: "-"
         run: just bundle-dylibs
+
+      - name: Package patched .app into DMG
+        # Create the DMG from the already-patched .app so users get the FFmpeg dylibs.
+        # hdiutil is used directly rather than cargo-packager --formats dmg to avoid
+        # re-running the build step and to ensure no caching of the pre-patch .app.
+        run: |
+          APP="target/release/bundle/macos/pairwire.app"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          DMG_NAME="pairwire_${VERSION}_aarch64.dmg"
+          DMG_PATH="target/release/bundle/macos/${DMG_NAME}"
+          STAGING="$(mktemp -d)"
+          cp -R "$APP" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create \
+            -volname "pairwire" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+          rm -rf "$STAGING"
 
       - name: Verify bundle signing (inner binary + outer bundle)
         run: |
