@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Bundle identity -->
+    <key>CFBundleIdentifier</key>
+    <string>dev.pairwire.app</string>
+
+    <key>CFBundleName</key>
+    <string>pairwire</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>pairwire</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <!-- Populated by cargo-packager from Cargo.toml version -->
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+
+    <key>CFBundleExecutable</key>
+    <string>pairwire</string>
+
+    <key>CFBundleIconFile</key>
+    <string>pairwire.icns</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleSignature</key>
+    <string>????</string>
+
+    <!-- Minimum macOS: ScreenCaptureKit requires 12.3+ -->
+    <key>LSMinimumSystemVersion</key>
+    <string>12.3</string>
+
+    <!-- Hides the Dock icon when the app is running as a tray-only process.
+         The overlay window forces LSUIElement=false at runtime; this is the
+         correct default for a tray-first app. -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- TCC privacy usage strings — macOS requires these to show a permission dialog.
+         A missing key causes the process to be killed silently on the first API call. -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>pairwire needs to capture your screen to share it with your collaborator.</string>
+
+    <key>NSMicrophoneUsageDescription</key>
+    <string>pairwire needs microphone access for voice communication during screen sharing sessions.</string>
+
+    <!-- NOTE: Accessibility (CGEvent injection) has NO Info.plist usage string.
+         It is requested at runtime via AXIsProcessTrustedWithOptions in
+         crates/input/src/inject_macos.rs. Do NOT add NSAccessibilityUsageDescription
+         — that key does not exist and macOS ignores it. -->
+
+    <!-- High-resolution display support -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Prevent App Transport Security from blocking iroh QUIC connections.
+         iroh uses TLS 1.3 but the transport is QUIC (UDP), not HTTP/S, so ATS
+         exemption is needed for non-HTTP traffic. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+</dict>
+</plist>

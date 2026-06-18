@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened runtime base. Required for --options runtime codesign. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+
+    <!-- wgpu (used by eframe) may require unsigned memory mapping on some drivers.
+         Enable this only if wgpu fails to initialize under hardened runtime.
+         Set to false initially; flip to true if codesign testing reveals issues. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!-- Microphone access (cpal/CoreAudio). Required for audio capture. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- Screen recording entitlement is NOT required here — ScreenCaptureKit
+         TCC permission is governed by NSScreenCaptureUsageDescription in Info.plist
+         and the TCC database, not by a hardened-runtime entitlement. -->
+
+    <!-- Accessibility (CGEvent injection) is also NOT an entitlement. It is a
+         separate TCC category requested via AXIsProcessTrustedWithOptions. -->
+</dict>
+</plist>
