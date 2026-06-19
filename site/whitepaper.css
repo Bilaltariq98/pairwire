@@ -161,7 +161,7 @@
   color: var(--ink);
   line-height: 1.6;
   margin-top: 16px;
-  max-width: 60ch;
+  max-width: 65ch;
   text-wrap: pretty;
 }
 
@@ -170,7 +170,7 @@
   color: var(--muted);
   line-height: 1.7;
   margin-top: 16px;
-  max-width: 68ch;
+  max-width: 65ch;
   text-wrap: pretty;
 }
 
@@ -206,7 +206,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 66ch;
+  max-width: 65ch;
 }
 
 .wp-list li {
@@ -243,7 +243,7 @@
   margin: 0;
   padding: 18px 20px;
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   line-height: 1.7;
   color: var(--ink);
   tab-size: 2;
@@ -396,8 +396,8 @@
   opacity: 1;
   transform: none;
   transition:
-    opacity 500ms ease,
-    transform 600ms cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 500ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -455,11 +455,88 @@
 .d-sig {
   offset-rotate: 0deg;
   animation: d-flow linear infinite;
+  will-change: offset-distance;
 }
+/* IntersectionObserver pauses dots while the diagram is off-screen */
+.wp-diagram.paused .d-sig { animation-play-state: paused; }
 @keyframes d-flow {
   from { offset-distance: 0%; }
   to   { offset-distance: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .d-sig { animation: none !important; offset-distance: 55%; }
+  .wp-diagram .d-sig { animation: none; offset-distance: 55%; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WHITEPAPER AUDIT PASS — fixes
+   ═══════════════════════════════════════════════════════════════ */
+
+/* P0: .wp-section a (accent + underline) was painting the Download button
+   periwinkle-on-periwinkle (invisible text). Restore the button's own colours. */
+.wp-section .btn-download {
+  color: var(--accent-ink);
+  text-decoration: none;
+}
+@media (hover: hover) {
+  .wp-section .btn-download:hover {
+    color: var(--accent-ink);
+    background: var(--accent-hover);
+    text-decoration: none;
+  }
+}
+
+/* P0: the secondary "Home" nav link pushed the Download CTA off-screen at
+   narrow widths (the logo already links home). Hide it on small phones. */
+@media (max-width: 480px) {
+  .site-nav .nav-link:not(.nav-link--accent) {
+    display: none;
+  }
+}
+
+/* P1: 44px tap targets for the reading-page links */
+.wp-toc a {
+  display: block;
+  padding-block: 10px;
+}
+.wp-hero-meta a {
+  padding-block: 12px;
+}
+.wp-backhome a {
+  display: inline-block;
+  padding-block: 12px;
+  min-height: 44px;
+}
+
+/* P1: diagram in-box sub-labels sit on --surface-2, where --faint fails AA
+   (4.33:1). --muted clears it. */
+.d-sub {
+  fill: var(--muted);
+  font-family: var(--font-mono);
+}
+
+/* P3: active section gets highlighted in the table of contents */
+.wp-toc a[aria-current="location"] {
+  color: var(--ink);
+}
+
+/* P3: minimal hero-mark entrance (opacity only — it's chrome, not body text) */
+.wp-hero .hero-mark {
+  animation: wp-mark-in 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes wp-mark-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-hero-meta a,
+  .wp-toc a,
+  .wp-section a,
+  .wp-backhome a {
+    transition: none;
+  }
+  .wp-hero .hero-mark {
+    animation: none;
+    opacity: 1;
+  }
 }

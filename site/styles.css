@@ -78,6 +78,7 @@
 html {
   font-size: 16px;
   scroll-behavior: smooth;
+  scroll-padding-top: 72px; /* keep anchored headings clear of the sticky nav */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }

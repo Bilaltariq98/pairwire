@@ -16,6 +16,7 @@
   <link rel="apple-touch-icon" href="/assets/icon-180.png" />
 
   <link rel="preload" href="/assets/fonts/geist-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/assets/fonts/geist-500.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="/assets/fonts/geist-600.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="/assets/fonts/geist-mono-400.woff2" as="font" type="font/woff2" crossorigin />
 
@@ -97,7 +98,7 @@
 
       <!-- ── ON THIS PAGE ──────────────────────────────────── -->
       <nav class="wp-toc" aria-label="On this page">
-        <h2>On this page</h2>
+        <h2 aria-hidden="true">On this page</h2>
         <ol>
           <li><a href="#transport">The transport problem</a></li>
           <li><a href="#primitives">Three QUIC primitives</a></li>
@@ -110,7 +111,7 @@
       </nav>
 
       <!-- ── 1. TRANSPORT ──────────────────────────────────── -->
-      <section class="wp-section" id="transport">
+      <section class="wp-section" id="transport" tabindex="-1">
         <span class="wp-section-num">01</span>
         <h2>Two protocols. Neither is right.</h2>
         <p class="wp-lead">
@@ -138,7 +139,7 @@
       </div>
 
       <!-- ── 2. PRIMITIVES ─────────────────────────────────── -->
-      <section class="wp-section" id="primitives">
+      <section class="wp-section" id="primitives" tabindex="-1">
         <span class="wp-section-num">02</span>
         <h2>Three tools. Every feature maps to one.</h2>
         <p class="wp-lead">
@@ -206,8 +207,7 @@
             <!-- datagram -->
             <text x="340" y="206" class="t-muted" font-size="11" text-anchor="middle">send_datagram()  ·  unreliable, &lt; 50 bytes</text>
             <line class="s-muted" x1="106" y1="222" x2="574" y2="222" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ar-m)"/>
-            <circle class="d-sig t-muted" r="3.5" style="offset-path:path('M106 222 L574 222');animation-duration:1.8s"/>
-            <circle class="d-sig t-muted" r="3.5" style="offset-path:path('M106 222 L574 222');animation-duration:1.8s;animation-delay:-0.9s"/>
+            <circle class="d-sig t-muted" r="3.5" style="offset-path:path('M106 222 L574 222');animation-duration:2.2s"/>
             <text x="340" y="240" class="d-dim" font-size="9" text-anchor="middle">cursor — CursorUpdate, ~60 Hz, drop-and-forget</text>
           </svg>
         </div>
@@ -224,7 +224,7 @@
       </section>
 
       <!-- ── 3. IROH ───────────────────────────────────────── -->
-      <section class="wp-section" id="iroh">
+      <section class="wp-section" id="iroh" tabindex="-1">
         <span class="wp-section-num">03</span>
         <h2>iroh makes peers find each other.</h2>
         <p class="wp-lead">
@@ -263,7 +263,7 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
       </section>
 
       <!-- ── 4. MOQ ────────────────────────────────────────── -->
-      <section class="wp-section" id="moq">
+      <section class="wp-section" id="moq" tabindex="-1">
         <span class="wp-section-num">04</span>
         <h2>Media over QUIC, without head-of-line blocking.</h2>
         <p class="wp-lead">
@@ -309,7 +309,7 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
       </div>
 
       <!-- ── 5. PROTOCOL ───────────────────────────────────── -->
-      <section class="wp-section" id="protocol">
+      <section class="wp-section" id="protocol" tabindex="-1">
         <span class="wp-section-num">05</span>
         <h2>Every message on the wire, typed and versioned.</h2>
         <p class="wp-lead">
@@ -356,7 +356,7 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
       </section>
 
       <!-- ── 6. QUALITY ────────────────────────────────────── -->
-      <section class="wp-section" id="quality">
+      <section class="wp-section" id="quality" tabindex="-1">
         <span class="wp-section-num">06</span>
         <h2>The encoder adapts in real time. No restart.</h2>
         <p class="wp-lead">
@@ -398,19 +398,19 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
 
             <rect class="d-box s-ok" x="14" y="44" width="148" height="56" rx="8" stroke-width="1.5"/>
             <text x="88" y="68" class="t-ok" font-size="11" text-anchor="middle">scap</text>
-            <text x="88" y="84" class="d-dim" font-size="8.5" text-anchor="middle">ScreenCaptureKit · OS thread</text>
+            <text x="88" y="84" class="d-sub" font-size="8.5" text-anchor="middle">ScreenCaptureKit · OS thread</text>
 
             <rect class="d-box s-accent" x="176" y="44" width="148" height="56" rx="8" stroke-width="1.5"/>
             <text x="250" y="68" class="t-accent" font-size="11" text-anchor="middle">FFmpeg encode</text>
-            <text x="250" y="84" class="d-dim" font-size="8.5" text-anchor="middle">H.264 · OS thread</text>
+            <text x="250" y="84" class="d-sub" font-size="8.5" text-anchor="middle">H.264 · OS thread</text>
 
             <rect class="d-box s-accent" x="338" y="44" width="148" height="56" rx="8" stroke-width="1.5"/>
             <text x="412" y="68" class="t-accent" font-size="11" text-anchor="middle">moq-lite</text>
-            <text x="412" y="84" class="d-dim" font-size="8.5" text-anchor="middle">keyframe → new group</text>
+            <text x="412" y="84" class="d-sub" font-size="8.5" text-anchor="middle">keyframe → new group</text>
 
             <rect class="d-box s-muted" x="500" y="44" width="166" height="56" rx="8" stroke-width="1.5"/>
             <text x="583" y="68" class="t-muted" font-size="11" text-anchor="middle">iroh QUIC</text>
-            <text x="583" y="84" class="d-dim" font-size="8.5" text-anchor="middle">uni stream · TLS 1.3</text>
+            <text x="583" y="84" class="d-sub" font-size="8.5" text-anchor="middle">uni stream · TLS 1.3</text>
 
             <line class="s-muted" x1="162" y1="72" x2="176" y2="72" stroke-width="1.2" marker-end="url(#pa)"/>
             <line class="s-muted" x1="324" y1="72" x2="338" y2="72" stroke-width="1.2" marker-end="url(#pa)"/>
@@ -426,21 +426,21 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
 
             <rect class="d-box s-muted" x="40" y="210" width="148" height="56" rx="8" stroke-width="1.5"/>
             <text x="114" y="234" class="t-muted" font-size="11" text-anchor="middle">iroh QUIC</text>
-            <text x="114" y="250" class="d-dim" font-size="8.5" text-anchor="middle">uni read</text>
+            <text x="114" y="250" class="d-sub" font-size="8.5" text-anchor="middle">uni read</text>
 
             <rect class="d-box s-accent" x="202" y="210" width="148" height="56" rx="8" stroke-width="1.5"/>
             <text x="276" y="234" class="t-accent" font-size="11" text-anchor="middle">FFmpeg decode</text>
-            <text x="276" y="250" class="d-dim" font-size="8.5" text-anchor="middle">drop Δ until keyframe</text>
+            <text x="276" y="250" class="d-sub" font-size="8.5" text-anchor="middle">drop Δ until keyframe</text>
 
             <rect class="d-box s-ok" x="364" y="210" width="148" height="56" rx="8" stroke-width="1.5"/>
             <text x="438" y="234" class="t-ok" font-size="11" text-anchor="middle">wgpu / egui</text>
-            <text x="438" y="250" class="d-dim" font-size="8.5" text-anchor="middle">present</text>
+            <text x="438" y="250" class="d-sub" font-size="8.5" text-anchor="middle">present</text>
 
             <line class="s-muted" x1="188" y1="238" x2="202" y2="238" stroke-width="1.2" marker-end="url(#pa)"/>
             <line class="s-muted" x1="350" y1="238" x2="364" y2="238" stroke-width="1.2" marker-end="url(#pa)"/>
 
-            <!-- the travelling frame -->
-            <circle class="d-sig t-accent" r="4.5" style="offset-path:path('M88 72 L583 72 L583 120 L340 149 L114 200 L114 238 L438 238');animation-duration:5.5s"/>
+            <!-- the travelling frame (routed along the top edge, clear of labels) -->
+            <circle class="d-sig t-accent" r="4.5" style="offset-path:path('M88 44 L583 44 L583 120 L340 149 L114 200 L114 210 L438 210');animation-duration:5.5s"/>
           </svg>
         </div>
 
@@ -457,7 +457,7 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
       </section>
 
       <!-- ── 7. HONEST ─────────────────────────────────────── -->
-      <section class="wp-section wp-honest" id="honest">
+      <section class="wp-section wp-honest" id="honest" tabindex="-1">
         <span class="wp-section-num">07</span>
         <h2>What&rsquo;s honest about this.</h2>
         <p class="wp-lead">
@@ -511,9 +511,10 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
     </div>
   </footer>
 
-  <!-- Nav scroll border + scroll reveal -->
+  <!-- Nav scroll border · diagram pause · active TOC · scroll reveal -->
   <script>
     (function () {
+      /* Nav: hairline border on scroll */
       var nav = document.getElementById('site-nav');
       if (nav) {
         var sentinel = document.createElement('div');
@@ -525,12 +526,39 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
         }, { threshold: 0, rootMargin: '-56px 0px 0px 0px' }).observe(sentinel);
       }
 
-      /* Scroll reveal — enhances an already-visible default. */
+      /* Pause each diagram's looping dots while it is scrolled off-screen */
+      document.querySelectorAll('.wp-diagram').forEach(function (d) {
+        d.classList.add('paused');
+        new IntersectionObserver(function (e) {
+          d.classList.toggle('paused', !e[0].isIntersecting);
+        }, { threshold: 0.05 }).observe(d);
+      });
+
+      /* Table of contents: mark the section currently in view */
+      var tocLinks = {};
+      document.querySelectorAll('.wp-toc a').forEach(function (a) {
+        tocLinks[a.getAttribute('href')] = a;
+      });
+      var sections = document.querySelectorAll('.wp-section[id]');
+      if (sections.length && Object.keys(tocLinks).length) {
+        var tocIO = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            Object.keys(tocLinks).forEach(function (h) { tocLinks[h].removeAttribute('aria-current'); });
+            var link = tocLinks['#' + entry.target.id];
+            if (link) link.setAttribute('aria-current', 'location');
+          });
+        }, { rootMargin: '-30% 0px -60% 0px', threshold: 0 });
+        sections.forEach(function (s) { tocIO.observe(s); });
+      }
+
+      /* Scroll reveal — enhances an already-visible default. Only hide elements
+         genuinely below the fold at load, so keyboard users never Tab into
+         invisible content and deep-links don't flash. */
       var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduce) return;
       var items = document.querySelectorAll('.wp-section, .wp-pull');
       if (!items.length) return;
-      items.forEach(function (el) { el.classList.add('will-animate'); });
       var io = new IntersectionObserver(function (entries) {
         entries.forEach(function (entry) {
           if (entry.isIntersecting) {
@@ -539,7 +567,12 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
           }
         });
       }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
-      items.forEach(function (el) { io.observe(el); });
+      items.forEach(function (el) {
+        if (el.getBoundingClientRect().top > window.innerHeight) {
+          el.classList.add('will-animate');
+        }
+        io.observe(el);
+      });
     }());
   </script>
 
