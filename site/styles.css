@@ -277,8 +277,8 @@ p, li {
 /* The wire draws AFTER both screens finish settling (right screen ends 720ms;
    start at 800ms for an 80ms beat). Draw ends at 1700ms. */
 .hero-wire {
-  stroke-dasharray: 108;
-  stroke-dashoffset: 108;
+  stroke-dasharray: 119;
+  stroke-dashoffset: 119;
   animation: wire-draw 900ms cubic-bezier(0.16, 1, 0.3, 1) 800ms forwards;
 }
 
