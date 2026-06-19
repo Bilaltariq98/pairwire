@@ -173,6 +173,45 @@
           </table>
         </div>
 
+        <div class="wp-diagram">
+          <div class="wp-diagram-cap">Three primitives, one connection — live traffic between two peers</div>
+          <svg viewBox="0 0 680 250" xmlns="http://www.w3.org/2000/svg" role="img"
+            aria-label="Diagram: bidirectional control, unidirectional media and input, and unreliable datagram cursor traffic between Peer A and Peer B">
+            <defs>
+              <marker id="ar-a" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="t-accent" d="M0 0 L0 6 L7 3 z"/></marker>
+              <marker id="ar-ar" markerWidth="7" markerHeight="7" refX="2" refY="3" orient="auto"><path class="t-accent" d="M7 0 L7 6 L0 3 z"/></marker>
+              <marker id="ar-ok" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="t-ok" d="M0 0 L0 6 L7 3 z"/></marker>
+              <marker id="ar-m" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="t-muted" d="M0 0 L0 6 L7 3 z"/></marker>
+            </defs>
+
+            <text x="60" y="15" class="d-dim" font-size="10" letter-spacing="2" text-anchor="middle">PEER A</text>
+            <rect class="d-peer" x="14" y="24" width="92" height="210" rx="10"/>
+            <text x="620" y="15" class="d-dim" font-size="10" letter-spacing="2" text-anchor="middle">PEER B</text>
+            <rect class="d-peer" x="574" y="24" width="92" height="210" rx="10"/>
+
+            <!-- bidirectional -->
+            <text x="340" y="46" class="t-accent" font-size="11" text-anchor="middle">open_bi()  ·  reliable, ordered, both ways</text>
+            <line class="s-accent" x1="106" y1="62" x2="574" y2="62" stroke-width="1.5" marker-end="url(#ar-a)"/>
+            <line class="s-accent" x1="574" y1="76" x2="106" y2="76" stroke-width="1.5" marker-end="url(#ar-ar)"/>
+            <circle class="d-sig t-accent" r="4" style="offset-path:path('M106 62 L574 62');animation-duration:3s"/>
+            <circle class="d-sig t-accent" r="4" style="offset-path:path('M574 76 L106 76');animation-duration:3.6s"/>
+            <text x="340" y="96" class="d-dim" font-size="9" text-anchor="middle">control channel — ControlMessage</text>
+
+            <!-- unidirectional -->
+            <text x="340" y="138" class="t-ok" font-size="11" text-anchor="middle">open_uni()  ·  reliable, one direction</text>
+            <line class="s-ok" x1="106" y1="154" x2="574" y2="154" stroke-width="1.5" marker-end="url(#ar-ok)"/>
+            <circle class="d-sig t-ok" r="4" style="offset-path:path('M106 154 L574 154');animation-duration:2.6s"/>
+            <text x="340" y="172" class="d-dim" font-size="9" text-anchor="middle">media (moq-lite groups) + input — InputMessage</text>
+
+            <!-- datagram -->
+            <text x="340" y="206" class="t-muted" font-size="11" text-anchor="middle">send_datagram()  ·  unreliable, &lt; 50 bytes</text>
+            <line class="s-muted" x1="106" y1="222" x2="574" y2="222" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ar-m)"/>
+            <circle class="d-sig t-muted" r="3.5" style="offset-path:path('M106 222 L574 222');animation-duration:1.8s"/>
+            <circle class="d-sig t-muted" r="3.5" style="offset-path:path('M106 222 L574 222');animation-duration:1.8s;animation-delay:-0.9s"/>
+            <text x="340" y="240" class="d-dim" font-size="9" text-anchor="middle">cursor — CursorUpdate, ~60 Hz, drop-and-forget</text>
+          </svg>
+        </div>
+
         <p>
           A missed cursor position isn&rsquo;t worth a retransmit — by the time it
           arrived it would already be stale — so cursors go over datagrams. A missed
@@ -345,6 +384,64 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
               <tr><td>Degraded &mdash; heavy loss</td><td class="mono">720p</td><td class="mono">15</td><td class="mono">4s</td></tr>
             </tbody>
           </table>
+        </div>
+
+        <div class="wp-diagram">
+          <div class="wp-diagram-cap">A frame&rsquo;s journey — host capture to guest display</div>
+          <svg viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" role="img"
+            aria-label="Diagram: a screen frame travels from host capture through encode, moq-lite and iroh QUIC, across the network, to guest decode and render">
+            <defs>
+              <marker id="pa" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="d-dim" d="M0 0 L0 6 L7 3 z"/></marker>
+            </defs>
+
+            <text x="298" y="30" class="d-dim" font-size="10" letter-spacing="2" text-anchor="middle">HOST PROCESS</text>
+
+            <rect class="d-box s-ok" x="14" y="44" width="148" height="56" rx="8" stroke-width="1.5"/>
+            <text x="88" y="68" class="t-ok" font-size="11" text-anchor="middle">scap</text>
+            <text x="88" y="84" class="d-dim" font-size="8.5" text-anchor="middle">ScreenCaptureKit · OS thread</text>
+
+            <rect class="d-box s-accent" x="176" y="44" width="148" height="56" rx="8" stroke-width="1.5"/>
+            <text x="250" y="68" class="t-accent" font-size="11" text-anchor="middle">FFmpeg encode</text>
+            <text x="250" y="84" class="d-dim" font-size="8.5" text-anchor="middle">H.264 · OS thread</text>
+
+            <rect class="d-box s-accent" x="338" y="44" width="148" height="56" rx="8" stroke-width="1.5"/>
+            <text x="412" y="68" class="t-accent" font-size="11" text-anchor="middle">moq-lite</text>
+            <text x="412" y="84" class="d-dim" font-size="8.5" text-anchor="middle">keyframe → new group</text>
+
+            <rect class="d-box s-muted" x="500" y="44" width="166" height="56" rx="8" stroke-width="1.5"/>
+            <text x="583" y="68" class="t-muted" font-size="11" text-anchor="middle">iroh QUIC</text>
+            <text x="583" y="84" class="d-dim" font-size="8.5" text-anchor="middle">uni stream · TLS 1.3</text>
+
+            <line class="s-muted" x1="162" y1="72" x2="176" y2="72" stroke-width="1.2" marker-end="url(#pa)"/>
+            <line class="s-muted" x1="324" y1="72" x2="338" y2="72" stroke-width="1.2" marker-end="url(#pa)"/>
+            <line class="s-muted" x1="486" y1="72" x2="500" y2="72" stroke-width="1.2" marker-end="url(#pa)"/>
+            <text x="169" y="116" class="d-dim" font-size="7.5" text-anchor="middle">cap 4</text>
+            <text x="331" y="116" class="d-dim" font-size="7.5" text-anchor="middle">cap 4</text>
+
+            <!-- network -->
+            <rect class="d-peer" x="228" y="134" width="224" height="30" rx="15" stroke-dasharray="6 3"/>
+            <text x="340" y="153" class="d-dim" font-size="9.5" text-anchor="middle">P2P / relay — encrypted, content-blind</text>
+
+            <text x="298" y="194" class="d-dim" font-size="10" letter-spacing="2" text-anchor="middle">GUEST PROCESS</text>
+
+            <rect class="d-box s-muted" x="40" y="210" width="148" height="56" rx="8" stroke-width="1.5"/>
+            <text x="114" y="234" class="t-muted" font-size="11" text-anchor="middle">iroh QUIC</text>
+            <text x="114" y="250" class="d-dim" font-size="8.5" text-anchor="middle">uni read</text>
+
+            <rect class="d-box s-accent" x="202" y="210" width="148" height="56" rx="8" stroke-width="1.5"/>
+            <text x="276" y="234" class="t-accent" font-size="11" text-anchor="middle">FFmpeg decode</text>
+            <text x="276" y="250" class="d-dim" font-size="8.5" text-anchor="middle">drop Δ until keyframe</text>
+
+            <rect class="d-box s-ok" x="364" y="210" width="148" height="56" rx="8" stroke-width="1.5"/>
+            <text x="438" y="234" class="t-ok" font-size="11" text-anchor="middle">wgpu / egui</text>
+            <text x="438" y="250" class="d-dim" font-size="8.5" text-anchor="middle">present</text>
+
+            <line class="s-muted" x1="188" y1="238" x2="202" y2="238" stroke-width="1.2" marker-end="url(#pa)"/>
+            <line class="s-muted" x1="350" y1="238" x2="364" y2="238" stroke-width="1.2" marker-end="url(#pa)"/>
+
+            <!-- the travelling frame -->
+            <circle class="d-sig t-accent" r="4.5" style="offset-path:path('M88 72 L583 72 L583 120 L340 149 L114 200 L114 238 L438 238');animation-duration:5.5s"/>
+          </svg>
         </div>
 
         <p>

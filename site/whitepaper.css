@@ -416,3 +416,50 @@
   .wp-title { max-width: 100%; }
   .wp-deck { max-width: 100%; }
 }
+
+/* ── Animated diagrams (re-authored from the deep-dive doc, our palette) ─── */
+.wp-diagram {
+  margin-top: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: clamp(16px, 3vw, 24px);
+  overflow-x: auto;
+}
+.wp-diagram-cap {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--faint);
+  margin-bottom: 16px;
+}
+.wp-diagram svg {
+  width: 100%;
+  min-width: 460px;
+  height: auto;
+  display: block;
+}
+
+/* diagram element palette (CSS so it tracks the tokens) */
+.d-peer    { fill: none; stroke: var(--border-strong); }
+.d-box     { fill: var(--surface-2); }
+.d-label   { font-family: var(--font-mono); fill: var(--ink); }
+.d-dim     { font-family: var(--font-mono); fill: var(--faint); }
+.s-accent  { stroke: var(--accent); }
+.s-ok      { stroke: var(--ok); }
+.s-muted   { stroke: var(--muted); }
+.t-accent  { fill: var(--accent); font-family: var(--font-mono); }
+.t-ok      { fill: var(--ok); font-family: var(--font-mono); }
+.t-muted   { fill: var(--muted); font-family: var(--font-mono); }
+
+/* signal dots flow along their offset-path; reduced-motion parks them */
+.d-sig {
+  offset-rotate: 0deg;
+  animation: d-flow linear infinite;
+}
+@keyframes d-flow {
+  from { offset-distance: 0%; }
+  to   { offset-distance: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .d-sig { animation: none !important; offset-distance: 55%; }
+}
