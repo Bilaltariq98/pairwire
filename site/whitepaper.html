@@ -84,8 +84,9 @@
         <span class="wp-kicker">Technical note</span>
         <h1 class="wp-title">How Pairwire works</h1>
         <p class="wp-deck">
-          A walkthrough of the QUIC / iroh / moq-lite stack behind peer-to-peer screen
-          sharing — written honestly, for developers who want to see the actual architecture.
+          A look at what&rsquo;s actually happening underneath Pairwire — the QUIC
+          connection two machines share, how iroh gets them talking through their
+          routers, and how the screen, audio, and input all ride the same link.
         </p>
         <p class="wp-hero-meta">
           <a href="/">&larr; pairwire.dev</a>
@@ -113,10 +114,11 @@
       <!-- ── 1. TRANSPORT ──────────────────────────────────── -->
       <section class="wp-section" id="transport" tabindex="-1">
         <span class="wp-section-num">01</span>
-        <h2>Two protocols. Neither is right.</h2>
+        <h2>Why neither TCP nor UDP was enough</h2>
         <p class="wp-lead">
-          For decades, real-time apps have had to pick between TCP and UDP. Screen
-          sharing needs the behaviour of both, at the same time, on one connection.
+          Real-time apps have always had to choose between TCP and UDP. The awkward
+          part is that screen sharing really wants what both of them offer — at the
+          same time, over a single connection.
         </p>
         <ul class="wp-list">
           <li><strong>TCP</strong> is reliable and ordered — but head-of-line blocked. One lost packet stalls <em>everything</em> behind it. A dropped audio packet shouldn&rsquo;t freeze the video, but on TCP it does.</li>
@@ -134,17 +136,13 @@
         </p>
       </section>
 
-      <div class="wp-pull">
-        <p>One protocol for <span class="accent">everything</span>.</p>
-      </div>
-
       <!-- ── 2. PRIMITIVES ─────────────────────────────────── -->
       <section class="wp-section" id="primitives" tabindex="-1">
         <span class="wp-section-num">02</span>
-        <h2>Three tools. Every feature maps to one.</h2>
+        <h2>Three primitives, and what each one carries</h2>
         <p class="wp-lead">
-          QUIC gives you exactly three ways to move bytes. Each Pairwire feature
-          picks the one that fits its delivery guarantee — and they all ride a
+          QUIC gives you three ways to move bytes, and each part of Pairwire uses
+          whichever one matches how it needs to be delivered. They all share a
           single connection.
         </p>
 
@@ -226,12 +224,13 @@
       <!-- ── 3. IROH ───────────────────────────────────────── -->
       <section class="wp-section" id="iroh" tabindex="-1">
         <span class="wp-section-num">03</span>
-        <h2>iroh makes peers find each other.</h2>
+        <h2>Getting two peers connected</h2>
         <p class="wp-lead">
-          QUIC moves the bytes once a connection exists. Getting two machines behind
-          home routers to open that connection is the hard part —
+          QUIC moves the bytes once a connection exists. The hard part is getting two
+          machines behind home routers to open that connection in the first place —
+          and that&rsquo;s what
           <a href="https://iroh.computer" target="_blank" rel="noopener noreferrer">iroh</a>
-          (by n0) handles discovery, UDP hole-punching, and relay fallback, all in Rust.
+          (by n0) handles: discovery, UDP hole-punching, and relay fallback, all in Rust.
         </p>
         <p>
           The host generates an invite link. The guest calls
@@ -265,7 +264,7 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
       <!-- ── 4. MOQ ────────────────────────────────────────── -->
       <section class="wp-section" id="moq" tabindex="-1">
         <span class="wp-section-num">04</span>
-        <h2>Media over QUIC, without head-of-line blocking.</h2>
+        <h2>Moving media without head-of-line blocking</h2>
         <p class="wp-lead">
           Screen and audio ride <strong>moq-lite</strong>, a small publish/subscribe
           model layered on QUIC. It organises media into a four-level hierarchy.
@@ -287,36 +286,32 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
         </div>
 
         <p>
-          The load-bearing decision: <strong>each Group maps to exactly one QUIC
-          unidirectional stream</strong>, and every keyframe starts a new Group. If a
-          packet inside Group&nbsp;5 is lost, Group&nbsp;6 still arrives and starts
-          decoding immediately — its own stream is independent. On TCP, Group&nbsp;6
-          would wait behind Group&nbsp;5&rsquo;s retransmit. Track priority does the
-          rest: the <code>screen</code> track outranks audio, so under congestion QUIC
-          ships the picture first.
+          The part that matters: <strong>each Group is exactly one QUIC unidirectional
+          stream</strong>, and every keyframe starts a new one. So if a packet inside
+          Group&nbsp;5 goes missing, Group&nbsp;6 still arrives and starts decoding right
+          away — it&rsquo;s on its own independent stream. On TCP, Group&nbsp;6 would be
+          stuck waiting behind Group&nbsp;5&rsquo;s retransmit. Track priority handles the
+          rest: the <code>screen</code> track outranks audio, so when the link is
+          congested QUIC sends the picture first.
         </p>
         <p>
-          One wrinkle worth naming: moq-lite&rsquo;s media streams and Pairwire&rsquo;s
-          own raw streams both call <code>accept_uni()</code> on the same connection,
-          so they would steal each other&rsquo;s streams. A <code>UniStreamRouter</code>
-          prefixes each raw stream with a one-byte type tag (<code>screen = 0x53</code>,
-          <code>tunnel = 0x4C</code>) and dispatches on it.
+          There&rsquo;s one wrinkle. moq-lite&rsquo;s media streams and Pairwire&rsquo;s
+          own raw streams both call <code>accept_uni()</code> on the same connection, so
+          left alone they&rsquo;d steal each other&rsquo;s streams. To keep them apart, a
+          <code>UniStreamRouter</code> prefixes each raw stream with a one-byte type tag
+          (<code>screen = 0x53</code>, <code>tunnel = 0x4C</code>) and dispatches on it.
         </p>
       </section>
-
-      <div class="wp-pull">
-        <p>Every keyframe is its own <span class="accent">QUIC stream</span>.</p>
-      </div>
 
       <!-- ── 5. PROTOCOL ───────────────────────────────────── -->
       <section class="wp-section" id="protocol" tabindex="-1">
         <span class="wp-section-num">05</span>
-        <h2>Every message on the wire, typed and versioned.</h2>
+        <h2>What the two sides say to each other</h2>
         <p class="wp-lead">
-          The protocol types live in one crate and serialize with
+          All the protocol types live in one crate and serialize with
           <a href="https://docs.rs/postcard" target="_blank" rel="noopener noreferrer">postcard</a>
-          — compact binary, no field names on the wire, length-prefixed for framing.
-          Three message families map onto the three QUIC primitives.
+          — compact binary, no field names on the wire, length-prefixed so each message
+          can be framed. They fall into three families, one for each QUIC primitive.
         </p>
 
         <div class="wp-code">
@@ -358,11 +353,11 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
       <!-- ── 6. QUALITY ────────────────────────────────────── -->
       <section class="wp-section" id="quality" tabindex="-1">
         <span class="wp-section-num">06</span>
-        <h2>The encoder adapts in real time. No restart.</h2>
+        <h2>Adapting to the network in real time</h2>
         <p class="wp-lead">
           A quality monitor polls the live QUIC connection stats about once a second
           and turns them into a small health snapshot — round-trip time and packet
-          loss — that steers the encoder.
+          loss — which is what steers the encoder.
         </p>
         <p>
           Based on that snapshot, the encoder is pushed into a different tier through a
@@ -459,10 +454,10 @@ pairwire://<span class="k">0f02581240ab</span>?relay=<span class="s">euc1.relay.
       <!-- ── 7. HONEST ─────────────────────────────────────── -->
       <section class="wp-section wp-honest" id="honest" tabindex="-1">
         <span class="wp-section-num">07</span>
-        <h2>What&rsquo;s honest about this.</h2>
+        <h2>Being honest about where this is</h2>
         <p class="wp-lead">
-          This is an experiment. It&rsquo;s rough and unsigned and may break — but the
-          architecture underneath is real, not a demo.
+          This is an experiment — rough, unsigned, and liable to break. But the
+          architecture underneath is real; it&rsquo;s not a demo.
         </p>
         <ul class="wp-list">
           <li><strong>One host, one guest, today.</strong> Multi-party (a star fan-out over moq-lite broadcasts) and localhost tunneling fit this same stack — they&rsquo;re designed for, not built yet.</li>
