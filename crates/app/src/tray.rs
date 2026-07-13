@@ -1,9 +1,11 @@
 //! macOS menu bar (system tray) integration.
 //!
-//! Creates a menu bar icon with three items:
-//! - "Copy Invite Link" — copies the current session invite URL to the clipboard
-//! - "Disconnect"       — signals the active session to shut down
-//! - "Quit"             — exits the process
+//! Creates a menu bar icon with these items:
+//! - "Copy Invite Link"       — copies the current session invite URL to the clipboard
+//! - "Allow / Revoke Remote Control" — grant/revoke guest input injection
+//! - "Mute / Unmute Microphone" — toggle host mic mute mid-session
+//! - "Disconnect"             — signals the active session to shut down
+//! - "Quit"                   — exits the process
 //!
 //! Only compiled when the `tray` feature is enabled. The tray icon must be
 //! created on the main thread (macOS requirement). Event polling is done via
@@ -39,7 +41,7 @@ mod inner {
     };
 
     /// Actions emitted by the tray menu.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum TrayAction {
         /// User clicked "Copy Invite Link". Contains the invite URL.
         CopyInvite(String),
@@ -51,6 +53,9 @@ mod inner {
         GrantControl,
         /// User clicked "Revoke Control".
         RevokeControl,
+        /// User clicked the mute toggle. The receiver decides the new state
+        /// (current state is owned by main.rs's `mute_tx`).
+        ToggleMute,
     }
 
     /// Owns the tray icon and menu item IDs. Must be kept alive for the icon to remain visible.
@@ -69,6 +74,8 @@ mod inner {
         grant_id: tray_icon::menu::MenuId,
         revoke_item: MenuItem,
         revoke_id: tray_icon::menu::MenuId,
+        mute_item: MenuItem,
+        mute_id: tray_icon::menu::MenuId,
     }
 
     impl TrayHandle {
@@ -94,6 +101,7 @@ mod inner {
             let copy_item = MenuItem::new("Copy Invite Link", invite_url.is_some(), None);
             let grant_item = MenuItem::new("Allow Remote Control", true, None);
             let revoke_item = MenuItem::new("Revoke Control", false, None);
+            let mute_item = MenuItem::new("Mute Microphone", true, None);
             let disconnect_item = MenuItem::new("Disconnect", true, None);
             let separator = PredefinedMenuItem::separator();
             let quit_item = MenuItem::new("Quit pairwire", true, None);
@@ -101,6 +109,7 @@ mod inner {
             let copy_id = copy_item.id().clone();
             let grant_id = grant_item.id().clone();
             let revoke_id = revoke_item.id().clone();
+            let mute_id = mute_item.id().clone();
             let disconnect_id = disconnect_item.id().clone();
             let quit_id = quit_item.id().clone();
 
@@ -109,6 +118,7 @@ mod inner {
                 &copy_item,
                 &grant_item,
                 &revoke_item,
+                &mute_item,
                 &disconnect_item,
                 &separator,
                 &quit_item,
@@ -138,6 +148,8 @@ mod inner {
                 grant_id,
                 revoke_item,
                 revoke_id,
+                mute_item,
+                mute_id,
             })
         }
 
@@ -159,6 +171,15 @@ mod inner {
         pub fn set_control_granted(&mut self, granted: bool) {
             self.grant_item.set_enabled(!granted);
             self.revoke_item.set_enabled(granted);
+        }
+
+        /// Reflect the current mute state in the menu item label.
+        pub fn set_muted(&mut self, muted: bool) {
+            self.mute_item.set_text(if muted {
+                "Unmute Microphone"
+            } else {
+                "Mute Microphone"
+            });
         }
 
         /// Poll for a pending menu event. Returns `None` if the queue is empty.
@@ -189,6 +210,9 @@ mod inner {
                     } else if id == &self.revoke_id {
                         debug!("tray: RevokeControl");
                         Some(TrayAction::RevokeControl)
+                    } else if id == &self.mute_id {
+                        debug!("tray: ToggleMute");
+                        Some(TrayAction::ToggleMute)
                     } else {
                         None
                     }
@@ -240,6 +264,17 @@ mod inner {
             // Centre pixel at (8, 8) → index (8 * 16 + 8) * 4 = 544
             let idx = (8 * 16 + 8) * 4;
             assert_eq!(&buf[idx..idx + 4], &[255, 255, 255, 255]);
+        }
+
+        // `TrayAction::ToggleMute` is a stateless signal — the new mute state
+        // lives in main.rs's `mute_tx`. This test guards the equality contract
+        // so a future refactor doesn't introduce a payload that the dispatcher
+        // would then need to ignore or interpret.
+        #[test]
+        fn toggle_mute_action_is_stateless() {
+            assert_eq!(TrayAction::ToggleMute, TrayAction::ToggleMute);
+            assert_ne!(TrayAction::ToggleMute, TrayAction::Disconnect);
+            assert_ne!(TrayAction::ToggleMute, TrayAction::GrantControl);
         }
     }
 }

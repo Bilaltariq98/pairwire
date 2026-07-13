@@ -181,7 +181,10 @@ fn run_host_command(
 
 #[cfg(any(feature = "gui", not(feature = "tray")))]
 fn run_host_no_overlay(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
-    rt.block_on(session::run_host(args, None, None, None, None))
+    // No tray/overlay = no runtime mute toggle. Initial state from `--mute`
+    // sticks for the lifetime of the session.
+    let (_mute_tx, mute_rx) = tokio::sync::watch::channel(args.mute);
+    rt.block_on(session::run_host(args, None, None, mute_rx, None, None))
 }
 
 #[cfg(all(feature = "gui", not(feature = "tray")))]
@@ -195,10 +198,14 @@ fn run_host_with_overlay(
     // the main thread for the rest of the session).
     let (overlay_tx, overlay_rx) = tokio::sync::oneshot::channel::<session::HostOverlayChannels>();
     let (host_shutdown_tx, host_shutdown_rx) = tokio::sync::watch::channel(false);
+    // GUI overlay path has no in-session mute UI today (no tray, the overlay
+    // is annotation-focused). `--mute` still applies the initial state.
+    let (_mute_tx, mute_rx) = tokio::sync::watch::channel(args.mute);
     let session_handle = rt.spawn(session::run_host(
         args,
         None,
         None,
+        mute_rx,
         Some(overlay_tx),
         Some(host_shutdown_rx),
     ));
@@ -310,10 +317,15 @@ fn run_host_with_tray(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Resu
     let (tray_action_tx, tray_action_rx) =
         tokio::sync::mpsc::channel::<control_state::ControlAction>(8);
 
+    // Mute watch: seeded from `--mute`, toggled at runtime by the tray menu.
+    let (mute_tx, mute_rx) = tokio::sync::watch::channel(args.mute);
+    tray_handle.set_muted(args.mute);
+
     let session_handle = rt.spawn(session::run_host(
         args,
         Some(invite_tx),
         Some(tray_action_rx),
+        mute_rx,
         None,
         None,
     ));
@@ -350,6 +362,12 @@ fn run_host_with_tray(args: cli::HostArgs, rt: &tokio::runtime::Runtime) -> Resu
                     let _ = tray_action_tx.try_send(control_state::ControlAction::Revoke);
                     tray_handle.set_control_granted(false);
                     info!("tray: revoke control forwarded to session");
+                }
+                TrayAction::ToggleMute => {
+                    let new_state = !*mute_tx.borrow();
+                    let _ = mute_tx.send(new_state);
+                    tray_handle.set_muted(new_state);
+                    info!(muted = new_state, "tray: mute toggled");
                 }
             }
         }
@@ -418,7 +436,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
         tokio::sync::broadcast::channel::<pairwire_transport::DrawingEvent>(32);
     let drawing_event_tx_for_session = drawing_event_tx.clone();
     // Mute channel: viewer sends mute state (true=muted), session applies to capture thread.
-    let (mute_tx, mute_rx_for_session) = tokio::sync::watch::channel(false);
+    // Seeded with `--mute` so the guest's mic starts muted when the flag is set.
+    let (mute_tx, mute_rx_for_session) = tokio::sync::watch::channel(args.mute);
     // Quality tier: session publishes current connection quality, viewer shows HUD dot.
     let (quality_tx_for_session, quality_rx) =
         tokio::sync::watch::channel(pairwire_transport::QualityTier::Full);
@@ -454,6 +473,8 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
     );
 
     let no_gui = args.no_gui;
+    #[cfg(feature = "gui")]
+    let initial_muted = args.mute;
 
     // Run the network session in a background task, wrapped in reconnect logic.
     let session_handle = rt.spawn(async move {
@@ -545,6 +566,7 @@ fn run_join_command(args: cli::JoinArgs, rt: &tokio::runtime::Runtime) -> Result
                 live_point_rx,
                 drawing_event_tx,
                 mute_tx,
+                initial_muted,
                 quality_rx,
                 control_state_rx,
                 control_request_tx,

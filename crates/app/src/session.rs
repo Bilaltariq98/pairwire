@@ -118,6 +118,7 @@ pub async fn run_host(
     args: HostArgs,
     invite_tx: Option<tokio::sync::oneshot::Sender<String>>,
     tray_action_rx: Option<tokio::sync::mpsc::Receiver<crate::control_state::ControlAction>>,
+    mute_rx: watch::Receiver<bool>,
     #[cfg(feature = "gui")] overlay_tx: Option<tokio::sync::oneshot::Sender<HostOverlayChannels>>,
     #[cfg(not(feature = "gui"))] _overlay_tx: Option<()>,
     mut shutdown_rx: Option<watch::Receiver<bool>>,
@@ -533,6 +534,30 @@ pub async fn run_host(
             };
         #[cfg(feature = "encode")]
         let (audio_pkt_rx, audio_stream_config) = (_audio_pkt_rx, _audio_stream_config);
+
+        // Bridge the mute watch channel to the host capture thread's atomic flag.
+        // Mirrors the guest-side pattern at run_join.
+        //
+        // The capture handle is rebuilt per guest connection, so the bridge is
+        // also rebuilt. The task is intentionally not joined at teardown — the
+        // shared `Arc<AtomicBool>` keeps the flag alive even after the capture
+        // thread stops, and the task exits when the watch sender drops at
+        // process end. See LEARNINGS.md if this proves to leak under stress.
+        if let Some(capture) = audio_capture_handle.as_ref() {
+            let muted_flag = capture.muted_flag();
+            let mut watch = mute_rx.clone();
+            // Apply the current value immediately, before the watcher loop starts,
+            // so `--mute` takes effect from frame zero rather than from the first
+            // toggle.
+            muted_flag.store(*watch.borrow(), std::sync::atomic::Ordering::Relaxed);
+            tokio::spawn(async move {
+                while watch.changed().await.is_ok() {
+                    let should_mute = *watch.borrow();
+                    muted_flag.store(should_mute, std::sync::atomic::Ordering::Relaxed);
+                    info!(muted = should_mute, "host mic mute state changed");
+                }
+            });
+        }
 
         let mut guest_audio_decode_handle = None;
         let mut guest_audio_playback_handle = None;

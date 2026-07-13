@@ -77,6 +77,10 @@ pub struct HostArgs {
     /// feature is compiled in. Useful for headless deployments, CI, or when the
     /// host prefers a pure tray-icon workflow.
     pub no_overlay: bool,
+    /// When set, the host's microphone starts muted. The capture thread still
+    /// runs and emits silence frames; mute can be toggled at runtime via the
+    /// tray menu.
+    pub mute: bool,
 }
 
 impl Default for HostArgs {
@@ -86,6 +90,7 @@ impl Default for HostArgs {
             resolution: ResolutionPreset::default(),
             allow_remote_control: false,
             no_overlay: false,
+            mute: false,
         }
     }
 }
@@ -95,6 +100,9 @@ pub struct JoinArgs {
     pub invite_url: String,
     /// Skip the GUI and just print decoded frame stats (for testing).
     pub no_gui: bool,
+    /// When set, the guest's microphone starts muted. Toggle at runtime via
+    /// the viewer toolbar button or Cmd/Ctrl+Shift+M.
+    pub mute: bool,
 }
 
 /// Usage help text printed by `--help` / `-h`.
@@ -164,6 +172,9 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
                     "--no-overlay" => {
                         a.no_overlay = true;
                     }
+                    "--mute" => {
+                        a.mute = true;
+                    }
                     flag => anyhow::bail!("unknown flag: {flag}"),
                 }
                 i += 1;
@@ -172,12 +183,17 @@ fn parse_from_args(args: &[String]) -> anyhow::Result<Command> {
         }
         Some("join") => {
             if args.len() < 2 {
-                anyhow::bail!("usage: pairwire join <invite-url> [--no-gui]");
+                anyhow::bail!("usage: pairwire join <invite-url> [--no-gui] [--mute]");
             }
             let invite_url = args[1].clone();
             validate_invite(&invite_url)?;
             let no_gui = args.iter().any(|a| a == "--no-gui");
-            Ok(Command::Join(JoinArgs { invite_url, no_gui }))
+            let mute = args.iter().any(|a| a == "--mute");
+            Ok(Command::Join(JoinArgs {
+                invite_url,
+                no_gui,
+                mute,
+            }))
         }
         Some(cmd) => {
             anyhow::bail!("unknown command: {cmd}\nUsage: pairwire host | pairwire join <invite>")
@@ -402,5 +418,52 @@ mod tests {
         let Command::Help = cmd else {
             panic!("expected Help command");
         };
+    }
+
+    // ─────────────────────────── --mute ───────────────────────────
+
+    #[test]
+    fn parse_host_default_unmuted() {
+        let cmd = parse(&["host"]).unwrap();
+        let Command::Host(a) = cmd else {
+            panic!("expected Host")
+        };
+        assert!(!a.mute);
+    }
+
+    #[test]
+    fn parse_host_mute() {
+        let cmd = parse(&["host", "--mute"]).unwrap();
+        let Command::Host(a) = cmd else {
+            panic!("expected Host")
+        };
+        assert!(a.mute);
+    }
+
+    #[test]
+    fn parse_join_default_unmuted() {
+        let cmd = parse(&[
+            "join",
+            "pairwire://abc?token=00000000000000000000000000000000",
+        ])
+        .unwrap();
+        let Command::Join(a) = cmd else {
+            panic!("expected Join")
+        };
+        assert!(!a.mute);
+    }
+
+    #[test]
+    fn parse_join_mute() {
+        let cmd = parse(&[
+            "join",
+            "pairwire://abc?token=00000000000000000000000000000000",
+            "--mute",
+        ])
+        .unwrap();
+        let Command::Join(a) = cmd else {
+            panic!("expected Join")
+        };
+        assert!(a.mute);
     }
 }

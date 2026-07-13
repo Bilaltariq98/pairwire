@@ -230,6 +230,7 @@ mod inner {
             live_point_rx: watch::Receiver<Option<DrawPoint>>,
             drawing_tx: broadcast::Sender<DrawingEvent>,
             mute_tx: watch::Sender<bool>,
+            initial_muted: bool,
             quality_rx: watch::Receiver<QualityTier>,
             control_rx: watch::Receiver<RuntimeControlState>,
             control_tx: broadcast::Sender<ControlMessage>,
@@ -257,7 +258,7 @@ mod inner {
                 current_stroke: Vec::new(),
                 drawing_active: false,
                 peer_id: 1,
-                muted: false,
+                muted: initial_muted,
                 has_pending_request: false,
                 held_buttons: 0,
                 live_trails: HashMap::new(),
@@ -1174,6 +1175,7 @@ mod inner {
         live_point_rx: watch::Receiver<Option<DrawPoint>>,
         drawing_tx: broadcast::Sender<DrawingEvent>,
         mute_tx: watch::Sender<bool>,
+        initial_muted: bool,
         quality_rx: watch::Receiver<QualityTier>,
         control_rx: watch::Receiver<RuntimeControlState>,
         control_tx: broadcast::Sender<ControlMessage>,
@@ -1190,7 +1192,7 @@ mod inner {
         eframe::run_native(
             title,
             options,
-            Box::new(|_cc| {
+            Box::new(move |_cc| {
                 Ok(Box::new(ViewerApp::new(
                     frame_rx,
                     cursor_rx,
@@ -1200,6 +1202,7 @@ mod inner {
                     live_point_rx,
                     drawing_tx,
                     mute_tx,
+                    initial_muted,
                     quality_rx,
                     control_rx,
                     control_tx,
